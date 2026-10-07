@@ -30,5 +30,9 @@ and images.
 
 **Platforms.** Linux/macOS (FIFO transport). Windows named pipes are not implemented.
 
-**Performance.** The provisional JSON display list costs ≈ 1–2 ms of serialization per paragraph;
-the binary format (M5) removes most of it. Preamble changes restart the engine (≈ 1 s).
+**Performance depends on the font stack.** With fontspec's default luaotfload node mode (and
+more so with HarfBuzz), LuaTeX shapes every paragraph in Lua, which costs several times the
+line-breaking time itself (docs/BENCHMARKS.md, E13). The 1 ms class is reached with TFM fonts
+or OpenType fonts loaded with `Renderer=Basic`; node-mode documents still get paragraph-local,
+document-size-independent updates, just slower per keystroke. Preamble changes restart the
+engine (≈ 1–2 s with fontspec).

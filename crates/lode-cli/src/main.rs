@@ -1,4 +1,5 @@
 use lode_core::fixtures as gen_book;
+mod bench;
 mod serve;
 mod slice;
 mod verify;
@@ -79,6 +80,38 @@ enum Cmd {
     PdfCompare { a: PathBuf, b: PathBuf },
     /// Convert a binary display list (v1) to its JSON mirror.
     Dl2json { file: PathBuf },
+    /// Benchmarks: in-engine line breaking (hardware factor) and warm round trips with gates.
+    Bench {
+        /// Projects to benchmark (fixture directories with main.tex).
+        #[arg(long, num_args = 1..)]
+        project: Vec<PathBuf>,
+        #[arg(long, default_value = "short,medium,long,inline-math", value_delimiter = ',')]
+        categories: Vec<String>,
+        #[arg(long, default_value_t = 300)]
+        samples: usize,
+        #[arg(long, default_value_t = 100)]
+        inner: usize,
+        #[arg(long, default_value = "build/bench")]
+        build: PathBuf,
+        #[arg(long, default_value = "bench/results")]
+        out: PathBuf,
+        /// Fewer samples everywhere (smoke run).
+        #[arg(long)]
+        quick: bool,
+    },
+    /// Export a PDF through a session (clean build loop, status reported) and optionally compare
+    /// it with an independent clean lualatex build.
+    Export {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value = "main.tex")]
+        main: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Also build the project independently and compare with `lode pdf-compare` rules.
+        #[arg(long)]
+        check: bool,
+    },
     GenBook {
         #[arg(long, default_value_t = 10)]
         pages: u32,
@@ -119,6 +152,32 @@ fn main() -> anyhow::Result<()> {
             let bytes = std::fs::read(&file)?;
             let dl = lode_dl::DisplayList::from_binary(&bytes)?;
             println!("{}", serde_json::to_string_pretty(&dl)?);
+        }
+        Cmd::Bench { project, categories, samples, inner, build, out, quick } => {
+            let (samples, inner) = if quick { (30, 10) } else { (samples, inner) };
+            let r = bench::run_all(project, categories, samples, inner, build, out, quick)?;
+            if !r.pass {
+                std::process::exit(1);
+            }
+        }
+        Cmd::Export { project, main, out, check } => {
+            let session = lode_core::Session::open(lode_core::SessionConfig::new(&project, main.clone()))?;
+            let job = session.export_pdf(&out);
+            let (ev, _) = session.wait_for(std::time::Duration::from_secs(1800), |e| matches!(e, lode_core::Event::PdfExported { job_id, .. } if *job_id == job));
+            let Some(lode_core::Event::PdfExported { path, status, converged, passes, .. }) = ev else { anyhow::bail!("no export result") };
+            println!("export: status {:?} converged {} passes {} path {:?}", status, converged, passes, path);
+            session.close();
+            if check {
+                let tl = lode_core::texlive::TexLive::discover()?;
+                let tmp = std::env::temp_dir().join(format!("lode-export-check-{}", std::process::id()));
+                let o = lode_core::background::run_pass(&tl, &project.canonicalize()?, &main, &tmp, 5, lode_core::background::BibTool::Auto, false)?;
+                let d = lode_verify::pdfcompare::compare(&out, &o.capture.pdf)?;
+                println!("independent clean build: {} passes, equal = {} {:?}", o.passes, d.equal, d.differences.iter().take(3).collect::<Vec<_>>());
+                let _ = std::fs::remove_dir_all(&tmp);
+                if !d.equal || !converged {
+                    std::process::exit(1);
+                }
+            }
         }
         Cmd::GenBook { pages, variant, fonts, seed, out } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;

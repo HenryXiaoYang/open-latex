@@ -66,6 +66,17 @@ local function nfss_tokens(ctx)
     n.enc or "TU", n.family, n.series or "m", n.shape or "n", n.size or "10", n.baselineskip or "12pt")
 end
 
+-- The font selected at the server's outer level persists across requests; re-select only when
+-- the context's NFSS state differs from the last one selected (saves ~0.3-0.5 ms per request).
+local last_nfss = nil
+local function ensure_font(ctx)
+  local toks = nfss_tokens(ctx)
+  if toks == last_nfss then return false end
+  tex.runtoks(function() tex.print(toks) end)
+  last_nfss = toks
+  return true
+end
+
 -- Compile ----------------------------------------------------------------------------------------
 function S.compile(req)
   local ctx = S.contexts[req.ctx]
@@ -78,11 +89,14 @@ function S.compile(req)
     return
   end
   S.errors = {}
+  local tf0 = gettime()
+  local font_changed = ensure_font(ctx)
+  local tf1 = gettime()
   local fp0 = S.fingerprint()
   local lines = {}
   for line in (req.source .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
   if #lines > 0 and lines[#lines] == "" then lines[#lines] = nil end
-  local head = "\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\directlua{lode_serve.apply(" .. req.ctx .. ")}" .. nfss_tokens(ctx)
+  local head = "\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\directlua{lode_serve.apply(" .. req.ctx .. ")}"
   local tail = "\\par\\egroup\\endgroup"
   local t0 = gettime()
   local ok, err = pcall(tex.runtoks, function()
@@ -122,10 +136,45 @@ function S.compile(req)
     t_tex_us = math.floor((t1 - t0) * 1e6 + 0.5),
     t_traverse_us = math.floor((t2 - t1) * 1e6 + 0.5),
     t_pack_us = math.floor((t4 - t3) * 1e6 + 0.5),
+    t_font_us = math.floor((tf1 - tf0) * 1e6 + 0.5),
+    font_changed = font_changed,
     dl_bytes = #bytes,
   }
   send_result(payload, bytes)
   S.requests = S.requests + 1
+end
+
+-- Profile the replay overhead: empty runtoks, parameter replay only, head+tail without source,
+-- and a full compile of `source`, each repeated `n` times (default 50). Returns medians in us.
+function S.profile(req)
+  local ctx = S.contexts[req.ctx]
+  local n = req.n or 50
+  local function med(t) table.sort(t); return math.floor(t[(#t + 1) // 2] * 1e6 + 0.5) end
+  local function timeit(f) local r = {} for _ = 1, n do local a = gettime(); f(); r[#r + 1] = gettime() - a end return med(r) end
+  local lines = {}
+  for line in ((req.source or "") .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
+  local out = {}
+  out.empty_runtoks = timeit(function() tex.runtoks(function() tex.print("\\relax") end) end)
+  out.apply_only = timeit(function() S.apply(req.ctx) end)
+  out.fingerprint = timeit(function() S.fingerprint() end)
+  out.group_box_empty = timeit(function()
+    tex.runtoks(function() tex.print("\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\directlua{lode_serve.apply(" .. req.ctx .. ")}\\par\\egroup\\endgroup") end)
+  end)
+  out.print_source_only = timeit(function()
+    tex.runtoks(function() tex.print("\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup") tex.print(lines) tex.print("\\par\\egroup\\endgroup") end)
+  end)
+  out.full_compile = timeit(function()
+    tex.runtoks(function()
+      tex.print("\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\directlua{lode_serve.apply(" .. req.ctx .. ")}")
+      tex.print(lines)
+      tex.print("\\par\\egroup\\endgroup")
+    end)
+  end)
+  out.traverse = timeit(function() dl.paragraph(tex.box[S.boxnum]) end)
+  local r = dl.paragraph(tex.box[S.boxnum])
+  out.encode = timeit(function() dlbin.encode(r) end)
+  out.n = n
+  send{ op = "profile", req = req.req, us = out }
 end
 
 function S.stats()
@@ -159,6 +208,8 @@ function S.run(boxnum)
         send{ op = "pong" }
       elseif req.op == "stats" then
         S.stats()
+      elseif req.op == "profile" then
+        S.profile(req)
       elseif req.op == "shutdown" then
         send{ op = "bye" }
         break

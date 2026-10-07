@@ -115,6 +115,13 @@ pub unsafe extern "C" fn lode_session_request_layout(s: *mut LodeSession) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn lode_session_pause_background(s: *mut LodeSession, paused: bool) {
+    if let Some(sess) = s.as_ref() {
+        sess.0.pause_background(paused);
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn lode_session_export_pdf(s: *mut LodeSession, out_path: *const c_char) -> u64 {
     match (s.as_ref(), rstr(out_path)) {
         (Some(sess), Some(p)) => sess.0.export_pdf(p),

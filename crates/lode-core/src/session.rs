@@ -176,6 +176,9 @@ struct Shared {
     pending_signal: (Sender<()>, Receiver<()>),
     bg_signal: (Sender<BgCmd>, Receiver<BgCmd>),
     shutdown: AtomicBool,
+    /// Background passes are deferred while paused (benchmarks, host-controlled quiet periods).
+    bg_paused: AtomicBool,
+    bg_pending_while_paused: AtomicBool,
     cfg: SessionConfig,
     tl: TexLive,
     policy: Policy,
@@ -204,6 +207,7 @@ impl Session {
         let project_root = cfg.project_root.canonicalize().context("project root")?;
         let cfg = SessionConfig { project_root, ..cfg };
         std::fs::create_dir_all(&cfg.build_dir)?;
+        let cfg = SessionConfig { build_dir: cfg.build_dir.canonicalize()?, ..cfg };
         let main_text = std::fs::read_to_string(cfg.project_root.join(&cfg.main_file)).with_context(|| format!("reading {}", cfg.main_file))?;
         let mut ids = IdAllocator(0);
         let mut files = BTreeMap::new();
@@ -226,6 +230,8 @@ impl Session {
             pending_signal: unbounded(),
             bg_signal: unbounded(),
             shutdown: AtomicBool::new(false),
+            bg_paused: AtomicBool::new(false),
+            bg_pending_while_paused: AtomicBool::new(false),
             cfg,
             tl,
             policy,
@@ -386,6 +392,14 @@ impl Session {
 
     pub fn request_layout(&self) {
         self.schedule_background();
+    }
+
+    /// Defer background passes (they run when resumed). The fast path keeps working.
+    pub fn pause_background(&self, paused: bool) {
+        self.shared.bg_paused.store(paused, Ordering::SeqCst);
+        if !paused && self.shared.bg_pending_while_paused.swap(false, Ordering::SeqCst) {
+            self.shared.bg_signal.0.send(BgCmd::Pass).ok();
+        }
     }
 
     fn schedule_background(&self) {
@@ -612,9 +626,14 @@ fn background_thread(s: Arc<Shared>) {
             BgCmd::Quit => return,
             BgCmd::Export(job, out) => run_export(&s, job, out),
             BgCmd::Pass => {
-                // debounce: keep draining Pass commands until quiet
+                if s.bg_paused.load(Ordering::SeqCst) {
+                    s.bg_pending_while_paused.store(true, Ordering::SeqCst);
+                    continue;
+                }
+                // the first pass runs at once; later ones are debounced (drain Pass commands until quiet)
+                let debounce = if s.layout.lock().layout_version == 0 { Duration::from_millis(1) } else { s.cfg.debounce };
                 loop {
-                    match s.bg_signal.1.recv_timeout(s.cfg.debounce) {
+                    match s.bg_signal.1.recv_timeout(debounce) {
                         Ok(BgCmd::Pass) => continue,
                         Ok(BgCmd::Quit) => return,
                         Ok(BgCmd::Export(job, out)) => {

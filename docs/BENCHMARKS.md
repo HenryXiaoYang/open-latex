@@ -91,3 +91,30 @@ JSON.
 
 Engineering overhead outside line breaking is now dominated by the TeX replay (`\selectfont`,
 parameter assignment, `tex.runtoks`), addressed in M6.
+
+## M6 — where the time goes: the font stack, not the library
+
+Profiling the server (`profile` request, `tex/lode-serve.lua`) shows the replay machinery costs
+microseconds per request: empty `tex.runtoks` 1 µs, parameter replay 6 µs, group + `\vbox` 12 µs,
+state fingerprint 6 µs. The TeX stage is the paragraph's own typesetting. How long that takes
+depends on how the fonts are set up (`bench/tex/systematic-benchmark.tex` with different
+preambles, medians of amortized samples, this machine):
+
+| Preamble | Short | Medium | Long | Inline math |
+|---|---|---|---|---|
+| `\usepackage{microtype}` (CM/OT1, the paper's file) | 0.118 ms | 0.949 ms | 2.797 ms | 0.298 ms |
+| `[T1]{fontenc}` + `lmodern` + microtype (TFM/Type1) | 0.048 ms | 0.281 ms | 0.891 ms | 0.125 ms |
+| fontspec TeX Gyre Pagella, **`Renderer=Basic`** (luaotfload base mode) + microtype | 0.050 ms | 0.292 ms | 0.915 ms | 0.128 ms |
+| fontspec Latin Modern (default node mode) + microtype | 0.139 ms | 1.079 ms | 3.302 ms | 0.330 ms |
+| fontspec TeX Gyre Pagella (default node mode) + microtype | 0.207 ms | 1.703 ms | 5.509 ms | 0.527 ms |
+| fontspec TeX Gyre Pagella, `Renderer=HarfBuzz` + microtype | 0.206 ms | 2.219 ms | 9.695 ms | 0.644 ms |
+
+luaotfload's node mode runs OpenType shaping in Lua for every paragraph (6× the engine-native
+cost); HarfBuzz mode is slower still through the Lua glue. Base mode uses the engine's own
+ligature/kern tables and is as fast as TFM, at the price of advanced OpenType features
+(contextual alternates, complex scripts). For real-time editing of Latin text, `Renderer=Basic`
+(or TFM fonts) is the setting that keeps the 1 ms budget; the library reports the per-stage
+times so hosts can show users where a slow paragraph spends its time.
+
+The fixtures therefore come in three font setups: `*-pure-lmtfm` (paper-like TFM), `*-pure-base`
+(OpenType base mode) and `*-pure` (OpenType node mode, the fontspec default).

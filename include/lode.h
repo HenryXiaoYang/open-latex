@@ -4,6 +4,7 @@
  * Display lists are binary format v1 buffers (docs/DISPLAY_LIST.md) owned by the event. */
 #ifndef LODE_H
 #define LODE_H
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -35,6 +36,8 @@ void lode_session_close(LodeSession *session);
 char *lode_session_apply_edit(LodeSession *session, const char *path, size_t start_byte, size_t end_byte, const char *text);
 char *lode_session_set_document(LodeSession *session, const char *path, const char *text);
 void lode_session_request_layout(LodeSession *session);
+/* Defer background passes while true (fast path keeps working); pending passes run on resume. */
+void lode_session_pause_background(LodeSession *session, bool paused);
 uint64_t lode_session_export_pdf(LodeSession *session, const char *out_path);
 char *lode_session_status(LodeSession *session);              /* {"versions":{…},"convergence":{…}} */
 char *lode_session_spans(LodeSession *session, const char *path); /* JSON array of spans */
