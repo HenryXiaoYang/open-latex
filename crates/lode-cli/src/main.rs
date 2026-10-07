@@ -1,4 +1,5 @@
 use lode_core::fixtures as gen_book;
+mod serve;
 mod slice;
 mod verify;
 
@@ -49,6 +50,31 @@ enum Cmd {
         #[arg(long)]
         max_paragraphs: Option<usize>,
     },
+    /// JSON-lines session front end (commands on stdin, events on stdout).
+    Serve {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value = "main.tex")]
+        main: String,
+        #[arg(long)]
+        build: Option<PathBuf>,
+    },
+    /// Open a session, apply one edit, print the resulting paragraph update.
+    Edit {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value = "main.tex")]
+        main: String,
+        #[arg(long)]
+        byte: Option<usize>,
+        /// Insert after the first occurrence of this text.
+        #[arg(long)]
+        find: Option<String>,
+        #[arg(long, default_value = " edited")]
+        text: String,
+        #[arg(long, default_value_t = 60)]
+        wait: u64,
+    },
     GenBook {
         #[arg(long, default_value_t = 10)]
         pages: u32,
@@ -76,6 +102,8 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Serve { project, main, build } => serve::run(project, main, build)?,
+        Cmd::Edit { project, main, byte, find, text, wait } => serve::edit_once(project, main, byte, find, text, wait)?,
         Cmd::GenBook { pages, variant, fonts, seed, out } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;
             println!("wrote {}", out.display());
