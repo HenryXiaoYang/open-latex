@@ -1,0 +1,17 @@
+\documentclass[11pt]{book}
+\usepackage{fontspec}\setmainfont{TeX Gyre Pagella}
+\usepackage{microtype}
+\begin{document}
+\setbox0\hbox{1 Wasp}
+\directlua{dofile("e8.lua")}
+\directlua{texio.write_nl("term and log", "E8 nextid before loop=" .. font.nextid())}
+\newcount\n \n=0
+\loop\ifnum\n<40
+  \begingroup\fontencoding{TU}\fontfamily{TeXGyrePagella(0)}\fontseries{m}\fontshape{n}\fontsize{10.95}{13.6pt}\selectfont
+  \setbox0\vbox{\hsize=300pt Hello \emph{world} and $x^2+y_1$ math.\par}\endgroup
+  \advance\n by 1
+  \ifnum\n=1 \directlua{texio.write_nl("term and log", "E8 nextid after 1=" .. font.nextid())}\fi
+  \ifnum\n=2 \directlua{texio.write_nl("term and log", "E8 nextid after 2=" .. font.nextid())}\fi
+\repeat
+\directlua{texio.write_nl("term and log", "E8 nextid after 40=" .. font.nextid())}
+\end{document}

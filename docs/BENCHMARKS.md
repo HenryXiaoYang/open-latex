@@ -48,3 +48,28 @@ LODE_BENCH_CSV=../results/run.csv lualatex -interaction=nonstopmode -output-dire
 lualatex -interaction=nonstopmode -output-directory=../../build/bench stability-benchmark.tex
 ```
 `LODE_BENCH_INNER`, `LODE_BENCH_WARMUP`, `LODE_BENCH_SAMPLES` override the sample plan.
+
+## M1 — vertical slice (warm persistent server, 10-page `pure` fixture)
+
+`lode slice --project build/fx/book-10-pure --edits 300`. Paragraph: 3 typeset lines, 166 glyphs,
+TeX Gyre Pagella 10.95 pt, microtype on, inline math. Host side in Rust (release build), JSON
+display list (provisional format), each edit toggles a trailing word, 2 ms pause between edits.
+
+| Stage | median | P95 |
+|---|---|---|
+| TeX (context replay + macro expansion + line breaking + box) | 1.47 ms | 1.98 ms |
+| Traversal (`lode-dl.lua`) | 0.25 ms | 0.45 ms |
+| Serialization (JSON, provisional) | 1.21 ms | 1.77 ms |
+| IPC + host-side parse | ≈ 0.54 ms | — |
+| **Round trip, individual edits** | **3.46 ms** | 4.70 ms |
+| Round trip, amortized (20 back-to-back) | 3.53 ms | 3.73 ms |
+
+Other numbers: server start (preamble with fontspec + microtype) 0.9–1.0 s; first compile 44–48 ms
+(font instances for italics/bold/math are loaded once); ping round trip 0.2–0.4 ms; instrumented
+full compile of the 10-page book 1.6 s, clean compile 1.45 s.
+
+Where the time goes relative to the paper's medium round trip (6.11 ms): line breaking proper for a
+3-line paragraph is ≈ 0.6 ms on this machine, so the TeX stage carries ≈ 1 ms of replay overhead
+(`\selectfont`, parameter assignment, `tex.runtoks`), and JSON serialization plus parsing is a
+further ≈ 1.9 ms. The binary format (M5) and context-replay caching target bringing the round trip
+under 1.5 ms for this paragraph; the short-paragraph gate stays `1.0 ms × h`.

@@ -100,6 +100,45 @@ fn sentence(rng: &mut Rng, pure_math_ok: bool) -> String {
     s
 }
 
+/// Greedy word wrap that never splits inside `$...$` or `{...}` groups.
+pub fn wrap(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut col = 0usize;
+    let mut token = String::new();
+    let mut depth_brace = 0i32;
+    let mut in_math = false;
+    let flush = |token: &mut String, out: &mut String, col: &mut usize| {
+        if token.is_empty() {
+            return;
+        }
+        if *col > 0 && *col + 1 + token.len() > width {
+            out.push('\n');
+            *col = 0;
+        } else if *col > 0 {
+            out.push(' ');
+            *col += 1;
+        }
+        out.push_str(token);
+        *col += token.len();
+        token.clear();
+    };
+    for ch in text.chars() {
+        match ch {
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            '$' => in_math = !in_math,
+            _ => {}
+        }
+        if ch == ' ' && depth_brace == 0 && !in_math {
+            flush(&mut token, &mut out, &mut col);
+        } else {
+            token.push(ch);
+        }
+    }
+    flush(&mut token, &mut out, &mut col);
+    out
+}
+
 /// A body paragraph. Returns (text, word_estimate).
 pub fn paragraph(rng: &mut Rng, sentences: u64, math: bool) -> (String, usize) {
     let mut p = String::new();
@@ -173,7 +212,7 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
                 p.push_str(" See~\\cite{knuth1981}.");
             }
         }
-        let _ = writeln!(body, "{}\n", p);
+        let _ = writeln!(body, "{}\n", wrap(&p, 78));
         para_idx += 1;
         if mixed {
             if rng.chance(50) {

@@ -684,6 +684,7 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "hex",
+ "libc",
  "lode-dl",
  "log",
  "nix",

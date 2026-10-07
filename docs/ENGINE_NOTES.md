@@ -15,3 +15,13 @@ Experiments live in `tex/experiments/`; run them from that directory with
 
 Open items carried into M1: E6 (unit of `expansion_factor`, confirmed against the PDF), E8 (glue rounding),
 E9 (`tex.print` vs file injection), E10 (long-run stability of the serve loop).
+
+## M1 additions
+
+| Id | Question | Result |
+|---|---|---|
+| E8 | Which glyph width does the engine use, and do font ids grow under repeated `\selectfont`? | `font.getfont(f).characters[c].width` can be fractional (luaotfload scales in floating point, e.g. 358809.5) while the engine uses the rounded integer; `node.direct.getwidth(glyph)` returns that engine width and agrees with `node.hpack`. Font ids grow once on the first compile (math fonts, 28 → 41) and then stay constant over 40 (and later 400) compiles. |
+| E9 | What is `expansion_factor` on kern nodes? | Not a ratio: it is `ex_kern`, the precomputed expansion **amount in sp** (e.g. kern −14352 carries −287 at 2 % shrink). LuaTeX's backend advances by `width + ex_kern` (`pdflistout.c`, `kern_width`). Glyph nodes carry the ratio in millionths (`fix_expand_value(f, e) * 1000`, e.g. ±20000 for 2 %), and the advance is `round_xn_over_d(w, 1000 + ef/1000, 1000)` (`texfont.c`, `calc_char_width`). |
+| E10 | Does the traversal reproduce the backend's cursor exactly? | **Yes, 0 sp difference on 369/369 glyphs** across lines with expansion factors −20000, −4000, 0, 3000, 20000, including font kerns, inter-word glue, inline math and italics. Method: a zero-width `late_lua` whatsit is inserted before every glyph in `post_linebreak_filter`; at shipout it runs `pdf.getpos()`, which is the backend's own position. This "backend oracle" is independent of both the traversal and any PDF parsing and is kept as a verification tool (`tex/experiments/e10-oracle.tex`). |
+| E11 | Page origin | The shipout box sits at (1in + `\hoffset`, 1in + `\voffset`) from the page's top-left; confirmed against PDF `Tm` operands (117.828 bp / 138.624 bp) to the 3 decimals LuaTeX writes. |
+| — | How far is LuaTeX's *PDF* from its own cursor? | The PDF writer emits `TJ` adjustments in integer thousandths of the text-space unit, so glyph origins deviate from the backend cursor by up to one TJ unit (= font size / 1000 bp; measured max 0.0103 bp vs a 0.0109 bp quantum at 10.95 pt), independent of expansion. Glyphs placed directly by `Tm` match to the written precision (10⁻³ bp). Rules are written as stroked lines (`cm`, `w`, `m`, `l`, `S`), not `re` rectangles. |

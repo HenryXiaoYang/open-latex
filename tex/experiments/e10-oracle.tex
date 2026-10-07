@@ -1,0 +1,14 @@
+\documentclass[11pt]{book}
+\usepackage{fontspec}\setmainfont{TeX Gyre Pagella}
+\usepackage{microtype}
+\directlua{dofile("e10.lua")}
+\AddToHook{shipout/before}{\directlua{E10.shipout(\number\ShipoutBox)}}
+\AddToHook{shipout/after}{\directlua{E10.report()}}
+\begin{document}
+From produces. Quickly word nearly nearly editor identical global while every
+word AVAST Tyrant. Awkward wave AWAY from the typical kerned pairs, To Vo Wa Ya
+produce font kerns in this paragraph of text that is long enough to wrap and
+be expanded or shrunk by microtype in its lines when typeset at book width.
+Another sentence with \emph{italic words} and $x^2 + y^2 = z^2$ inline math,
+followed by more prose so that several lines get different expansion factors.
+\end{document}
