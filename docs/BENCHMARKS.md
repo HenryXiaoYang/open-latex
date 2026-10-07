@@ -146,3 +146,32 @@ server now serves each request in two halves around a TeX-level `\loop`, with a 
 over thousands of compiles. (2) Host-side per-edit work is independent of document size:
 windowed re-segmentation, incremental line table, in-place splice (median 37 µs on a 3700-span
 buffer); before that fix the 300-page round trip was 7 ms with a 0.5 ms TeX stage.
+
+## M6 — results (final run, `bench/results/roundtrip-20261007-1547.md`)
+
+Hardware factor this run: h = 1.35 (in-engine short 0.124 ms, medium 0.947 ms vs the paper's
+0.17 / 0.70 ms). Warm session, 300 individual edits per cell (2 ms apart) and 30 × 100
+back-to-back for the amortized figure; host measured from `apply_edit` to the `ParagraphUpdate`
+in hand (binary display list decoded).
+
+**Paper-like setup (`lm-tfm`: T1 Latin Modern, microtype), individual-keystroke medians / amortized:**
+
+| Pages | Short (1 line) | Medium (4 lines) | Long (10–11 lines) | Inline math (3 lines) |
+|---|---|---|---|---|
+| 10 | 0.694 / 0.398 ms | 1.409 / 1.183 ms | — | 1.106 / 0.960 ms |
+| 100 | 0.740 / 0.366 ms | 1.524 / 1.307 ms | 2.472 / 2.263 ms | 1.260 / 0.976 ms |
+| 300 | 0.762 / 0.527 ms | 1.518 / 1.327 ms | 2.445 / 2.377 ms | 1.352 / 1.205 ms |
+| paper round trip | 0.79 ms | 6.11 ms | — | — |
+
+Stage medians at 300 pages (short / medium): TeX 0.17 / 0.58 ms, traversal + binary
+serialization 0.08 / 0.35 ms, IPC + host 0.51 / 0.58 ms.
+
+**OpenType base mode (`pagella-base`)** is within noise of the TFM numbers (short 0.73, medium
+1.46, long 2.70 ms at 300 pages). **OpenType node mode (`pagella`, fontspec default)** keeps the
+same size independence but pays luaotfload's Lua shaping in the TeX stage: short 1.04, medium
+4.13, long 9.58 ms at 300 pages (TeX stage 0.42 / 3.21 / 8.11 ms).
+
+All 13 gates pass: size-independence ratios 1.07–1.22, short amortized 0.527 ≤ 1.35 ms,
+short individual 0.762 ≤ 2.03 ms, P95/median 1.24, medium 1.518 ≤ 8.26 ms, medium traversal +
+serialization 0.354 ≤ 0.5 ms, IPC + host overhead 0.51 / 0.58 ≤ 0.68 ms. Overhead share
+(everything outside the TeX stage) is 76 % for short and 62 % for medium — reported, see above.
