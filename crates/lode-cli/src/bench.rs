@@ -165,7 +165,7 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
                 bail!("edit not routed fast: {:?}", r.reasons);
             }
             let (ev, others) = session.wait_for(Duration::from_secs(30), |e| matches!(e, Event::ParagraphUpdate { .. }));
-            let Some(Event::ParagraphUpdate { timing, dl, status, .. }) = ev else {
+            let Some(Event::ParagraphUpdate { timing, dl, status, diagnostics, .. }) = ev else {
                 let seen: Vec<String> = others.iter().map(|e| match e {
                     Event::EngineState { state, reason, .. } => format!("EngineState {state} {reason:?}"),
                     Event::BackgroundScheduled { reasons, .. } => format!("BackgroundScheduled {reasons:?}"),
@@ -175,7 +175,7 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
                 bail!("no paragraph update for par {pid} ({cat}); events seen: {seen:?}; edit result: {:?}", r.reasons)
             };
             if status != "ok" && status != "ok_degraded" {
-                bail!("status {status}");
+                bail!("status {status} for {cat} par {pid} (edit {:?} at {pos}): {:?}", if *toggled { "insert" } else { "delete" }, diagnostics.iter().map(|d| format!("{} | {}", d.message, d.context.clone().unwrap_or_default().chars().take(200).collect::<String>())).collect::<Vec<_>>());
             }
             Ok((t0.elapsed().as_secs_f64() * 1e3, timing.tex_us as f64 / 1e3, timing.traverse_us as f64 / 1e3, timing.pack_us as f64 / 1e3, dl.glyph_count()))
         };
