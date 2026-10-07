@@ -148,7 +148,9 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
             eprintln!("  {name}: no eligible paragraph for category {cat}");
             continue;
         };
-        let sp = spans.iter().find(|s| s.id.0 == pid).unwrap().clone();
+        // positions are read fresh: earlier categories may have shifted later spans
+        let spans_now = session.spans("main.tex");
+        let sp = spans_now.iter().find(|s| s.id.0 == pid).unwrap().clone();
         let pos = sp.range.start + text.find(' ').unwrap_or(0);
         let mut total = Vec::new();
         let mut tex = Vec::new();
@@ -199,6 +201,10 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
                 do_edit(&session, &mut toggled)?;
             }
             amort.push(t0.elapsed().as_secs_f64() * 1e3 / inner as f64);
+        }
+        // leave the paragraph as it was (the toggle may have ended in the inserted state)
+        if toggled {
+            do_edit(&session, &mut toggled)?;
         }
         let st = stats(&total);
         let stx = stats(&tex);
