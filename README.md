@@ -35,6 +35,10 @@ an independent clean build on the fixtures.
 | API | Rust `Session` + C ABI (`include/lode.h`) + JSON-lines `lode serve` — `docs/API.md` |
 | Benchmarks | paper replica, per-stage round trips on 10/100/300-page books in three font setups, hardware-qualified gates — `docs/BENCHMARKS.md` |
 
+## License
+
+MIT, see `LICENSE`. The vendored upstream benchmark in `bench/upstream/` keeps its own MIT license.
+
 ## Layout
 
 | Path | Contents |

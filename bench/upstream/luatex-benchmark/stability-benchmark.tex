@@ -1,0 +1,51 @@
+% stability-benchmark.tex
+% Reproduces the "no degradation over 500 consecutive in-session compiles"
+% table (§"Why one paragraph is enough"): per-paragraph time at the start,
+% middle, and end of a 500-compile session, for a short and a multi-line
+% paragraph.
+%
+% Timing is amortized (each window is 50 consecutive compiles, divided by 50)
+% because os.gettimeofday() resolves only ~1 ms on Windows. The point is that
+% the late windows are no slower than the early ones — no engine degradation.
+%
+% Run with:  lualatex stability-benchmark.tex
+\documentclass{book}
+\usepackage{microtype}
+
+\directlua{dofile("bench-lib.lua")}
+\directlua{SW = {}; MW = {}}
+
+\newcount\inner
+
+% \buildN : build \thebody \inner times in a 345 pt \vbox (line breaking only)
+\def\thebody{}
+\def\buildN{%
+  \ifnum\inner>0
+    \setbox0=\vbox{\hsize=345pt \thebody\par}%
+    \advance\inner by -1
+    \expandafter\buildN
+  \fi
+}
+
+% \windowinto{<lua table>}{<count>} : time <count> compiles, append the mean
+\def\windowinto#1#2{%
+  \inner=#2
+  \directlua{_bt0 = os.gettimeofday()}%
+  \buildN
+  \directlua{table.insert(#1, (os.gettimeofday() - _bt0) * 1000 / #2)}%
+}
+% \quiet{<count>} : build <count> compiles without timing (advance position)
+\def\quiet#1{\inner=#1 \buildN}
+
+\begin{document}
+
+% Short paragraph: windows 1-50, 226-275, 451-500 of a 500-compile run
+\def\thebody{The quick brown fox jumps over the lazy dog.}
+\windowinto{SW}{50}\quiet{175}\windowinto{SW}{50}\quiet{175}\windowinto{SW}{50}
+
+% Multi-line (10+ line) paragraph
+\def\thebody{\directlua{for i = 1, 10 do tex.sprint("Sentence " .. i .. " is part of a long paragraph designed to wrap onto many lines in a standard book column width. ") end}}
+\windowinto{MW}{50}\quiet{175}\windowinto{MW}{50}\quiet{175}\windowinto{MW}{50}
+
+\directlua{stability_report(SW, MW)}
+\end{document}

@@ -1,0 +1,21 @@
+% paragraph-benchmark.tex
+% Self-contained single-paragraph timing MWE.
+% Run with:  lualatex paragraph-benchmark.tex
+% then read the "Paragraph: X.XX ms" line in the terminal output.
+%
+% NOTE: we deliberately avoid string.format("%.2f", ...) inside \directlua.
+% TeX reads '%' as a comment character, so a literal '%' in inline Lua
+% truncates the code ("unfinished string near <eof>"). We round by hand
+% instead. (For non-trivial Lua, put it in a .lua file and dofile() it.)
+\documentclass{book}
+\usepackage{microtype}
+\begin{document}
+\directlua{t0 = os.gettimeofday()}%
+The quick brown fox jumps over the lazy dog.
+\par
+\directlua{
+  local ms = (os.gettimeofday() - t0) * 1000
+  local rounded = math.floor(ms * 100 + 0.5) / 100
+  texio.write_nl("Paragraph: " .. rounded .. " ms")
+}
+\end{document}

@@ -175,3 +175,21 @@ All 13 gates pass: size-independence ratios 1.07–1.22, short amortized 0.527 �
 short individual 0.762 ≤ 2.03 ms, P95/median 1.24, medium 1.518 ≤ 8.26 ms, medium traversal +
 serialization 0.354 ≤ 0.5 ms, IPC + host overhead 0.51 / 0.58 ≤ 0.68 ms. Overhead share
 (everything outside the TeX stage) is 76 % for short and 62 % for medium — reported, see above.
+
+## Upstream benchmark (texlode/luatex-benchmark, vendored verbatim in `bench/upstream/`)
+
+The paper's own scripts, run unmodified on this machine (TeX Live 2026). `lode bench` uses this
+`systematic-benchmark.tex` to derive the hardware factor; our replica in `bench/tex/` remains for
+single-edit timings and CSV output but uses different paragraph texts.
+
+| Category (upstream text) | Paper | Here |
+|---|---|---|
+| Short ("Hello world.") | 0.17 ms | 0.055 ms |
+| Medium | 0.70 ms | 0.956 ms |
+| Long (10 sentences) | 1.99 ms | 2.664 ms |
+| Inline math | 0.20 ms | 0.246 ms |
+| Display math | 0.11 ms | 0.144 ms |
+
+`paragraph-benchmark.tex` (single cold compile): 0.45 ms. `stability-benchmark.tex`: short
+0.119 / 0.115 / 0.113 ms and multi-line 2.545 / 2.543 / 2.545 ms over compiles 1–50 / 226–275 /
+451–500 — no degradation, matching the paper's Table 2 pattern.

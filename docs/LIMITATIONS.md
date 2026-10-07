@@ -1,5 +1,34 @@
 # Limitations (v1)
 
+## What updates in real time, and what does not
+
+"Real time" means the per-keystroke fast path (≈ 1 ms class): the edited paragraph is re-typeset
+alone and its display list replaces it on screen immediately. Everything else is updated by the
+background full compile, which takes as long as a LuaLaTeX run of the whole document (≈ 2 s for
+10 pages, ≈ 5–15 s for 300 pages here, 2–3 passes when references change) and then arrives as a
+`LayoutUpdate`. The host shows the edited source immediately in its editor pane either way; the
+question is when the *typeset* view catches up.
+
+| Content being edited | Typeset update | Why |
+|---|---|---|
+| Body text, font switches (`\emph`, `\textbf`, …), accents, colors | **real time** | fast path |
+| Inline math `$…$` from the allow-listed vocabulary | **real time** | fast path |
+| A paragraph that changes its line count (grows/shrinks) | paragraph in real time; following material after the next background pass | page breaks are global; `pagination_stale` says so |
+| Display math `\[…\]`, equation environments | background (seconds) | ends the paragraph in TeX; not isolated by `\vbox` replay |
+| Tables (`tabular`), lists, theorem-like environments | background | environments are background-only in v1 |
+| Figures/images, captions, floats | background | float placement is global; `\includegraphics` paragraphs are not allow-listed |
+| TikZ/PGF diagrams | background, and the page renders through the **PDF fallback** | `\pdfliteral` drawing is not representable in the display list |
+| Footnotes, `\ref`/`\cite`/`\label`, counters, headings | background | page-global state |
+| Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
+| Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
+
+So the paper's demo items map as follows: typing text and inline math — yes, real time; moving
+paragraphs, adjusting tables, images and fonts "instantly" — not in this v1, those are
+background-path updates (correct, versioned, but seconds rather than milliseconds). Extending the
+fast path to table cells, display-math blocks and figure boxes is possible with the same
+mechanism (capture a unit's context, re-typeset it in isolation, overlay it) and is the main item
+for a v2.
+
 **Fast path scope.** Only body paragraphs built from the allow-list in `eligibility.rs` take the
 per-keystroke path: plain text, font switches, inline math from a fixed vocabulary, colors,
 accents and symbols. Everything else — including any macro defined in the preamble unless the

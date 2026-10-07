@@ -1,0 +1,79 @@
+% systematic-benchmark.tex
+% Vanilla-LuaLaTeX reproduction of the per-paragraph timing table (§3):
+% median / P5 / P95 over RUNS measured in-session compiles per category,
+% after WARMUP discarded runs.
+%
+% Run with:  lualatex systematic-benchmark.tex
+% Summary is written to the terminal and to systematic-benchmark.log.
+%
+% Clean-room, engine-independent: times Knuth-Plass line breaking inside a
+% \vbox at a fixed 345 pt column, on stock TeX Live, no texlode code. Sample
+% strings, column width (345 pt), run count (30), warmup (5), and the
+% percentile index rule mirror the internal paper-benchmarks harness so the
+% two are directly comparable. This harness measures line breaking only; the
+% paper's table is measured inside texlode's resident engine (line break +
+% node traversal), so expect the same order of magnitude and length-
+% dependence, corroborating the paper's pipeline breakdown.
+%
+% Statistics/reporting live in bench-lib.lua (loaded below) so that '%' and
+% '#' are not interpreted by TeX.
+\documentclass{book}
+\usepackage{microtype}
+\usepackage{amsmath}
+
+\directlua{dofile("bench-lib.lua")}
+
+% Each "sample" is the MEAN of K consecutive in-session compiles (amortized
+% timing). os.gettimeofday() resolves ~1 ms on Windows, but vanilla line
+% breaking is faster than that, so a single compile reads as 0/1/2 ms. Timing
+% K=1000 compiles and dividing recovers sub-millisecond precision. We then
+% report median / P5 / P95 over RUNS such samples, after WARMUP discarded.
+\newcount\warmup \warmup=5
+\newcount\runs   \runs=30
+\newcount\K      \K=100
+\newcount\batch
+\newcount\inner
+
+% \buildN : build the current paragraph (\thebody) \K times in a 345 pt \vbox,
+% measuring line breaking only (isolated from the page builder).
+\def\thebody{}
+\def\buildN{%
+  \ifnum\inner>0
+    \setbox0=\vbox{\hsize=345pt \thebody\par}%
+    \advance\inner by -1
+    \expandafter\buildN
+  \fi
+}
+
+% \benchcategory{<name>}{<body>} : WARMUP+RUNS batches of K compiles, then report
+\def\benchcategory#1#2{%
+  \def\thebody{#2}%
+  \directlua{_BT = {}}%
+  \batch=0
+  \loop
+    \directlua{_bt0 = os.gettimeofday()}%
+    \inner=\K \buildN
+    \directlua{table.insert(_BT, (os.gettimeofday() - _bt0) * 1000 / \the\K)}%
+    \advance\batch by 1
+  \ifnum\batch<\numexpr\warmup+\runs\relax\repeat
+  \directlua{report("#1", \the\warmup)}%
+}
+
+\begin{document}
+
+% Exact sample strings from scripts/paper-benchmarks.ts
+\benchcategory{Short}{Hello world.}
+
+\benchcategory{Medium}{The quick brown fox jumps over the lazy dog. This sentence adds more content to create a multi-line paragraph that wraps across several lines in a typical book column. Additional text ensures we test realistic paragraph lengths that are common in academic and book publishing. The goal is to verify that medium-length paragraphs compile quickly and predictably.}
+
+\benchcategory{Long}{\directlua{for i = 1, 10 do tex.sprint("Sentence " .. i .. " is part of a long paragraph designed to wrap onto many lines in a standard book column width. ") end}}
+
+\benchcategory{Inline math}{The equation $E = mc^2$ and the integral $\int_0^1 x^2\,dx = \frac{1}{3}$ are fundamental results.}
+
+\benchcategory{Display math}{Consider the following result: $$\sum_{k=1}^{n} k = \frac{n(n+1)}{2}$$}
+
+\directlua{
+  texio.write_nl("")
+  texio.write_nl("==== systematic-benchmark summary (vanilla LuaLaTeX, 345pt) ====")
+}
+\end{document}

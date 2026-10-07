@@ -33,34 +33,26 @@ pub fn stats(v: &[f64]) -> Stats {
     Stats { n, median: at(0.5), p5: at(0.05), p95: at(0.95), min: s[0], max: s[n - 1] }
 }
 
-/// Run bench/tex/systematic-benchmark.tex and return per-category amortized medians (ms).
-pub fn linebreak(tl: &TexLive, repo: &Path, out_dir: &Path, quick: bool) -> Result<BTreeMap<String, (f64, f64)>> {
+/// Run the paper's own `systematic-benchmark.tex` (vendored verbatim in
+/// bench/upstream/luatex-benchmark) and return per-category (median, p95) in ms, keyed by our
+/// category names. `quick` is ignored: the upstream script fixes its own sample plan (30 × 100).
+pub fn linebreak(tl: &TexLive, repo: &Path, out_dir: &Path, _quick: bool) -> Result<BTreeMap<String, (f64, f64)>> {
     std::fs::create_dir_all(out_dir)?;
     let out_dir = &out_dir.canonicalize()?;
-    let csv = out_dir.join("systematic-benchmark.csv");
-    let _ = std::fs::remove_file(&csv);
-    let mut cmd = tl.lualatex_cmd(&repo.join("bench/tex"));
-    cmd.arg("-interaction=nonstopmode").arg(format!("--output-directory={}", out_dir.display())).arg("systematic-benchmark.tex").env("LODE_BENCH_CSV", &csv);
-    if quick {
-        cmd.env("LODE_BENCH_INNER", "20").env("LODE_BENCH_SAMPLES", "10").env("LODE_BENCH_WARMUP", "2");
-    }
-    let out = cmd.output().context("running systematic benchmark")?;
-    if !csv.exists() {
-        bail!("benchmark produced no CSV; lualatex exit {:?}\n{}", out.status, String::from_utf8_lossy(&out.stdout).chars().rev().take(800).collect::<String>().chars().rev().collect::<String>());
-    }
+    let dir = repo.join("bench/upstream/luatex-benchmark");
+    let mut cmd = tl.lualatex_cmd(&dir);
+    cmd.arg("-interaction=nonstopmode").arg(format!("--output-directory={}", out_dir.display())).arg("systematic-benchmark.tex");
+    let out = cmd.output().context("running upstream systematic-benchmark.tex")?;
+    let log = std::fs::read_to_string(out_dir.join("systematic-benchmark.log")).unwrap_or_default();
+    let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), log);
+    let re = regex::Regex::new(r"(?m)^(Short|Medium|Long|Inline math|Display math)\s+median=\s*([0-9.]+) ms\s+P5=\s*([0-9.]+)\s+P95=\s*([0-9.]+)").unwrap();
     let mut m = BTreeMap::new();
-    for line in std::fs::read_to_string(&csv)?.lines().skip(1) {
-        let f: Vec<&str> = line.split(',').collect();
-        if f.len() >= 4 {
-            let med: f64 = f[2].parse().unwrap_or(0.0);
-            let p95: f64 = f[4].parse().unwrap_or(0.0);
-            let e = m.entry(f[0].to_string()).or_insert((0.0, 0.0));
-            if f[1] == "amortized" {
-                e.0 = med;
-            } else {
-                e.1 = p95; // single-edit p95
-            }
-        }
+    for c in re.captures_iter(&text) {
+        let key = match &c[1] { "Short" => "short", "Medium" => "medium", "Long" => "long", "Inline math" => "inline-math", _ => "display-math" };
+        m.insert(key.to_string(), (c[2].parse().unwrap_or(0.0), c[4].parse().unwrap_or(0.0)));
+    }
+    if m.len() < 5 {
+        bail!("could not parse the upstream benchmark summary; lualatex exit {:?}; tail:\n{}", out.status, text.chars().rev().take(600).collect::<String>().chars().rev().collect::<String>());
     }
     Ok(m)
 }
@@ -253,7 +245,7 @@ pub fn gates(report: &mut BenchReport) {
 pub fn write_markdown(report: &BenchReport, path: &Path) -> Result<()> {
     let mut md = String::new();
     md.push_str(&format!("# Round-trip benchmark\n\nMachine: {}  \nHardware factor h = {:.2} (in-engine line breaking vs the paper's Table 1)\n\n", report.machine, report.hardware_factor));
-    md.push_str("## In-engine line breaking (paper Table 1 replica)\n\n| Category | Paper | Here (amortized median) |\n|---|---|---|\n");
+    md.push_str("## In-engine line breaking (upstream `texlode/luatex-benchmark`, vendored in bench/upstream)\n\n| Category | Paper | Here (amortized median) |\n|---|---|---|\n");
     for (cat, paper) in PAPER_LINEBREAK_MS {
         if let Some((med, _)) = report.linebreak_ms.get(cat) {
             md.push_str(&format!("| {cat} | {paper:.2} ms | {med:.3} ms |\n"));
@@ -292,7 +284,7 @@ pub fn run_all(projects: Vec<PathBuf>, categories: Vec<String>, samples: usize, 
     let repo = tl.lode_texdir.parent().unwrap().to_path_buf();
     std::fs::create_dir_all(&build)?;
     std::fs::create_dir_all(&out)?;
-    println!("== in-engine line breaking (paper Table 1 replica)");
+    println!("== in-engine line breaking (upstream texlode/luatex-benchmark systematic-benchmark.tex)");
     let lb = linebreak(&tl, &repo, &build.join("linebreak"), quick)?;
     for (cat, paper) in PAPER_LINEBREAK_MS {
         if let Some((med, _)) = lb.get(cat) {

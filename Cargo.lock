@@ -673,6 +673,7 @@ dependencies = [
  "lode-dl",
  "lode-verify",
  "log",
+ "regex",
  "serde",
  "serde_json",
 ]
