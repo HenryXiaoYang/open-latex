@@ -1,13 +1,13 @@
 //! M1 vertical slice: capture → persistent server → display list → independent PDF check → timing.
 
 use anyhow::{bail, Context, Result};
-use lode_core::capture::{run_capture, CapturedParagraph, CaptureResult};
+use lode_core::capture::{run_capture, CaptureResult};
 use lode_core::engine::{FastServer, Response};
 use lode_core::texlive::TexLive;
 use lode_dl::{DisplayList, Item, Line, SP_PER_BP};
 use lode_verify::compare::compare_page;
 use lode_verify::pdftext;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub struct SliceOpts {
@@ -19,25 +19,6 @@ pub struct SliceOpts {
     pub json_out: Option<PathBuf>,
 }
 
-/// Source text of a captured top-level paragraph: lines start..end of its file, trimmed of
-/// the trailing blank line that ended it.
-pub fn paragraph_source(project: &Path, p: &CapturedParagraph) -> Result<String> {
-    let file = p.file.clone().unwrap_or_else(|| "./main.tex".into());
-    let path = project.join(file.trim_start_matches("./"));
-    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let lines: Vec<&str> = text.lines().collect();
-    let start = p.start_line().context("paragraph has no start line")? as usize;
-    let end = p.end_line as usize;
-    if start == 0 || end < start || end > lines.len() + 1 {
-        bail!("bad line range {start}..{end}");
-    }
-    let mut out: Vec<&str> = lines[start - 1..end.min(lines.len())].to_vec();
-    while out.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        out.pop();
-    }
-    Ok(out.join("\n"))
-}
-
 fn stats(v: &mut Vec<f64>) -> (f64, f64, f64, f64) {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
@@ -47,8 +28,8 @@ fn stats(v: &mut Vec<f64>) -> (f64, f64, f64, f64) {
 
 /// Compare the fast-path paragraph DL (paragraph coordinates) with the capture page lines for
 /// the same paragraph (page coordinates), sp-exact after translating by the first line's origin.
-fn compare_with_capture(fast: &DisplayList, page: &DisplayList, par: i64) -> (usize, usize, Vec<String>) {
-    let ref_lines: Vec<&Line> = page.lines_of(par);
+fn compare_with_capture(fast: &DisplayList, page: &DisplayList, unit: i64) -> (usize, usize, Vec<String>) {
+    let ref_lines: Vec<&Line> = page.rows_of(unit);
     let mut notes = Vec::new();
     if ref_lines.len() != fast.lines.len() {
         notes.push(format!("line count differs: fast {} vs capture {}", fast.lines.len(), ref_lines.len()));
@@ -103,28 +84,30 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     let clean = run_capture(&tl, &project, &opts.main, &build.join("clean"), false)?;
     println!("clean build: {:.2}s, exit_ok={}", clean.wall.as_secs_f64(), clean.exit_ok);
 
-    let candidates: Vec<&CapturedParagraph> = cap.json.paragraphs.iter().filter(|p| p.is_top_level() && p.begin.is_some() && p.placements.as_ref().map(|v| !v.is_empty()).unwrap_or(false)).collect();
-    if candidates.is_empty() {
-        bail!("no top-level paragraphs with placements");
-    }
-    let pick = opts.paragraph.unwrap_or(candidates.len() / 2).min(candidates.len() - 1);
-    let para = candidates[pick];
-    let source = paragraph_source(&project, para)?;
-    let placements = para.placements.clone().unwrap_or_default();
-    let page_no = placements[0].page;
-    println!("paragraph seq={} lines {}..{} ({} typeset lines, page {}), {} chars of source", para.seq, para.start_line().unwrap_or(0), para.end_line, para.lines.unwrap_or(0), page_no, source.len());
-
-    // 3. persistent server
     let main_text = std::fs::read_to_string(project.join(&opts.main))?;
     let (preamble, _) = lode_core::split_preamble(&main_text).context("no \\begin{document}")?;
+    let policy = lode_core::eligibility::Policy::from_preamble(preamble, &[], &[]);
+    let (store, fb) = lode_core::layout::LayoutStore::offline(&cap, &project, &opts.main, &policy)?;
+    let candidates: Vec<(&lode_core::layout::EngineUnit, lode_core::ParaId)> = store.mapped_units().into_iter().filter(|(u, _)| u.kind() == "par" && u.rows() > 0 && u.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false)).collect();
+    if candidates.is_empty() {
+        bail!("no paragraph units with placements");
+    }
+    let pick = opts.paragraph.unwrap_or(candidates.len() / 2).min(candidates.len() - 1);
+    let (para, span_id) = candidates[pick];
+    let source = fb.span_text(span_id).unwrap_or("").trim_end_matches('\n').to_string();
+    let placements = para.captured.placements.clone();
+    let page_no = placements[0].page;
+    println!("unit {} lines {}..{:?} ({} rows, page {}), {} chars of source", para.uid, para.captured.begin_line, para.captured.end_line, para.rows(), page_no, source.len());
+
+    // 3. persistent server
     let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), preamble, 1)?;
     println!("server ready in {:.2}s: {}", server.startup.as_secs_f64(), server.banner);
-    server.set_context(para.seq, &para.context_json())?;
+    server.set_context(para.uid, &para.context_json())?;
     let ping = server.ping()?;
     println!("ping round trip: {:.3} ms", ping.as_secs_f64() * 1e3);
 
     // 4. first compile: fidelity checks
-    let (res, rt) = server.compile(para.seq, &source)?;
+    let (res, rt) = server.compile(para.uid, &source)?;
     if res.status == "error" {
         bail!("fast compile reported errors: {:?}", res.errors);
     }
@@ -133,7 +116,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
         res.status, fast.lines.len(), fast.glyph_count(), rt.t_tex.as_secs_f64() * 1e3, rt.t_traverse.as_secs_f64() * 1e3, rt.t_pack.as_secs_f64() * 1e3, rt.total.as_secs_f64() * 1e3, fast.flags_map());
 
     let page_dl = cap.page(page_no)?;
-    let (same, total, notes) = compare_with_capture(&fast, &page_dl, para.seq);
+    let (same, total, notes) = compare_with_capture(&fast, &page_dl, para.uid);
     println!("fast vs capture extractor: {same}/{total} glyphs identical (sp-exact, same font/index/expansion)");
     for n in &notes {
         println!("  note: {n}");
@@ -144,7 +127,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     let pdf_page = pdf_pages.iter().find(|p| p.number as i64 == page_no).context("pdf page")?;
     let quantum = 10f64.powi(-(pdf_page.decimals.max(1) as i32));
     let tol = quantum * 1.0;
-    let ref_lines = page_dl.lines_of(para.seq);
+    let ref_lines = page_dl.rows_of(para.uid);
     let rep_par = compare_page(&page_dl, pdf_page, &ref_lines, tol);
     println!("PDF check (paragraph lines, {} decimals, tol {:.4} bp): matched {}/{} glyphs, within tol {}, max |dx| {:.5} bp, max |dy| {:.5} bp, max scale err {:.6}, max advance err {:.5} bp",
         pdf_page.decimals, tol, rep_par.matched, rep_par.dl_glyphs, rep_par.within_tolerance, rep_par.max_dx_bp, rep_par.max_dy_bp, rep_par.max_scale_err, rep_par.max_advance_err_bp);
@@ -190,7 +173,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     let t_loop = Instant::now();
     for i in 0..opts.edits {
         let edited = if i % 2 == 1 { format!("{source} edit{i}") } else { source.clone() };
-        let (r, rt) = server.compile(para.seq, &edited)?;
+        let (r, rt) = server.compile(para.uid, &edited)?;
         if r.status == "error" {
             bail!("edit {i} failed: {:?}", r.errors);
         }
@@ -213,7 +196,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     for _ in 0..10 {
         let t0 = Instant::now();
         for _ in 0..20 {
-            server.compile(para.seq, &source)?;
+            server.compile(para.uid, &source)?;
         }
         amort.push(t0.elapsed().as_secs_f64() * 1e3 / 20.0);
     }
@@ -221,9 +204,9 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     println!("amortized (mean of 20 back-to-back, 10 samples): median {:.3} ms, P95 {:.3} ms", amed, ap95);
 
     // 7. error path and engine health
-    let (bad, _) = server.compile(para.seq, "Text with \\undefinedmacro inside.")?;
+    let (bad, _) = server.compile(para.uid, "Text with \\undefinedmacro inside.")?;
     println!("error path: status={} errors={:?}", bad.status, bad.errors.iter().map(|e| (e.message.clone(), e.line)).collect::<Vec<_>>());
-    let (ok_again, _) = server.compile(para.seq, &source)?;
+    let (ok_again, _) = server.compile(para.uid, &source)?;
     println!("after error: status={} lines={}", ok_again.status, ok_again.dl.as_ref().map(|d| d.lines.len()).unwrap_or(0));
     let st = server.stats()?;
     if let Response::Stats { requests, font_nextid, grouplevel, nest, .. } = &st {
@@ -232,7 +215,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     server.shutdown()?;
 
     let report = serde_json::json!({
-        "project": project, "paragraph_seq": para.seq, "source_lines": [para.start_line(), para.end_line],
+        "project": project, "paragraph_seq": para.uid, "source_lines": [para.captured.begin_line, para.captured.end_line],
         "typeset_lines": fast.lines.len(), "glyphs": fast.glyph_count(),
         "fast_vs_capture": {"identical": same, "total": total, "notes": notes},
         "pdf_check_paragraph": rep_par, "pdf_check_page": rep_page, "pdf_check_fast": rep_fast,

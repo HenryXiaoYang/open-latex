@@ -51,6 +51,12 @@ enum Cmd {
         json_out: Option<PathBuf>,
         #[arg(long)]
         max_paragraphs: Option<usize>,
+        /// Only these unit ids in layer 1 (comma separated).
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<i64>,
+        /// Print fast and capture rows of differing units.
+        #[arg(long)]
+        dump_rows: bool,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -145,8 +151,8 @@ fn main() -> anyhow::Result<()> {
         Cmd::Slice { project, main, paragraph, edits, build, json_out } => {
             slice::run(slice::SliceOpts { project, main, paragraph, edits, build, json_out })?;
         }
-        Cmd::Verify { project, main, build, dpi, raster, json_out, max_paragraphs } => {
-            let r = verify::run(verify::VerifyOpts { project, main, build, dpi, raster, json_out, max_paragraphs })?;
+        Cmd::Verify { project, main, build, dpi, raster, json_out, max_paragraphs, units, dump_rows } => {
+            let r = verify::run(verify::VerifyOpts { project, main, build, dpi, raster, json_out, max_paragraphs, units, dump_rows })?;
             if !(r.layer1_pass && r.layer2_pass && r.layer3_pass.unwrap_or(true) && r.capture_pdf_equals_clean) {
                 std::process::exit(1);
             }

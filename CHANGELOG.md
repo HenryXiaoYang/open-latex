@@ -8,6 +8,18 @@
   preamble. Short-paragraph round trip through a session: 0.63 ms → 0.40 ms on the reference
   container (docs/BENCHMARKS.md).
 - `lode probe`: latency breakdown of the fast path (direct server, in-engine profile, session).
+- Fast path generalized from paragraphs to **units**: paragraphs with display math (`\[ \]`,
+  `equation`, amsmath `align`/`gather`/`multline`), footnote marks, `\ref`/`\eqref`/`\pageref`/
+  `\cite`/`\label`; block environments (lists, `quote`, `center`, theorem-like, `figure`/`table`
+  with `\includegraphics`, `tabular`, `booktabs`, `\caption`); headings. Counters, kernel
+  switches, `\everypar` patterns and float-box state are captured and replayed; aux labels are
+  uploaded to the server; images are mapped by resource index. Rows (hlists reached through
+  vlists) replace lines as the unit of placement; fragments carry per-row positions anchored at
+  each page's first row. A per-unit fast budget (5 ms) routes slow units to the background path.
+- Display list: `LINE_UNIT`, `IMAGE_INFO` and `MATRIX` records (graphicx scaling is now exact,
+  not degraded); unit lists carry an insert count.
+- `lode gen-book --variant units` fixture; `lode verify` works per unit kind with `--units` and
+  `--dump-rows`.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

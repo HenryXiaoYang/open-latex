@@ -45,6 +45,7 @@ first frame) before or while the server starts; closing and reopening it loses f
 | op | fields | reply |
 |---|---|---|
 | `context` | `id` (int), `ctx` (object, see below) | `{"op":"ok","id":…}` |
+| `labels` | `labels`: array of `[name, body]` (`r@<label>` → `{label}{page}…`, `b@<key>` → cite text) from the last pass's aux | `{"op":"ok","id":count}` |
 | compile frame | `C <req> <ctx> <len>\n` + `<len>` source bytes (JSON `{"op":"compile","req","ctx","source"}` also accepted) | `result` frame or `fatal` |
 | `profile` | `ctx`, `source`, `n` | `{"op":"profile","us":{…}}` in-engine micro-timings (diagnostic; uses `tex.runtoks`) |
 | `ping` | — | `{"op":"pong"}` |
@@ -53,25 +54,37 @@ first frame) before or while the server starts; closing and reopening it loses f
 
 ### Context object
 
-Produced by `lode-capture` for each paragraph and forwarded verbatim:
+One per **unit** (paragraph, block environment or heading), built by the host from the capture
+of the latest pass (`EngineUnit::context_json`):
 
 ```json
-{ "ints":  {"tolerance":200, "pretolerance":100, "language":0, "lefthyphenmin":2, "...":0},
+{ "kind": "par" | "env" | "heading", "name": null | "itemize" | "figure" | "section" | …,
+  "ints":  {"tolerance":200, "pretolerance":100, "language":0, "lefthyphenmin":2, "...":0},
   "dims":  {"hsize":23592960, "parindent":1114112, "emergencystretch":0, "...":0},
   "glues": {"leftskip":[0,0,0,0,0], "parfillskip":[0,65536,0,2,0], "baselineskip":[891290,0,0,0,0], "...":[]},
   "parshape": null,
-  "everypar": "",
-  "begin": { "line": 33, "nest": 1, "font": 27,
-             "nfss": {"enc":"TU","family":"TeXGyrePagella(0)","series":"m","shape":"n","size":"10.95","baselineskip":"13.6pt"},
-             "color": "0 g 0 G", "mathversion": "normal" } }
+  "everypar": "", "nobreak": false, "afterindent": true, "noskipsec": false,
+  "counters": {"chapter":1, "section":2, "equation":3, "footnote":1, "figure":0, "...":0},
+  "begin": { "nfss": {"enc":"TU","family":"TeXGyrePagella(0)","series":"m","shape":"n","size":"10.95","baselineskip":"13.6pt"},
+             "color": "0 g 0 G" } }
 ```
+
+`everypar` must be one of the kernel's own patterns (empty, `\leftprotrusion`, the text left by
+`\@afterheading`, `\@doendpe` or `\@setminipage`); the host refuses anything else before the
+server does. `counters` are the LaTeX counters at the unit's start (replayed as local `\c@…=`
+assignments; `page` is never replayed) so equation, figure, table, footnote and theorem numbers
+come out right; after the compile every counter is restored to the server's idle value.
 
 Replay order inside the server (per compile): NFSS state is re-selected at the outer level with
 `\fontencoding…\fontsize…\selectfont` (never by raw font id, which differs per process) only when
 it differs from the previously selected one; then `\begingroup`, `\global\setbox\lodebox\vbox\bgroup`,
-Lua sets every int/dim/glue parameter and `\parshape` (`apply`), the source lines are fed through
-`tex.print`, then `\par\egroup\endgroup` and `finish`. Contexts are preprocessed when installed
-(flat parameter arrays, prebuilt font-selection string).
+Lua sets every int/dim/glue parameter and `\parshape` (`apply`), the counters, `\if@nobreak` /
+`\if@afterindent` / `\if@noskipsec` and `\everypar` are set from the context, floats get the
+state `\@xfloat` gives a float box (`\def\@captype{figure}\hsize\columnwidth\@parboxrestore\@floatboxreset`,
+the `\begin{figure}…\end{figure}` wrapper itself is stripped), the source lines are fed through
+`tex.print` (the server's own tokens use a catcode table with `@` a letter), then
+`\par\egroup\endgroup`, the idle `\if@nobreak` state and `finish`. Contexts are preprocessed when
+installed (flat parameter arrays, prebuilt token strings).
 
 ## Responses
 
@@ -90,7 +103,9 @@ JSON header:
 ```
 `t_tex_us` covers the box build (from the start of the group to `finish`), `t_traverse_us` the
 fused traversal + serialization (`t_pack_us` is kept at 0 for 0.0.1 compatibility). `stages_us` is a
-diagnostic breakdown of the server's own overhead around the box build.
+diagnostic breakdown of the server's own overhead around the box build. When the unit used
+images the header carries `"images": {index: {file, page, pages}}` (the server hooks graphicx's
+`\Gin@setfile` like the capture package does).
 followed by `dl_bytes` of binary display list (paragraph framing; empty when `status` is `error`
 and no box was produced).
 Error `line` numbers count from the first printed line; line 1 is the replay head, so source line

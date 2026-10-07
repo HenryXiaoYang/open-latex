@@ -1,0 +1,7 @@
+\input{/home/user/open-latex/fixtures/book-10-units-lmtfm/build/lode/serve/lode-preamble.tex}
+\newbox\lodebox\newcount\lodecontinue\lodecontinue=1 \edef\lodecountnum{\number\allocationnumber}\newcatcodetable\lodecct{\makeatletter\savecatcodetable\lodecct}
+\begin{document}
+\directlua{lode_serve = dofile(kpse.find_file("lode-serve.lua", "lua") or "lode-serve.lua") lode_serve.init(\number\lodebox, \lodecountnum, \number\lodecct)}
+\makeatletter\IfPackageLoadedTF{graphicx}{\AddToHook{cmd/Gin@setfile/after}{\directlua{lode_serve.image(\number\lastsavedimageresourceindex,"\luaescapestring{\Gin@base\Gin@ext}","\luaescapestring{\Gin@page}",\number\lastsavedimageresourcepages)}}}{}\makeatother
+\loop\lodestep\ifnum\lodecontinue>0 \repeat
+\end{document}

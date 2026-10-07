@@ -9,6 +9,10 @@
 --   {"l", mode, data}                                   pdf_literal whatsit (host passthrough)
 --   {"u", kind, detail}                                 unsupported node (page degraded)
 --   {"m", "on"|"off", x}                                math boundary marker
+--   {"i", index, x, y_top, width, height}               image (engine resource index)
+--   {"M", "save"|"set"|"restore", x, y, data}           pdf_save / pdf_setmatrix / pdf_restore:
+--                                                       `set` transforms what follows by the
+--                                                       matrix "a b c d" about the point (x, y)
 local M = {}
 
 local node = node
@@ -138,8 +142,9 @@ local function new_state(opts)
   return setmetatable({
     opts = opts or {}, fonts = {}, lines = {}, other = {}, cur = nil, flags = {},
     attr_par = opts and opts.attr_par, attr_line = opts and opts.attr_line,
+    attr_unit = opts and opts.attr_unit, is_insert = opts and opts.is_insert,
     glyph_attr = opts and opts.glyph_attr,
-    glyphs = 0, images = 0,
+    glyphs = 0, images = 0, inserts = 0,
   }, State)
 end
 
@@ -187,6 +192,9 @@ function State:emit(item)
     elseif t == "u" then self:bin_rec(0x24, bstr(item[2]) .. bstr(type(item[3]) == "table" and "" or item[3]))
     elseif t == "m" then self:bin_rec(0x25, pack("<Bi4", item[2] == "on" and 1 or 0, item[3]))
     elseif t == "i" then self:bin_rec(0x26, pack("<i4i4i4i4i4", item[2] or 0, item[3], item[4], item[5], item[6]))
+    elseif t == "M" then
+      local op = item[2] == "save" and 0 or (item[2] == "set" and 1 or 2)
+      self:bin_rec(0x28, pack("<Bi4i4", op, item[3], item[4]) .. bstr(item[5]))
     end
     return
   end
@@ -420,8 +428,12 @@ hlist_out = function(st, box, left, base_v)
           st:emit({ "l", -1, getfield(n, "data") }); st:flag("special")
         elseif silent_whatsit(sub) then
           -- bookkeeping whatsits (\write, luaotfload, hyperref) produce no output
-        elseif sub == ws_setmatrix or sub == ws_save or sub == ws_restore then
-          st:emit({ "u", "pdf_matrix", cur_h }); st:flag("pdf_matrix")
+        elseif sub == ws_save then
+          st:emit({ "M", "save", cur_h, base_v, "" })
+        elseif sub == ws_setmatrix then
+          st:emit({ "M", "set", cur_h, base_v, getfield(n, "data") or "" })
+        elseif sub == ws_restore then
+          st:emit({ "M", "restore", cur_h, base_v, "" })
         else
           st:emit({ "u", "whatsit", sub }); st:flag("whatsit", sub)
         end
@@ -434,7 +446,8 @@ hlist_out = function(st, box, left, base_v)
         local dir = getfield(n, "dir")
         if dir and dir ~= "TLT" and dir ~= "+TLT" and dir ~= "-TLT" then sync_out(); st:flag("dir", dir); st:emit({ "u", "dir", dir }); sync_in() end
       elseif id == ins_id then
-        sync_out(); st:flag("ins"); st:emit({ "u", "ins", cur_h }); sync_in()
+        st.inserts = st.inserts + 1
+        if not st.opts.lines_at_top then sync_out(); st:flag("ins"); st:emit({ "u", "ins", cur_h }); sync_in() end
       elseif id == adjust_id then
         sync_out(); st:flag("adjust"); st:emit({ "u", "adjust", cur_h }); sync_in()
       else
@@ -466,16 +479,29 @@ vlist_out = function(st, box, left, top)
       local par = st.attr_par and getattribute(n, st.attr_par)
       local line = par and st.attr_line and getattribute(n, st.attr_line)
       if id == hlist_id then
-        if par and par >= 0 and not st.cur then
-          st:begin_line(n, par, line, left + s, cur_v, w, h, d)
+        -- Rows: hlists reached from the traversal root through vlists only. Paragraph mode
+        -- (fast path) takes every such hlist; page mode takes those tagged with a paragraph
+        -- or a unit attribute, except lines of insert material (footnote text).
+        local is_row = false
+        local unit = nil
+        -- an empty \hbox{} (page-filling material of \clearpage) is never a row
+        local empty = h == 0 and d == 0 and getlist(n) == nil
+        if not st.cur and not empty then
+          if st.opts.lines_at_top then
+            is_row = true
+          else
+            unit = st.attr_unit and getattribute(n, st.attr_unit)
+            if unit and unit < 0 then unit = nil end
+            if (par and par >= 0) or unit then
+              is_row = true
+              -- migrated material (footnote text) stays a tagged line but belongs to no unit
+              if par and par >= 0 and st.is_insert and st.is_insert(par, unit) then unit = nil end
+            end
+          end
+        end
+        if is_row then
+          st:begin_line(n, par or 0, line or (st.nlines or #st.lines) + 1, left + s, cur_v, w, h, d, unit)
           hlist_out(st, n, left + s, cur_v)
-          st:end_line()
-        elseif st.opts.lines_at_top and not st.cur and st.depth == 0 then
-          -- paragraph mode: every top-level hlist of the vbox is a line
-          st:begin_line(n, 0, #st.lines + 1, left + s, cur_v, w, h, d)
-          st.depth = 1
-          hlist_out(st, n, left + s, cur_v)
-          st.depth = 0
           st:end_line()
         else
           hlist_out(st, n, left + s, cur_v)
@@ -558,12 +584,21 @@ vlist_out = function(st, box, left, top)
       elseif sub == ws_special then
         st:emit({ "l", -1, getfield(n, "data") }); st:flag("special")
       elseif silent_whatsit(sub) then
+      elseif sub == ws_save then
+        st:emit({ "M", "save", left, cur_v, "" })
+      elseif sub == ws_setmatrix then
+        st:emit({ "M", "set", left, cur_v, getfield(n, "data") or "" })
+      elseif sub == ws_restore then
+        st:emit({ "M", "restore", left, cur_v, "" })
       else
         st:emit({ "u", "whatsit", sub }); st:flag("whatsit", sub)
       end
     elseif id == penalty_id or id == mark_id then
     elseif id == ins_id then
-      st:flag("ins")
+      -- insert material (footnotes) is placed by the page builder; in a paragraph box it is
+      -- not drawn here (the host keeps the page's version until the next layout)
+      st.inserts = st.inserts + 1
+      if not st.opts.lines_at_top then st:flag("ins") end
     else
       st:flag("node_" .. (node.type(id) or tostring(id)))
     end
@@ -621,16 +656,17 @@ function State:emit_virtual(f, c, x, y, ef, depth)
   end
 end
 
-function State:begin_line(n, par, line, x, baseline, w, h, d)
+function State:begin_line(n, par, line, x, baseline, w, h, d, unit)
   local gs = getfield(n, "glue_set")
   if self.bin then
     self.nlines = self.nlines + 1
     self.cur = true
     self:bin_rec(0x10, pack("<i4i4i4i4i4i4i4dBB", par or 0, line or 0, x, baseline, w, h, d, gs or 0.0,
       getfield(n, "glue_sign") or 0, getfield(n, "glue_order") or 0))
+    if unit then self:bin_rec(0x12, pack("<i4i4", unit, 0)) end
     return
   end
-  self.cur = { par = par, i = line, x = x, y = baseline, w = w, h = h, d = d,
+  self.cur = { par = par, i = line, x = x, y = baseline, w = w, h = h, d = d, unit = unit,
                gs = gs, gsign = getfield(n, "glue_sign"), gorder = getfield(n, "glue_order"), items = {} }
 end
 function State:end_line()
@@ -647,7 +683,7 @@ local function result(st, kind, extra)
   local fonts = {}
   for id, d in pairs(st.fonts) do fonts[tostring(id)] = d end
   local r = { kind = kind, unit = "sp", fonts = fonts, lines = st.lines, other = st.other,
-              flags = st.flags, glyphs = st.glyphs, images = st.images }
+              flags = st.flags, glyphs = st.glyphs, images = st.images, inserts = st.inserts }
   if extra then for k, v in pairs(extra) do r[k] = v end end
   return r
 end
@@ -666,7 +702,6 @@ end
 function M.paragraph_binary(boxnode, initial_color)
   local box = todirect(boxnode)
   local st = new_state({ lines_at_top = true })
-  st.depth = 0
   st.bin = true
   st.buf = {}
   st.rn = 0
@@ -676,7 +711,7 @@ function M.paragraph_binary(boxnode, initial_color)
   vlist_out(st, box, 0, 0)
   st:bin_flush_run()
   local buf = st.buf
-  buf[#buf + 1] = pack("<Bs4", 0x01, pack("<i4i4i4i4i4i4i4i4I4I4", w, h, d, 0, 0, 0, 0, 0, st.glyphs, st.images))
+  buf[#buf + 1] = pack("<Bs4", 0x01, pack("<i4i4i4i4i4i4i4i4I4I4", w, h, d, 0, 0, 0, 0, st.inserts, st.glyphs, st.images))
   local ids = {}
   for id in pairs(st.fonts) do ids[#ids + 1] = id end
   table.sort(ids)
@@ -691,14 +726,14 @@ function M.paragraph_binary(boxnode, initial_color)
   end
   buf[#buf + 1] = pack("<Bs4", 0xFF, "")
   local body = concat(buf)
-  return pack("<c4I2I2I4I4", "LODL", 1, 0, 16 + #body, 0) .. body, st.nlines, st.glyphs, w, h, d, st.flags
+  return pack("<c4I2I2I4I4", "LODL", 1, 0, 16 + #body, 0) .. body, st.nlines, st.glyphs, w, h, d, st.flags, st.inserts
 end
 
 -- Internals exposed for profiling (lode-serve.lua `profile` op).
 M._hlist_out = function(st, box, left, base_v) return hlist_out(st, box, left, base_v) end
 M._new_state_bin = function()
   local st = new_state({ lines_at_top = true })
-  st.depth = 0; st.bin = true; st.buf = {}; st.rn = 0; st.nlines = 0
+  st.bin = true; st.buf = {}; st.rn = 0; st.nlines = 0
   return st
 end
 
@@ -707,7 +742,6 @@ end
 function M.paragraph(boxnode, initial_color)
   local box = todirect(boxnode)
   local st = new_state({ lines_at_top = true })
-  st.depth = 0
   if initial_color and initial_color ~= "" then st.other[1] = { "c", 0, 0, initial_color } end
   local w, h, d = getwhd(box)
   vlist_out(st, box, 0, 0)
@@ -716,9 +750,10 @@ end
 
 -- Shipped page box. `attr_par`/`attr_line` identify tagged lines. Origin: page top-left;
 -- the box is offset by (1in + \hoffset, 1in + \voffset) like the PDF backend does.
-function M.page(boxnode, attr_par, attr_line, page_no, glyph_attr)
+function M.page(boxnode, attr_par, attr_line, page_no, glyph_attr, attr_unit, is_insert)
   local box = todirect(boxnode)
-  local st = new_state({ attr_par = attr_par, attr_line = attr_line, glyph_attr = glyph_attr })
+  local st = new_state({ attr_par = attr_par, attr_line = attr_line, glyph_attr = glyph_attr,
+                         attr_unit = attr_unit, is_insert = is_insert })
   local one_inch = 4736286  -- 72.27pt in sp
   local ox = one_inch + tex.hoffset
   local oy = one_inch + tex.voffset

@@ -91,12 +91,24 @@ pub struct BenchReport {
     pub pass: bool,
 }
 
-fn classify(lines: usize, has_math: bool) -> Option<&'static str> {
-    match (lines, has_math) {
-        (1, false) => Some("short"),
-        (4..=5, false) => Some("medium"),
-        (l, false) if l >= 10 => Some("long"),
-        (1..=3, true) => Some("inline-math"),
+fn classify(kind: &str, lines: usize, text: &str) -> Option<&'static str> {
+    let has_inline_math = text.contains('$') && !text.contains("\\[") && !text.contains("\\begin{equation") && !text.contains("\\begin{align");
+    let has_display = text.contains("\\[") || text.contains("\\begin{equation") || text.contains("\\begin{align");
+    let has_footnote = text.contains("\\footnote");
+    match kind {
+        "par" if has_display => Some("display-math"),
+        "par" if has_footnote => Some("footnote"),
+        "par" => match (lines, has_inline_math) {
+            (1, false) => Some("short"),
+            (4..=5, false) => Some("medium"),
+            (l, false) if l >= 10 => Some("long"),
+            (1..=3, true) => Some("inline-math"),
+            _ => None,
+        },
+        k if k.starts_with("env:itemize") || k.starts_with("env:enumerate") => Some("list"),
+        k if k.starts_with("env:figure") => Some("figure"),
+        k if k.starts_with("env:table") => Some("table"),
+        k if k.starts_with("heading:") => Some("heading"),
         _ => None,
     }
 }
@@ -113,7 +125,7 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
     std::thread::sleep(Duration::from_millis(1500));
     let doc = session.document_text("main.tex").unwrap();
     let spans = session.spans("main.tex");
-    let lines_of: BTreeMap<u64, usize> = placements.iter().map(|p| (p.par_id.0, p.lines as usize)).collect();
+    let lines_of: BTreeMap<u64, (usize, String)> = placements.iter().map(|p| (p.par_id.0, (p.lines as usize, p.kind.clone()))).collect();
     let mut picked: BTreeMap<&str, (u64, usize, String)> = BTreeMap::new();
     // prefer paragraphs in the middle of the document
     let mut elig: Vec<_> = eligible_paragraphs.iter().filter_map(|id| spans.iter().find(|s| s.id == *id)).collect();
@@ -121,9 +133,8 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
     elig.rotate_left(mid);
     for sp in elig {
         let text = &doc[sp.range.clone()];
-        let lines = lines_of.get(&sp.id.0).copied().unwrap_or(0);
-        let has_math = text.contains('$');
-        if let Some(cat) = classify(lines, has_math) {
+        let (lines, kind) = lines_of.get(&sp.id.0).cloned().unwrap_or((0, "par".into()));
+        if let Some(cat) = classify(&kind, lines, text) {
             if categories.iter().any(|c| c == cat) && !picked.contains_key(cat) {
                 picked.insert(cat, (sp.id.0, lines, text.to_string()));
             }
@@ -161,7 +172,7 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
                 }).collect();
                 bail!("no paragraph update for par {pid} ({cat}); events seen: {seen:?}; edit result: {:?}", r.reasons)
             };
-            if status != "ok" {
+            if status != "ok" && status != "ok_degraded" {
                 bail!("status {status}");
             }
             Ok((t0.elapsed().as_secs_f64() * 1e3, timing.tex_us as f64 / 1e3, timing.traverse_us as f64 / 1e3, timing.pack_us as f64 / 1e3, dl.glyph_count()))
@@ -205,7 +216,7 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
 pub fn gates(report: &mut BenchReport) {
     let h = report.hardware_factor.max(1.0);
     let mut gates = Vec::new();
-    let find = |proj_contains: &str, cat: &str| report.results.iter().find(|r| r.project.contains(proj_contains) && r.category == cat);
+    let find = |proj_contains: &str, cat: &str| report.results.iter().find(|r| r.project.contains(proj_contains) && r.category == cat && !r.project.contains("units"));
     // size independence across 10/100/300
     for cat in ["short", "medium", "long", "inline-math"] {
         if let (Some(a), Some(b)) = (find("book-10-", cat), find("book-300-", cat)) {
@@ -218,7 +229,7 @@ pub fn gates(report: &mut BenchReport) {
         }
     }
     // absolute gates on the largest document (hardest case), hardware-qualified
-    let big: Vec<&CategoryResult> = report.results.iter().filter(|r| r.project.contains("book-300-")).collect();
+    let big: Vec<&CategoryResult> = report.results.iter().filter(|r| r.project.contains("book-300-") && !r.project.contains("units")).collect();
     let pick = |cat: &str| -> Option<&CategoryResult> { big.iter().copied().find(|r| r.category == cat).or_else(|| report.results.iter().find(|r| r.category == cat)) };
     if let Some(r) = pick("short") {
         gates.push(Gate { name: "short amortized median ≤ 1.0 ms × h".into(), value: r.amortized_total.median, limit: 1.0 * h, pass: r.amortized_total.median <= 1.0 * h, note: format!("h = {:.2}", h) });
@@ -237,6 +248,21 @@ pub fn gates(report: &mut BenchReport) {
         gates.push(Gate { name: "medium traversal + serialization ≤ 0.5 ms".into(), value: tp, limit: 0.5, pass: tp <= 0.5, note: String::new() });
         let host = (r.individual_total.median - r.individual_tex.median - r.individual_traverse.median - r.individual_pack.median).max(0.0);
         gates.push(Gate { name: "medium IPC + host overhead ≤ 0.5 ms × h".into(), value: host, limit: 0.5 * h, pass: host <= 0.5 * h, note: format!("overhead share {:.0} % (paper: 18 %)", r.overhead_share_median * 100.0) });
+    }
+    // unit kinds (0.0.2): every real-time unit kind stays under 5 ms per keystroke on the largest
+    // units fixture, and is document-size independent (100p/10p)
+    let units_big: Vec<&CategoryResult> = report.results.iter().filter(|r| r.project.contains("units")).collect();
+    for cat in ["display-math", "footnote", "list", "figure", "table", "heading"] {
+        let largest = units_big.iter().copied().filter(|r| r.category == cat).max_by_key(|r| r.project.split('-').nth(1).and_then(|n| n.parse::<u32>().ok()).unwrap_or(0));
+        if let Some(r) = largest {
+            gates.push(Gate { name: format!("{cat} individual median ≤ 5.0 ms × h ({})", r.project), value: r.individual_total.median, limit: 5.0 * h, pass: r.individual_total.median <= 5.0 * h, note: format!("P95 {:.3} ms, tex {:.3} ms, {} rows", r.individual_total.p95, r.individual_tex.median, r.lines) });
+        }
+        let small = units_big.iter().copied().find(|r| r.category == cat && r.project.contains("book-10-"));
+        let big100 = units_big.iter().copied().find(|r| r.category == cat && r.project.contains("book-100-"));
+        if let (Some(a), Some(b)) = (small, big100) {
+            let ratio = b.individual_total.median / a.individual_total.median;
+            gates.push(Gate { name: format!("size independence {cat} (100p/10p individual median)"), value: ratio, limit: 1.25, pass: (0.75..=1.25).contains(&ratio), note: format!("{:.3} ms vs {:.3} ms", b.individual_total.median, a.individual_total.median) });
+        }
     }
     report.pass = gates.iter().all(|g| g.pass);
     report.gates = gates;

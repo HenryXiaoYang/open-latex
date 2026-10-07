@@ -193,3 +193,36 @@ single-edit timings and CSV output but uses different paragraph texts.
 `paragraph-benchmark.tex` (single cold compile): 0.45 ms. `stability-benchmark.tex`: short
 0.119 / 0.115 / 0.113 ms and multi-line 2.545 / 2.543 / 2.545 ms over compiles 1–50 / 226–275 /
 451–500 — no degradation, matching the paper's Table 2 pattern.
+
+## 0.0.2 — latency work (`lode probe`)
+
+`lode probe --project fixtures/book-10-pure-lmtfm` prints the breakdown that drove the 0.0.2
+changes: direct server round trips (no session threads), in-engine micro-timings (`profile` op)
+and session round trips with host stages. Before / after, short paragraph (1 line), this
+container:
+
+| Stage | 0.0.1 | 0.0.2 | Change |
+|---|---|---|---|
+| raw IPC (ping) | 0.090 ms | 0.015 ms | raw compile frame instead of JSON; `string.format` header |
+| server overhead around the box build (decode, prepare, fingerprint, header) | ≈ 90 µs | ≈ 35 µs | `\luafunction` slots, one fingerprint, preprocessed contexts |
+| host wait after sending | blocked `poll` | busy-poll ≤ 3 ms | ≈ 60 µs saved per round trip in this VM |
+| direct round trip | 0.446 ms | 0.33 ms | |
+| session: thread hops + event delivery | 0.111 ms | 0.02–0.05 ms | `apply_edit` writes the frame to the idle server itself |
+| session: `apply_edit` (medium paragraph near the preamble) | 0.140 ms | 0.045 ms | windowed re-segmentation next to the preamble |
+| **session round trip, short** | **0.634 ms** | **0.40–0.47 ms** | |
+| session round trip, medium (4 lines) | 1.357 ms | 0.98–1.03 ms | |
+| session round trip, long (10 lines) | 2.615 ms | 2.2 ms | |
+
+Traversal (≈ 1 µs per glyph) is the Lua interpreter floor for the per-node work: a bare walk
+performing the same accessor calls costs a third of it, and the remaining instructions are the
+coalescing, index lookup and packing a renderer needs. Caching font descriptors removed repeated
+`font.getfont` table builds for TFM fonts. What remains outside TeX for a short paragraph
+(≈ 0.14 ms) is two process wake-ups and the cold-cache penalty of a process that slept between
+keystrokes; the `profile` op shows the same box build running 2–3× faster in a hot loop than in
+the real flow.
+
+## 0.0.2 — units (`lode bench` with the `units` fixtures)
+
+Categories added to `lode bench`: `display-math` (paragraph with a display), `footnote`,
+`list`, `figure`, `table`, `heading`. Results: see the latest `bench/results/roundtrip-*.md`
+(filled in by the run recorded below).

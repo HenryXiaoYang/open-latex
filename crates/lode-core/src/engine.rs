@@ -45,6 +45,9 @@ pub struct CompileResult {
     pub t_pack_us: i64,
     #[serde(default)]
     pub stages_us: serde_json::Value,
+    /// Image resources used by the display list (index → file), from the server's graphicx hook.
+    #[serde(default)]
+    pub images: std::collections::BTreeMap<String, lode_dl::ImageInfo>,
     /// Host-side stage times (µs): send, wait, read, parse.
     #[serde(skip)]
     pub host_us: [u64; 4],
@@ -60,7 +63,7 @@ pub enum Response {
     #[serde(rename = "result")]
     Result(CompileResult),
     #[serde(rename = "fatal")]
-    Fatal { #[serde(default)] req: Option<i64>, reason: String, #[serde(default)] errors: Vec<EngineError> },
+    Fatal { #[serde(default)] req: Option<i64>, reason: String, #[serde(default)] errors: Vec<EngineError>, #[serde(default)] before: String, #[serde(default)] after: String },
     #[serde(rename = "pong")]
     Pong,
     #[serde(rename = "stats")]
@@ -112,8 +115,10 @@ impl FastServer {
             &driver,
             format!(
                 concat!(
-                    "\\input{{{}}}\n\\newbox\\lodebox\\newcount\\lodecontinue\\lodecontinue=1\n\\begin{{document}}\n",
-                    "\\directlua{{lode_serve = dofile(kpse.find_file(\"lode-serve.lua\", \"lua\") or \"lode-serve.lua\") lode_serve.init(\\number\\lodebox, \\number\\allocationnumber)}}\n",
+                    "\\input{{{}}}\n\\newbox\\lodebox\\newcount\\lodecontinue\\lodecontinue=1 \\edef\\lodecountnum{{\\number\\allocationnumber}}\\newcatcodetable\\lodecct{{\\makeatletter\\savecatcodetable\\lodecct}}\n\\begin{{document}}\n",
+                    "\\directlua{{lode_serve = dofile(kpse.find_file(\"lode-serve.lua\", \"lua\") or \"lode-serve.lua\") lode_serve.init(\\number\\lodebox, \\lodecountnum, \\number\\lodecct)}}\n",
+                    // image resource index -> file mapping for IMAGE display-list items
+                    "\\makeatletter\\IfPackageLoadedTF{{graphicx}}{{\\AddToHook{{cmd/Gin@setfile/after}}{{\\directlua{{lode_serve.image(\\number\\lastsavedimageresourceindex,\"\\luaescapestring{{\\Gin@base\\Gin@ext}}\",\"\\luaescapestring{{\\Gin@page}}\",\\number\\lastsavedimageresourcepages)}}}}}}{{}}\\makeatother\n",
                     "\\loop\\lodestep\\ifnum\\lodecontinue>0 \\repeat\n\\end{{document}}\n"
                 ),
                 preamble_file.display()
@@ -312,8 +317,17 @@ impl FastServer {
                 };
                 Ok((cr, rt))
             }
-            Response::Fatal { reason, errors, .. } => bail!("engine fatal: {reason} {errors:?}"),
+            Response::Fatal { reason, errors, before, after, .. } => bail!("engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"),
             other => bail!("compile: unexpected {other:?}"),
+        }
+    }
+
+    /// Define `\r@name`/`\b@key` macros from the last pass's aux so `\ref`/`\cite` resolve.
+    pub fn set_labels(&mut self, labels: &[(String, String)]) -> Result<()> {
+        self.send(&serde_json::json!({"op": "labels", "labels": labels}))?;
+        match self.recv()? {
+            Response::Ok { .. } => Ok(()),
+            other => bail!("set_labels: {other:?}"),
         }
     }
 

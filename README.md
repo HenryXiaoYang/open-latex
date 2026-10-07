@@ -28,8 +28,8 @@ an independent clean build on the fixtures.
 
 | Area | State |
 |---|---|
-| Fast path | persistent LuaTeX server, allow-list eligibility, context replay, binary display list, state fingerprint + watchdog |
-| Fidelity | display lists equal the engine's own cursor to the scaled point (backend oracle), independent PDF content-stream check, rendered comparison — `docs/FIDELITY.md` |
+| Fast path | persistent LuaTeX server, allow-list eligibility over **units** (paragraphs with display math, footnotes, refs; lists, quotes, theorems, figures, tables; headings), context replay incl. counters and labels, binary display list, state fingerprint + watchdog, per-unit 5 ms budget |
+| Fidelity | display lists equal the engine's own cursor to the scaled point (backend oracle), every eligible unit kind checked row-exact against the shipped page, independent PDF content-stream check incl. image transforms, rendered comparison — `docs/FIDELITY.md` |
 | Background | debounced instrumented passes with biber/bibtex, versioned layouts, explicit convergence states, degraded-page PDF fallback — `docs/CONVERGENCE.md`, `docs/VERSIONING.md` |
 | Export | clean build loop with honest status; byte-equal to an independent LuaLaTeX build on the fixtures |
 | API | Rust `Session` + C ABI (`include/lode.h`) + JSON-lines `lode serve` — `docs/API.md` |

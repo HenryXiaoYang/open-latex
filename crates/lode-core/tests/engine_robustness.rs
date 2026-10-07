@@ -27,35 +27,42 @@ fn preamble(project: &std::path::Path) -> String {
     lode_core::split_preamble(&main).unwrap().0.to_string()
 }
 
+/// (unit id, context) of the paragraph units of a capture, in document order.
+fn paragraph_units(cap: &lode_core::capture::CaptureResult, project: &std::path::Path) -> Vec<(i64, serde_json::Value)> {
+    let policy = lode_core::eligibility::Policy::from_preamble(&preamble(project), &[], &[]);
+    let (store, _fb) = lode_core::layout::LayoutStore::offline(cap, project, "main.tex", &policy).unwrap();
+    store.mapped_units().into_iter().filter(|(u, _)| u.kind() == "par" && u.rows() > 0).map(|(u, _)| (u.uid, u.context_json())).collect()
+}
+
 #[test]
 fn errors_do_not_poison_the_server() {
     let Some((tl, root, project)) = setup("errors") else { return };
     let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
-    let para = cap.json.paragraphs.iter().find(|p| p.is_top_level() && p.begin.is_some()).unwrap();
+    let (seq, ctx) = paragraph_units(&cap, &project).remove(0);
+    let para_seq = seq;
     let mut s = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 1).unwrap();
-    s.set_context(para.seq, &para.context_json()).unwrap();
-    let (ok, _) = s.compile(para.seq, "A plain paragraph of text that is fine.").unwrap();
+    s.set_context(para_seq, &ctx).unwrap();
+    let (ok, _) = s.compile(para_seq, "A plain paragraph of text that is fine.").unwrap();
     assert_eq!(ok.status, "ok");
     let lines_ok = ok.dl.unwrap().lines.len();
 
     // undefined macro → error status with a diagnostic, server keeps going
-    let (bad, _) = s.compile(para.seq, "Text with \\nosuchmacro here.").unwrap();
+    let (bad, _) = s.compile(para_seq, "Text with \\nosuchmacro here.").unwrap();
     assert_eq!(bad.status, "error");
     assert!(bad.errors.iter().any(|e| e.message.as_deref().unwrap_or("").contains("Undefined control sequence")));
 
     // unbalanced brace → TeX inserts the missing brace; still an error, state stays consistent
-    let (unb, _) = s.compile(para.seq, "Unbalanced { brace here.").unwrap();
+    let (unb, _) = s.compile(para_seq, "Unbalanced { brace here.").unwrap();
     assert_eq!(unb.status, "error");
 
-    // footnote → insert node: degraded (background path), but no error
-    let (fn_, _) = s.compile(para.seq, "Footnote\\footnote{x} here.").unwrap();
-    assert!(fn_.status == "ok_degraded" || fn_.status == "ok", "status {}", fn_.status);
-    if fn_.status == "ok_degraded" {
-        assert!(fn_.dl.unwrap().flags_map().contains_key("ins"));
-    }
+    // footnote → insert node: the mark is typeset, the insert is counted (text refreshed by the
+    // next layout), no error
+    let (fn_, _) = s.compile(para_seq, "Footnote\\footnote{x} here.").unwrap();
+    assert_eq!(fn_.status, "ok", "status {}", fn_.status);
+    assert_eq!(fn_.dl.as_ref().unwrap().inserts, 1);
 
     // and the good paragraph still compiles identically
-    let (again, _) = s.compile(para.seq, "A plain paragraph of text that is fine.").unwrap();
+    let (again, _) = s.compile(para_seq, "A plain paragraph of text that is fine.").unwrap();
     assert_eq!(again.status, "ok");
     assert_eq!(again.dl.unwrap().lines.len(), lines_ok);
     match s.stats().unwrap() {
@@ -73,19 +80,19 @@ fn errors_do_not_poison_the_server() {
 fn watchdog_kills_a_runaway_paragraph() {
     let Some((tl, root, project)) = setup("watchdog") else { return };
     let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
-    let para = cap.json.paragraphs.iter().find(|p| p.is_top_level() && p.begin.is_some()).unwrap();
+    let (seq, ctx) = paragraph_units(&cap, &project).remove(0);
     let mut s = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 1).unwrap();
-    s.set_context(para.seq, &para.context_json()).unwrap();
+    s.set_context(seq, &ctx).unwrap();
     s.timeout = Duration::from_millis(800);
     let t0 = std::time::Instant::now();
-    let r = s.compile(para.seq, "\\loop\\iftrue\\repeat never ends");
+    let r = s.compile(seq, "\\loop\\iftrue\\repeat never ends");
     assert!(r.is_err(), "runaway paragraph must time out");
     assert!(t0.elapsed() < Duration::from_secs(5));
     assert!(!s.is_alive(), "server must be killed by the watchdog");
     // a fresh generation works again
     let mut s2 = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 2).unwrap();
-    s2.set_context(para.seq, &para.context_json()).unwrap();
-    let (ok, _) = s2.compile(para.seq, "Back to normal.").unwrap();
+    s2.set_context(seq, &ctx).unwrap();
+    let (ok, _) = s2.compile(seq, "Back to normal.").unwrap();
     assert_eq!(ok.status, "ok");
     s2.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&root);
@@ -95,15 +102,15 @@ fn watchdog_kills_a_runaway_paragraph() {
 fn paragraph_result_is_independent_of_request_order() {
     let Some((tl, root, project)) = setup("order") else { return };
     let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
-    let paras: Vec<_> = cap.json.paragraphs.iter().filter(|p| p.is_top_level() && p.begin.is_some()).take(3).collect();
+    let paras: Vec<(i64, serde_json::Value)> = paragraph_units(&cap, &project).into_iter().take(3).collect();
     let mut s = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 1).unwrap();
-    for p in &paras {
-        s.set_context(p.seq, &p.context_json()).unwrap();
+    for (seq, ctx) in &paras {
+        s.set_context(*seq, ctx).unwrap();
     }
     let src = "Order independence: {\\itshape italic} and $x_1 + y^2$ with \\textbf{bold} words in it.";
-    let (a, _) = s.compile(paras[0].seq, src).unwrap();
-    let (_b, _) = s.compile(paras[1].seq, "Something else entirely, \\emph{different}.").unwrap();
-    let (c, _) = s.compile(paras[0].seq, src).unwrap();
+    let (a, _) = s.compile(paras[0].0, src).unwrap();
+    let (_b, _) = s.compile(paras[1].0, "Something else entirely, \\emph{different}.").unwrap();
+    let (c, _) = s.compile(paras[0].0, src).unwrap();
     assert_eq!(serde_json::to_string(&a.dl).unwrap(), serde_json::to_string(&c.dl).unwrap());
     s.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&root);

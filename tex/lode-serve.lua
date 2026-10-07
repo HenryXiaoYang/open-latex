@@ -44,10 +44,17 @@ end
 -- legitimately changed at the outer level by the font-selection tokens, and tracked separately.
 local FP_CATCODES = { 92, 123, 125, 36, 38, 35, 94, 95, 37, 126 }
 local tex_get, getcatcode, getcount, gettoks = tex.get, tex.getcatcode, tex.getcount, tex.gettoks
+local create = token.create
+local IFTRUE_MODE = create("iftrue").mode
+local function ifmode(name)
+  local ok, t = pcall(create, name)
+  return ok and t and t.mode or -1
+end
 function S.fingerprint()
   local fp = { tex.currentgrouplevel, tex.nest.ptr, tex.interactionmode,
-               gettoks("everypar"), tex_get("hsize"), tex_get("parindent"), tex_get("language") }
-  local n = 7
+               gettoks("everypar"), tex_get("hsize"), tex_get("parindent"), tex_get("language"),
+               ifmode("if@inlabel"), ifmode("if@newlist"), ifmode("if@minipage") }
+  local n = 10
   for i = 1, #FP_CATCODES do n = n + 1; fp[n] = getcatcode(FP_CATCODES[i]) end
   for i = 0, 9 do n = n + 1; fp[n] = getcount(i) end
   return table.concat(fp, "|", 1, n)
@@ -58,9 +65,25 @@ S.fp_base = nil
 S.font_outer = nil
 
 -- Context replay -------------------------------------------------------------------------------
--- \everypar contents that may be replayed verbatim (anything else makes the paragraph
--- background-only on the host side; the server refuses it too).
-local EVERYPAR_ALLOWED = { [""] = true, ["\\leftprotrusion "] = true }
+-- \everypar contents that may be replayed verbatim (anything else makes the unit
+-- background-only on the host side; the server refuses it too): the kernel's own patterns after
+-- a heading (\@afterheading), after an environment (\@doendpe), in a box (\@setminipage), and
+-- microtype's \leftprotrusion.
+local EVERYPAR_PATTERNS = {
+  [""] = true,
+  ["\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\if@afterindent \\else {\\setbox \\z@ \\lastbox }\\fi \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi "] = true,
+  ["\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\setbox \\z@ \\lastbox \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi "] = true,
+  ["{\\setbox \\z@ \\lastbox }\\everypar {}\\@endpefalse "] = true,
+  ["\\@minipagefalse \\everypar {}"] = true,
+}
+local function everypar_allowed(ep)
+  local e = ep:gsub("^\\leftprotrusion ", ""):gsub("\\leftprotrusion $", "")
+  return EVERYPAR_PATTERNS[e] or false
+end
+local FLOAT_ENVS = { figure = "columnwidth", table = "columnwidth", ["figure*"] = "textwidth", ["table*"] = "textwidth" }
+-- LaTeX counters (c@<name>) known at start-up; replayed per unit and restored after each compile
+S.counter_names = {}
+S.counter_base = {}
 
 -- Contexts are preprocessed when installed: parameter tables become flat arrays, and the
 -- NFSS selection string is built once.
@@ -71,6 +94,30 @@ local function install_context(id, ctx)
   for k, v in pairs(ctx.dims or {}) do dims[#dims + 1] = k; dims[#dims + 1] = v end
   for k, v in pairs(ctx.glues or {}) do glues[#glues + 1] = { k, v[1] or 0, v[2] or 0, v[3] or 0, v[4] or 0, v[5] or 0 } end
   ctx.a_ints, ctx.a_dims, ctx.a_glues = ints, dims, glues
+  -- tokens after \bgroup: counters (TeX assignments, local to the group; `page` is never
+  -- replayed), \if@nobreak and friends, \everypar replay, float-box emulation
+  local kind, name = ctx.kind or "par", ctx.name
+  local extra = {}
+  local names = {}
+  for k, v in pairs(ctx.counters or {}) do
+    -- only counters that are valid control words (biblatex has `bbx:relatedcount`), that the
+    -- server knows, that differ from its idle value, and never the page counter
+    if S.counter_base[k] ~= nil and S.counter_base[k] ~= v and k ~= "page" and k:match("^[%a@]+$") then names[#names + 1] = k end
+  end
+  table.sort(names)
+  for _, k in ipairs(names) do extra[#extra + 1] = format("\\c@%s=%d ", k, ctx.counters[k]) end
+  extra[#extra + 1] = ctx.nobreak and "\\@nobreaktrue " or "\\@nobreakfalse "
+  extra[#extra + 1] = ctx.afterindent and "\\@afterindenttrue " or "\\@afterindentfalse "
+  extra[#extra + 1] = ctx.noskipsec and "\\@noskipsectrue " or "\\@noskipsecfalse "
+  local ep = ctx.everypar or ""
+  if ep ~= "" then extra[#extra + 1] = "\\everypar{" .. ep .. "}" end
+  ctx.float = kind == "env" and name and FLOAT_ENVS[name] or nil
+  if ctx.float then
+    -- what \@xfloat does to the float box content (\@floatboxreset = \reset@font\normalsize\@setminipage)
+    extra[#extra + 1] = "\\def\\@captype{" .. name:gsub("%*$", "") .. "}\\hsize\\" .. ctx.float .. "\\@parboxrestore\\@floatboxreset "
+  end
+  ctx.head_extra = table.concat(extra)
+  ctx.tail_extra = ctx.float and "\\par\\vskip\\z@skip" or ""
   local b = ctx.begin
   local n = b and b.nfss
   if n and n.family then
@@ -81,8 +128,17 @@ local function install_context(id, ctx)
   end
   ctx.color = b and b.color
   if ctx.color == "0 g 0 G" or ctx.color == "" then ctx.color = nil end
-  ctx.everypar_ok = EVERYPAR_ALLOWED[ctx.everypar or ""] or false
+  ctx.everypar_ok = everypar_allowed(ctx.everypar or "")
   S.contexts[id] = ctx
+end
+
+-- Strip the \begin{float}[opt] ... \end{float} wrapper: the content is typeset directly in the
+-- unit box with the float-box state replayed by head_extra.
+local function float_content(source, name)
+  local n = name:gsub("%*", "%%*")
+  local inner = source:gsub("^%s*\\begin%s*{" .. n .. "}%s*%b[]", ""):gsub("^%s*\\begin%s*{" .. n .. "}", "")
+  inner = inner:gsub("\\end%s*{" .. n .. "}%s*$", "")
+  return inner
 end
 
 -- Called from TeX (\luafunction) inside the paragraph \vbox group, before any text.
@@ -98,8 +154,6 @@ function S.apply()
   a = ctx.a_glues
   for i = 1, #a do local g = a[i]; setglue(g[1], g[2], g[3], g[4], g[5], g[6]) end
   if ctx.parshape and #ctx.parshape > 0 then tex.parshape = ctx.parshape end
-  local ep = ctx.everypar or ""
-  if ep ~= "" then tex.settoks("everypar", ep) end
   cur.t_applied = gettime()
 end
 
@@ -131,16 +185,27 @@ function S.begin_compile(req_id, ctx_id, source)
   local ftoks = ctx.nfss_tokens
   local font_changed = ftoks ~= last_nfss
   if font_changed then last_nfss = ftoks else ftoks = "" end
+  if ctx.float then source = float_content(source, ctx.name) end
   local lines = {}
   local n = 0
   for line in (source .. "\n"):gmatch("(.-)\n") do n = n + 1; lines[n] = line end
   if n > 0 and lines[n] == "" then lines[n] = nil end
   S.current = { req = req_id, ctx_id = ctx_id, ctx = ctx, font_changed = font_changed, t0 = 0,
                 t_read = S.t_read, t_decoded = S.t_decoded }
-  tex.print(ftoks .. head_tokens)
+  S.images_used = false
+  -- our own tokens use @ as a letter (kernel switches, float emulation); the source keeps the
+  -- document's catcodes
+  tex.print(S.cct, ftoks .. head_tokens .. ctx.head_extra)
   tex.print(lines)
-  tex.print(tail_tokens)
+  tex.print(S.cct, ctx.tail_extra .. tail_tokens)
   S.current.t_printed = gettime()
+end
+
+-- graphicx hook (driver): image resource index -> file
+S.images = {}
+function S.image(index, file, page, pages)
+  S.images[tostring(index)] = { index = index, file = file, page = tonumber(page) or 1, pages = pages }
+  S.images_used = true
 end
 
 function S.mark()
@@ -156,7 +221,7 @@ function S.mark()
   end
 end
 
-local HEADER_FMT = '{"op":"result","req":%d,"ctx":%d,"status":"%s","errors":[],"lines":%d,"glyphs":%d,' ..
+local HEADER_FMT = '{"op":"result","req":%d,"ctx":%d,"status":"%s","errors":[],"lines":%d,"glyphs":%d,%s' ..
   '"width":%d,"height":%d,"depth":%d,"t_tex_us":%d,"t_traverse_us":%d,"t_pack_us":0,"font_changed":%s,"dl_bytes":%d,' ..
   '"stages_us":{"decode":%d,"prepare":%d,"to_mark":%d,"mark_to_apply":%d,"apply":%d,"apply_to_finish":%d,"fingerprint":%d}}'
 
@@ -165,6 +230,11 @@ function S.finish()
   S.current = nil
   if not cur then return end
   local t1 = gettime()
+  -- counters the unit advanced globally (\refstepcounter) go back to the idle values
+  local cb = S.counter_base
+  for name, v in pairs(cb) do
+    if getcount("c@" .. name) ~= v then tex.setcount("global", "c@" .. name, v) end
+  end
   local fp1 = S.fingerprint()
   local t1b = gettime()
   if fp1 ~= S.fp_base or font.current() ~= S.font_outer then
@@ -187,7 +257,9 @@ function S.finish()
       lines = nlines, glyphs = nglyphs, width = bw, height = bh, depth = bd,
       t_tex_us = t_tex, t_traverse_us = t_trav, t_pack_us = 0, font_changed = cur.font_changed, dl_bytes = #bytes }, bytes)
   else
-    send_result_json(format(HEADER_FMT, cur.req, cur.ctx_id, st, nlines, nglyphs, bw, bh, bd, t_tex, t_trav,
+    local images = ""
+    if S.images_used and next(S.images) then images = '"images":' .. json.encode(S.images) .. ',' end
+    send_result_json(format(HEADER_FMT, cur.req, cur.ctx_id, st, nlines, nglyphs, images, bw, bh, bd, t_tex, t_trav,
       cur.font_changed and "true" or "false", #bytes,
       floor(((cur.t_decoded or 0) - (cur.t_read or 0)) * 1e6 + 0.5), floor(((cur.t_printed or 0) - (cur.t_decoded or 0)) * 1e6 + 0.5),
       floor(((cur.t_mark or 0) - (cur.t_printed or 0)) * 1e6 + 0.5),
@@ -226,9 +298,9 @@ function S.profile(req)
   end)
   out.full_compile = timeit(function()
     tex.runtoks(function()
-      tex.print("\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " ")
+      tex.print(S.cct, "\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " " .. (ctx.head_extra or ""))
       tex.print(lines)
-      tex.print("\\par\\egroup\\endgroup")
+      tex.print(S.cct, (ctx.tail_extra or "") .. "\\par\\egroup\\endgroup")
     end)
   end)
   S.current = nil
@@ -323,6 +395,14 @@ function S.dispatch(req)
     send{ op = "ok", id = req.id }
   elseif req.op == "compile" then
     S.begin_compile(req.req, req.ctx, req.source or "")
+  elseif req.op == "labels" then
+    -- \newlabel / \bibcite definitions from the last pass's aux: \r@name, \b@key
+    local n = 0
+    for _, kv in ipairs(req.labels or {}) do
+      token.set_macro(kv[1], kv[2], "global")
+      n = n + 1
+    end
+    send{ op = "ok", id = n }
   elseif req.op == "ping" then
     send{ op = "pong" }
   elseif req.op == "stats" then
@@ -338,7 +418,7 @@ end
 -- init(boxnum, countnum): open the FIFO, register hooks and \luafunction slots, send ready.
 -- step(): read and dispatch ONE request, then return to TeX (which executes any printed tokens
 -- and re-enters step() through the \loop in the driver). Sets \count<countnum> to 0 to stop.
-function S.init(boxnum, countnum)
+function S.init(boxnum, countnum, cctnum)
   S.boxnum = boxnum
   S.countnum = countnum
   local path = os.getenv("LODE_RESP")
@@ -354,8 +434,18 @@ function S.init(boxnum, countnum)
   fns[base + 4] = function() S.finish() end
   S.fn_step, S.fn_mark, S.fn_apply, S.fn_finish = base + 1, base + 2, base + 3, base + 4
   token.set_macro("lodestep", "\\luafunction" .. S.fn_step .. " ", "global")
+  -- catcode table for the tokens we print around the source: LaTeX's catcodes with @ a letter
+  -- (the driver allocates and saves it: \newcatcodetable\lodecct{\makeatletter\savecatcodetable\lodecct})
+  S.cct = cctnum
+  -- LaTeX counters: idle values restored after every compile
+  local ck = token.get_macro("cl@@ckpt") or ""
+  for name in ck:gmatch("\\@elt%s*{([^}]*)}") do
+    local ok, v = pcall(getcount, "c@" .. name)
+    if ok then S.counter_names[#S.counter_names + 1] = name; S.counter_base[name] = v end
+  end
+  local nobreak_idle = ifmode("if@nobreak") == IFTRUE_MODE
   head_tokens = "\\luafunction" .. S.fn_mark .. " \\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " "
-  tail_tokens = "\\par\\egroup\\endgroup\\luafunction" .. S.fn_finish .. " "
+  tail_tokens = "\\par\\egroup\\endgroup" .. (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. "\\luafunction" .. S.fn_finish .. " "
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,

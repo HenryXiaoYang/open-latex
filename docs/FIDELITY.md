@@ -27,6 +27,20 @@ identical; 10-page `mixed` fixture 29/104 paragraphs eligible (the rest are back
 for the reasons the allow-list reports: `\footnote`, `\ref`, `\cite`, `\label`, list items,
 headings, TOC lines, display math, floats), 12 709/12 709 glyphs identical.
 
+### Units (0.0.2)
+
+Layer 1 runs per **unit** (`lode verify`, `compare_rows` in `crates/lode-cli/src/verify.rs`): the
+fast result of every eligible unit — paragraphs with display math and footnote marks, lists,
+quotes, theorem environments, figures with images and captions, tables, headings — is compared
+row by row with the rows of the same unit on the shipped page(s): row box (width, height, depth,
+glue set), every glyph (font identity, char, glyph index, x, baseline, advance, expansion), rule
+and image counts. Each row gets its own offset from its placement, so the comparison is of each
+row's content, not of the page builder's vertical arrangement. On the `units` fixture
+(`fixtures/book-10-units-lmtfm`): 33 eligible units of 46, 9331/9331 glyphs identical, 0 units
+with differences; the ineligible ones are the `\tableofcontents` line, the bibliography and
+`\cite` under biblatex (documented in LIMITATIONS.md). `--units` restricts the run and
+`--dump-rows` prints both sides as text for a differing unit.
+
 ## Layer 2 — PDF content stream (independent parser, quantified tolerance)
 
 `crates/lode-verify/src/pdftext.rs` replays the PDF text state machine (`Tm Td TD T* TL Tc Tw Tz
@@ -64,6 +78,11 @@ within one pixel; the unmatched fraction must stay below 1 % and no glyph may be
 Status: `pure` 0.007 % unmatched ink (worst page), `mixed` 0.018 %. Fixtures use `unicode-math`
 so every glyph, including math, is an OpenType glyph; Type1 fonts (classic Computer Modern
 math) are reported as skipped by the rasterizer and documented in LIMITATIONS.
+
+Image scaling (graphicx wraps bitmap images in `pdf_save`/`pdf_setmatrix`/`pdf_restore`) is
+represented by MATRIX items; the page comparator applies the composed transform to the image
+rectangle before matching it with the PDF's `Do` placement, so figure pages are *exact*, not
+degraded.
 
 ## Degraded pages
 

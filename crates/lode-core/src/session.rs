@@ -1,8 +1,8 @@
 //! The public session API: documents, edits, fast-path compiles, background layouts, events.
 
-use crate::background::{run_pass, snapshot_dir, write_snapshot, BibTool};
+use crate::background::{run_pass_with, snapshot_dir, write_snapshot, BibTool};
 use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, SpanKind};
-use crate::eligibility::{check_engine, check_source, Policy, Reason};
+use crate::eligibility::{check_engine_unit, classify_source, Policy, Reason, UnitShape};
 use crate::engine::{FastServer, Response};
 use crate::layout::{Fragment, LayoutStore, SnapshotSpan};
 use crate::texlive::TexLive;
@@ -28,6 +28,12 @@ pub struct SessionConfig {
     pub fast_on_stale_context: bool,
     pub bib_tool: BibTool,
     pub compile_timeout: Duration,
+    /// Units whose last fast compile took longer than this are routed to the background path
+    /// until the next layout (the host keeps its real-time guarantee).
+    pub fast_budget: Duration,
+    /// Extra block environments (theorem-like) treated as units, besides those found by scanning
+    /// the preamble for `\newtheorem`.
+    pub unit_envs: Vec<String>,
 }
 
 impl SessionConfig {
@@ -43,6 +49,8 @@ impl SessionConfig {
             fast_on_stale_context: true,
             bib_tool: BibTool::Auto,
             compile_timeout: Duration::from_secs(5),
+            fast_budget: Duration::from_millis(5),
+            unit_envs: Vec::new(),
         }
     }
 }
@@ -101,7 +109,10 @@ pub struct PageUpdate {
 pub struct ParagraphPlacement {
     pub par_id: ParaId,
     pub fragments: Vec<Fragment>,
+    /// Number of rows (typeset lines, display rows, float rows) of the unit.
     pub lines: i64,
+    /// Unit kind: "par", "env:<name>" or "heading:<name>".
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -162,8 +173,7 @@ struct FastRequest {
     ctx: Option<serde_json::Value>,
     versions: Versions,
     context_stale: bool,
-    baselineskip: i64,
-    expected_lines: i64,
+    expected_rows: i64,
 }
 
 /// A compile the server is working on (sent either by the engine thread or directly by the
@@ -183,6 +193,7 @@ struct EngineLink {
     inflight: Option<InFlight>,
     contexts_sent: HashSet<i64>,
     context_rev_sent: u64,
+    labels_sent: u64,
     next_req: i64,
 }
 
@@ -206,7 +217,9 @@ struct Shared {
     bg_pending_while_paused: AtomicBool,
     cfg: SessionConfig,
     tl: TexLive,
-    policy: Policy,
+    policy: Mutex<Policy>,
+    /// Units over the fast budget: par id → (layout_version when measured, ms).
+    slow_units: Mutex<HashMap<ParaId, (u64, u64)>>,
     edit_counter: AtomicU64,
     convergence: Mutex<Option<Convergence>>,
     overlays: Mutex<HashMap<ParaId, Revision>>,
@@ -236,12 +249,10 @@ impl Session {
         let main_text = std::fs::read_to_string(cfg.project_root.join(&cfg.main_file)).with_context(|| format!("reading {}", cfg.main_file))?;
         let mut ids = IdAllocator(0);
         let mut files = BTreeMap::new();
-        files.insert(cfg.main_file.clone(), FileBuf::new(&main_text, &mut ids, 1));
+        let preamble = crate::split_preamble(&main_text).map(|(p, _)| p.to_string()).unwrap_or_default();
+        let policy = Policy::from_preamble(&preamble, &cfg.trusted_macros, &cfg.unit_envs);
+        files.insert(cfg.main_file.clone(), FileBuf::with_block_envs(&main_text, &mut ids, 1, policy.theorem_envs.iter().cloned().collect()));
         let (tx, rx) = unbounded();
-        let mut policy = Policy::default();
-        for m in &cfg.trusted_macros {
-            policy.trusted_macros.insert(m.clone());
-        }
         let shared = Arc::new(Shared {
             link: Mutex::new(EngineLink { next_req: 1, ..Default::default() }),
             files: Mutex::new(files),
@@ -260,7 +271,8 @@ impl Session {
             bg_pending_while_paused: AtomicBool::new(false),
             cfg,
             tl,
-            policy,
+            policy: Mutex::new(policy),
+            slow_units: Mutex::new(HashMap::new()),
             edit_counter: AtomicU64::new(0),
             convergence: Mutex::new(None),
             overlays: Mutex::new(HashMap::new()),
@@ -306,7 +318,7 @@ impl Session {
         let len = self.shared.files.lock().get(rel_path).map(|f| f.text.len()).unwrap_or(0);
         if len == 0 && !self.shared.files.lock().contains_key(rel_path) {
             let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
-            let fb = FileBuf::new(text, &mut self.shared.ids.lock(), rev);
+            let fb = FileBuf::with_block_envs(text, &mut self.shared.ids.lock(), rev, self.shared.policy.lock().theorem_envs.iter().cloned().collect());
             self.shared.files.lock().insert(rel_path.to_string(), fb);
             self.schedule_background();
             let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -328,6 +340,22 @@ impl Session {
         };
         if outcome.preamble_changed {
             self.shared.preamble_revision.store(rev, Ordering::SeqCst);
+            {
+                let files = self.shared.files.lock();
+                let main = files.get(&self.shared.cfg.main_file).map(|f| f.text.clone()).unwrap_or_default();
+                let preamble = crate::split_preamble(&main).map(|(p, _)| p.to_string()).unwrap_or_default();
+                let policy = Policy::from_preamble(&preamble, &self.shared.cfg.trusted_macros, &self.shared.cfg.unit_envs);
+                let envs: Vec<String> = policy.theorem_envs.iter().cloned().collect();
+                *self.shared.policy.lock() = policy;
+                drop(files);
+                let mut files = self.shared.files.lock();
+                for fb in files.values_mut() {
+                    if fb.extra_block_envs != envs {
+                        fb.extra_block_envs = envs.clone();
+                        fb.resegment(&mut self.shared.ids.lock(), rev);
+                    }
+                }
+            }
             self.shared.bg_change.lock().entry(rel_path.to_string()).or_default().push((rev, 0));
             // restart the engine with the new preamble, drop overlays, schedule a pass
             self.shared.overlays.lock().clear();
@@ -347,21 +375,36 @@ impl Session {
         };
         // eligibility
         let mut reasons: Vec<String> = Vec::new();
-        if span.kind != SpanKind::Body {
+        if matches!(span.kind, SpanKind::Preamble | SpanKind::Trailer) {
             reasons.push(format!("{:?} span", span.kind));
         }
-        for r in check_source(&text, &self.shared.policy) {
+        let (shape, src_reasons) = classify_source(&text, &self.shared.policy.lock());
+        for r in src_reasons {
             reasons.push(reason_str(&r));
         }
         let layout = self.shared.layout.lock();
-        let ep = layout.engine_paragraph(span.id);
+        let eu = layout.unit(span.id);
         let mut request: Option<FastRequest> = None;
-        match ep {
+        match eu {
             None => reasons.push("NoContext".into()),
-            Some(ep) => {
-                let c = &ep.captured;
-                for r in check_engine(&c.groupcode, c.nest, &c.everypar, c.begin.is_some(), &c.flags) {
+            Some(eu) => {
+                let c = &eu.captured;
+                for r in check_engine_unit(&c.kind, &c.everypar, c.kind != "par" || eu.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false), eu.rows(), &eu.flags) {
                     reasons.push(reason_str(&r));
+                }
+                let shape_ok = match (&shape, c.kind.as_str()) {
+                    (UnitShape::Par, "par") => true,
+                    (UnitShape::Env(n), "env") => Some(n.as_str()) == c.name.as_deref(),
+                    (UnitShape::Heading(n), "heading") => Some(n.as_str()) == c.name.as_deref(),
+                    _ => false,
+                };
+                if !shape_ok {
+                    reasons.push(reason_str(&Reason::KindMismatch));
+                }
+                if let Some((lv, ms)) = self.shared.slow_units.lock().get(&span.id).copied() {
+                    if lv == layout.layout_version {
+                        reasons.push(reason_str(&Reason::OverBudget(ms)));
+                    }
                 }
                 if reasons.is_empty() {
                     // context staleness: a background-only change in this file before this span,
@@ -373,14 +416,13 @@ impl Session {
                     if stale && !self.shared.cfg.fast_on_stale_context {
                         reasons.push("ContextStale".into());
                     } else {
-                        let baselineskip = c.glues.get("baselineskip").and_then(|g| g.first()).map(|v| *v as i64).unwrap_or(0);
                         request = Some(FastRequest {
                             warmup: false,
                             par_id: span.id,
                             edit_id,
                             span_hash: span.hash,
                             source: text.trim_end_matches('\n').to_string(),
-                            seq: c.seq,
+                            seq: eu.uid,
                             ctx: None,
                             versions: Versions {
                                 source_revision: rev,
@@ -389,8 +431,7 @@ impl Session {
                                 layout_version: layout.layout_version,
                             },
                             context_stale: stale,
-                            baselineskip,
-                            expected_lines: c.lines.unwrap_or(0),
+                            expected_rows: eu.rows(),
                         });
                     }
                 }
@@ -543,6 +584,7 @@ fn reason_str(r: &Reason) -> String {
         Reason::DisallowedMathMacro(m) => format!("math macro \\{m}"),
         Reason::SizeDeclarationOutsideGroup(m) => format!("\\{m} outside group"),
         Reason::EngineFlag(s) => format!("engine {s}"),
+        Reason::OverBudget(ms) => format!("OverBudget: last fast compile took {ms} ms, over the budget"),
         other => format!("{other:?}"),
     }
 }
@@ -553,6 +595,7 @@ fn reason_str(r: &Reason) -> String {
 fn engine_thread(s: Arc<Shared>) {
     let mut server: Option<FastServer> = None;
     let mut server_generation: u64 = u64::MAX;
+    let mut labels_sent: u64 = 0;
     let reset_link = |s: &Shared| {
         let mut l = s.link.lock();
         l.writer = None;
@@ -585,8 +628,8 @@ fn engine_thread(s: Arc<Shared>) {
                     let rt = crate::engine::RoundTrip { total: fl.t0.elapsed(), t_tex: Duration::from_micros(cr.t_tex_us as u64), t_traverse: Duration::from_micros(cr.t_traverse_us as u64), t_pack: Duration::from_micros(cr.t_pack_us as u64) };
                     handle_result(&s, fl.req, cr, rt, fl.t0, wanted_gen);
                 }
-                Ok(Response::Fatal { reason, errors, .. }) => {
-                    engine_failed(&s, &fl.req, anyhow!("engine fatal: {reason} {errors:?}"), wanted_gen);
+                Ok(Response::Fatal { reason, errors, before, after, .. }) => {
+                    engine_failed(&s, &fl.req, anyhow!("engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"), wanted_gen);
                     server = None;
                     reset_link(&s);
                 }
@@ -642,6 +685,7 @@ fn engine_thread(s: Arc<Shared>) {
                     }
                     server = Some(srv);
                     server_generation = wanted_gen;
+                    labels_sent = 0;
                     s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Ready".into(), reason: None }).ok();
                 }
                 Err(e) => {
@@ -651,8 +695,30 @@ fn engine_thread(s: Arc<Shared>) {
                 }
             }
         }
-        let Some(mut req) = req else { continue };
         let srv = server.as_mut().unwrap();
+        // 3b. labels (\newlabel/\bibcite of the last pass) when they changed; done while idle
+        // when possible, and before a compile otherwise
+        let (labels, labels_hash) = {
+            let layout = s.layout.lock();
+            (layout.labels.clone(), layout.labels_hash)
+        };
+        if labels_hash != labels_sent && !labels.is_empty() {
+            let mut link = s.link.lock();
+            if link.inflight.is_none() {
+                match srv.set_labels(&labels) {
+                    Ok(()) => labels_sent = labels_hash,
+                    Err(e) => {
+                        drop(link);
+                        s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Restarting".into(), reason: Some(format!("labels: {e}")) }).ok();
+                        server = None;
+                        reset_link(&s);
+                        continue;
+                    }
+                }
+                link.labels_sent = labels_sent;
+            }
+        }
+        let Some(mut req) = req else { continue };
         // 4. send the context when the server does not hold it, then the compile frame
         let mut link = s.link.lock();
         if link.context_rev_sent != req.versions.context_revision {
@@ -663,11 +729,11 @@ fn engine_thread(s: Arc<Shared>) {
             let ctx = match req.ctx.take() {
                 Some(c) => Some(c),
                 None => {
-                    // built lazily from the current layout; the paragraph may have a new seq there
+                    // built lazily from the current layout; the unit may have a new id there
                     let layout = s.layout.lock();
-                    layout.engine_paragraph(req.par_id).map(|ep| {
-                        req.seq = ep.seq;
-                        ep.captured.context_json()
+                    layout.unit(req.par_id).map(|eu| {
+                        req.seq = eu.uid;
+                        eu.context_json()
                     })
                 }
             };
@@ -739,21 +805,34 @@ fn handle_result(s: &Shared, req: FastRequest, cr: crate::engine::CompileResult,
         }).ok();
         return;
     }
-    let dl = cr.dl.unwrap();
-    let baselines: Vec<i64> = dl.lines.iter().map(|l| l.y).collect();
-    let (fragments, mut stale) = s.layout.lock().fragments(req.par_id, &baselines, req.baselineskip).unwrap_or((vec![], true));
-    if req.expected_lines != dl.lines.len() as i64 {
+    let mut dl = cr.dl.unwrap();
+    if !cr.images.is_empty() {
+        dl.images = cr.images.clone();
+    }
+    let rows: Vec<(i64, i64)> = dl.lines.iter().map(|l| (l.x, l.y)).collect();
+    let (fragments, mut stale) = s.layout.lock().fragments(req.par_id, &rows).unwrap_or((vec![], true));
+    if req.expected_rows != dl.lines.len() as i64 {
         stale = true;
     }
-    let reasons: Vec<String> = dl.flags_map().keys().cloned().collect();
+    let mut reasons: Vec<String> = dl.flags_map().keys().cloned().collect();
+    if dl.inserts > 0 {
+        // footnote/margin text is placed by the page builder: refreshed by the next layout
+        reasons.push("inserts".into());
+    }
     if stale || !reasons.is_empty() {
         s.bg_signal.0.send(BgCmd::Pass).ok();
     }
+    let total_us = timing.total_us;
     s.events.send(Event::ParagraphUpdate {
         par_id: req.par_id, edit_id: req.edit_id, versions: req.versions,
         status: if reasons.is_empty() { "ok".into() } else { "ok_degraded".into() },
         reasons, fragments, pagination_stale: stale, context_stale: req.context_stale, dl, diagnostics, timing,
     }).ok();
+    // fast budget: a unit whose compile is too slow leaves the fast path until the next layout
+    if total_us > s.cfg.fast_budget.as_micros() as u64 {
+        s.slow_units.lock().insert(req.par_id, (req.versions.layout_version, total_us / 1000));
+        s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec![reason_str(&Reason::OverBudget(total_us / 1000))], edit_id: req.edit_id }).ok();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -805,7 +884,7 @@ fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpan>, Revisio
         for sp in &fb.spans {
             let (a, b) = fb.line_range(sp);
             let text = &fb.text[sp.range.clone()];
-            let background_only = sp.kind != SpanKind::Body || !check_source(text, &s.policy).is_empty();
+            let background_only = matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) || !classify_source(text, &s.policy.lock()).1.is_empty();
             spans.push(SnapshotSpan { id: sp.id, file: name.clone(), first_line: a, last_line: b, last_revision: sp.last_revision, background_only });
         }
     }
@@ -821,7 +900,8 @@ fn run_background_pass(s: &Shared) {
         return;
     }
     let out_dir = s.cfg.build_dir.join("bg");
-    let outcome = match run_pass(&s.tl, &snap_dir, &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, true) {
+    let unit_envs = s.policy.lock().unit_envs_env();
+    let outcome = match run_pass_with(&s.tl, &snap_dir, &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, true, &unit_envs) {
         Ok(o) => o,
         Err(e) => {
             s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: e.to_string(), context: None }] }).ok();
@@ -857,19 +937,37 @@ fn run_background_pass(s: &Shared) {
         };
         let mut placements = Vec::new();
         let mut eligible = Vec::new();
+        let files = s.files.lock();
+        let policy = s.policy.lock().clone();
         for (id, idx) in &layout.by_span {
-            let ep = &layout.paragraphs[*idx];
-            let lines = ep.captured.lines.unwrap_or(0);
-            let base = ep.captured.glues.get("baselineskip").and_then(|g| g.first()).map(|v| *v as i64).unwrap_or(0);
-            let fake: Vec<i64> = vec![0; lines as usize];
-            if let Some((frags, _)) = layout.fragments(*id, &fake, base) {
-                placements.push(ParagraphPlacement { par_id: *id, fragments: frags, lines });
+            let eu = &layout.units[*idx];
+            let c = &eu.captured;
+            let rows: Vec<(i64, i64)> = c.placements.iter().map(|p| (p.x, p.y)).collect();
+            let kind = match c.kind.as_str() {
+                "par" => "par".to_string(),
+                k => format!("{k}:{}", c.name.clone().unwrap_or_default()),
+            };
+            if let Some((frags, _)) = layout.fragments(*id, &rows) {
+                placements.push(ParagraphPlacement { par_id: *id, fragments: frags, lines: eu.rows(), kind });
             }
-            let c = &ep.captured;
-            if check_engine(&c.groupcode, c.nest, &c.everypar, c.begin.is_some(), &c.flags).is_empty() {
+            let has_ctx = c.kind != "par" || eu.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false);
+            // eligible = capture facts clean AND the span's source passes the allow-list with the
+            // shape the capture saw (what apply_edit will decide for a one-character edit)
+            let source_ok = layout.snapshot_spans.iter().find(|sp| sp.id == *id).map(|sp| !sp.background_only).unwrap_or(false)
+                && files.values().find_map(|fb| fb.span_text(*id)).map(|text| {
+                    let (shape, _) = classify_source(text, &policy);
+                    match (&shape, c.kind.as_str()) {
+                        (UnitShape::Par, "par") => true,
+                        (UnitShape::Env(n), "env") => Some(n.as_str()) == c.name.as_deref(),
+                        (UnitShape::Heading(n), "heading") => Some(n.as_str()) == c.name.as_deref(),
+                        _ => false,
+                    }
+                }).unwrap_or(false);
+            if source_ok && check_engine_unit(&c.kind, &c.everypar, has_ctx, eu.rows(), &eu.flags).is_empty() {
                 eligible.push(*id);
             }
         }
+        drop(files);
         placements.sort_by_key(|p| p.par_id);
         eligible.sort();
         (changed, versions, placements, eligible, layout.pdf.clone())
@@ -879,17 +977,16 @@ fn run_background_pass(s: &Shared) {
     if let Some(id) = eligible.first().copied() {
         let layout = s.layout.lock();
         let files = s.files.lock();
-        if let (Some(ep), Some(text)) = (layout.engine_paragraph(id), files.values().find_map(|fb| fb.span_text(id))) {
-            let c = &ep.captured;
+        if let (Some(eu), Some(text)) = (layout.unit(id), files.values().find_map(|fb| fb.span_text(id))) {
             let mut p = s.pending.lock();
             if !p.contains_key(&id) {
                 // exercise the font variants and math a body paragraph commonly needs so their
                 // font instances are loaded before the first real keystroke
                 let warm = format!("{} \\emph{{warm}} \\textbf{{warm}} \\textit{{warm}} \\textsc{{warm}} {{\\small warm}} $x^2_i + \\alpha \\sum \\frac{{1}}{{2}} \\mathbf{{v}}$", text.trim_end_matches('\n'));
                 p.insert(id, FastRequest {
-                    warmup: true, par_id: id, edit_id: 0, span_hash: 0, source: warm, seq: c.seq, ctx: None,
+                    warmup: true, par_id: id, edit_id: 0, span_hash: 0, source: warm, seq: eu.uid, ctx: None,
                     versions: Versions { source_revision: rev, context_revision: layout.context_revision, engine_generation: s.engine_generation.load(Ordering::SeqCst), layout_version: layout.layout_version },
-                    context_stale: false, baselineskip: 0, expected_lines: 0,
+                    context_stale: false, expected_rows: 0,
                 });
                 s.pending_signal.0.send(()).ok();
             }
@@ -942,7 +1039,7 @@ fn run_export(s: &Shared, job: u64, out: PathBuf) {
         return;
     }
     let out_dir = s.cfg.build_dir.join("export");
-    match run_pass(&s.tl, &snap_dir, &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, false) {
+    match run_pass_with(&s.tl, &snap_dir, &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, false, "") {
         Ok(o) => {
             let diags = parse_log(&o.capture.log);
             let errors = diags.iter().filter(|d| d.severity == "error").count();

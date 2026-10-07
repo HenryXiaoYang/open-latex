@@ -12,29 +12,29 @@ question is when the *typeset* view catches up.
 | Content being edited | Typeset update | Why |
 |---|---|---|
 | Body text, font switches (`\emph`, `\textbf`, …), accents, colors | **real time** | fast path |
-| Inline math `$…$` from the allow-listed vocabulary | **real time** | fast path |
-| A paragraph that changes its line count (grows/shrinks) | paragraph in real time; following material after the next background pass | page breaks are global; `pagination_stale` says so |
-| Display math `\[…\]`, equation environments | background (seconds) | ends the paragraph in TeX; not isolated by `\vbox` replay |
-| Tables (`tabular`), lists, theorem-like environments | background | environments are background-only in 0.0.2 |
-| Figures/images, captions, floats | background | float placement is global; `\includegraphics` paragraphs are not allow-listed |
-| TikZ/PGF diagrams | background, and the page renders through the **PDF fallback** | `\pdfliteral` drawing is not representable in the display list |
-| Footnotes, `\ref`/`\cite`/`\label`, counters, headings | background | page-global state |
+| Inline math `$…$` and display math `\[…\]`, `equation`, `align`, `gather`, `multline` (amsmath) from the allow-listed vocabulary, with `\label`/`\tag` and equation numbers | **real time** | paragraph unit; counters replayed |
+| `\ref`, `\eqref`, `\pageref`, `\label`, plain `\cite` | **real time** with the numbers of the last layout | labels from the last pass's aux; biblatex/natbib citations are background |
+| Footnotes | mark in **real time**; the footnote text at the page bottom after the next pass | inserts are placed by the page builder (`reasons: inserts`) |
+| Lists (`itemize`, `enumerate`, `description`), `quote`/`quotation`/`verse`, `center`, `abstract`, theorem-like environments | **real time** as one unit | environment unit |
+| Figures and tables (`figure`/`table` with `\includegraphics`, `tabular`, `booktabs` rules, `\caption`) | content in **real time** at the float's last position; a moved float after the next pass | float unit, float-box state replayed; placement is page-global |
+| Headings (`\chapter`, `\section`, …) | **real time**; TOC and running heads after the next pass | heading unit |
+| A unit that changes its row count (grows/shrinks) | unit in real time (rows placed with its own geometry); following material after the next pass | page breaks are global; `pagination_stale` says so |
+| TikZ/PGF diagrams, `\pdfliteral` drawing | background, and the page renders through the **PDF fallback** | not representable in the display list |
+| `minipage`/`parbox` blocks, `\marginpar`, `\verb`, verbatim | background | not allow-listed |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
 | Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
+| Any unit whose fast compile exceeds `fast_budget` (5 ms by default) | background until the next layout | the real-time budget is enforced per unit |
 
-So the paper's demo items map as follows: typing text and inline math — yes, real time; moving
-paragraphs, adjusting tables, images and fonts "instantly" — not in 0.0.2, those are
-background-path updates (correct, versioned, but seconds rather than milliseconds). Extending the
-fast path to table cells, display-math blocks and figure boxes is possible with the same
-mechanism (capture a unit's context, re-typeset it in isolation, overlay it) and is the main item
-for a v2.
+Every real-time item above is verified by `lode verify`: the fast result of each eligible unit is
+compared scaled-point-exact with the rows of the same unit on the shipped page
+(`docs/FIDELITY.md`). Timings per unit kind are in `docs/BENCHMARKS.md`.
 
-**Fast path scope.** Only body paragraphs built from the allow-list in `eligibility.rs` take the
-per-keystroke path: plain text, font switches, inline math from a fixed vocabulary, colors,
-accents and symbols. Everything else — including any macro defined in the preamble unless the
-host lists it in `trusted_macros` — is typeset by the background path and arrives with the next
-`LayoutUpdate` (seconds, not milliseconds). Display math, lists, footnotes, floats, headings,
-`\ref`/`\cite`/`\label`, verbatim and environments are therefore not real-time.
+**Fast path scope.** Units built from the allow-list in `eligibility.rs` take the per-keystroke
+path (see the table). Everything else — including any macro defined in the preamble unless the
+host lists it in `trusted_macros`, and any environment not in the list — is typeset by the
+background path and arrives with the next `LayoutUpdate` (seconds, not milliseconds). Text that
+continues after a block environment inside the same span, and headings sharing a span with text,
+are background-only (the capture closes the unit at the environment's end).
 
 **Documents.** One main file is tracked by the session today; `\input`/`\include`d files are
 compiled (the project directory is snapshotted) but edits to them are not routed to the fast path.

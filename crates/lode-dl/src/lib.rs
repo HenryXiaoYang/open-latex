@@ -78,6 +78,9 @@ pub enum Item {
     Math { on: bool, x: Sp },
     /// Image placement: engine image resource index, x, top y, width, height.
     Image { index: i64, x: Sp, y_top: Sp, width: Sp, height: Sp },
+    /// PDF transformation state: `save` (q), `set` (the matrix "a b c d" applied about (x, y) to
+    /// everything up to the matching `restore`), `restore` (Q). graphicx scaling and rotation.
+    Matrix { op: String, x: Sp, y: Sp, data: String },
 }
 
 impl Serialize for Item {
@@ -93,6 +96,7 @@ impl Serialize for Item {
             Item::Unsupported { kind, detail } => json!(["u", kind, detail]),
             Item::Math { on, x } => json!(["m", if *on { "on" } else { "off" }, x]),
             Item::Image { index, x, y_top, width, height } => json!(["i", index, x, y_top, width, height]),
+            Item::Matrix { op, x, y, data } => json!(["M", op, x, y, data]),
         };
         v.serialize(s)
     }
@@ -135,6 +139,12 @@ impl<'de> Deserialize<'de> for Item {
             },
             "m" => Item::Math { on: arr.get(1).and_then(|d| d.as_str()) == Some("on"), x: g(2)? },
             "i" => Item::Image { index: g(1).unwrap_or(0), x: g(2)?, y_top: g(3)?, width: g(4)?, height: g(5)? },
+            "M" => Item::Matrix {
+                op: arr.get(1).and_then(|d| d.as_str()).unwrap_or("set").to_string(),
+                x: g(2)?,
+                y: g(3)?,
+                data: arr.get(4).and_then(|d| d.as_str()).unwrap_or("").to_string(),
+            },
             other => return Err(D::Error::custom(format!("unknown item tag {other}"))),
         })
     }
@@ -148,6 +158,12 @@ pub struct Line {
     pub par: i64,
     #[serde(default)]
     pub i: i64,
+    /// Capture unit (fast-path region) owning this row on a page; 0 when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unit: i64,
+    /// 1-based row index within the unit (page lists); 0 when unknown.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub row: i64,
     pub x: Sp,
     pub y: Sp,
     pub w: Sp,
@@ -161,6 +177,32 @@ pub struct Line {
     pub gorder: i64,
     #[serde(default)]
     pub items: Vec<Item>,
+}
+
+fn is_zero(v: &i64) -> bool {
+    *v == 0
+}
+
+/// Lua encodes an empty table as `[]`; accept that where a map is expected.
+fn map_or_empty_array<'de, D: serde::Deserializer<'de>, V: serde::de::DeserializeOwned>(d: D) -> Result<BTreeMap<String, V>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    match v {
+        serde_json::Value::Object(m) => m.into_iter().map(|(k, v)| serde_json::from_value(v).map(|x| (k, x)).map_err(serde::de::Error::custom)).collect(),
+        _ => Ok(BTreeMap::new()),
+    }
+}
+
+/// Source of an image resource index used by `Item::Image`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ImageInfo {
+    #[serde(default)]
+    pub index: i64,
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub page: i64,
+    #[serde(default)]
+    pub pages: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -179,6 +221,13 @@ pub struct DisplayList {
     pub flags: serde_json::Value,
     #[serde(default)]
     pub glyphs: i64,
+    /// Insert nodes (footnotes, \marginpar) seen in a paragraph box: their text is not part of
+    /// this list and keeps the page's version until the next layout.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub inserts: i64,
+    /// Image resource indices → files (from the capture or the server).
+    #[serde(default, rename = "images_info", skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "map_or_empty_array")]
+    pub images: BTreeMap<String, ImageInfo>,
     #[serde(default)]
     pub width: Sp,
     #[serde(default)]
@@ -221,6 +270,12 @@ impl DisplayList {
     pub fn glyph_count(&self) -> usize {
         self.lines.iter().map(|l| l.items.iter().filter(|i| matches!(i, Item::Glyph { .. })).count()).sum::<usize>()
             + self.other.iter().filter(|i| matches!(i, Item::Glyph { .. })).count()
+    }
+    /// Rows belonging to capture unit `unit`, in row order.
+    pub fn rows_of(&self, unit: i64) -> Vec<&Line> {
+        let mut v: Vec<&Line> = self.lines.iter().filter(|l| l.unit == unit).collect();
+        v.sort_by_key(|l| l.row);
+        v
     }
     /// Lines belonging to capture paragraph `par`, in line order.
     pub fn lines_of(&self, par: i64) -> Vec<&Line> {

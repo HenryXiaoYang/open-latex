@@ -3,7 +3,7 @@
 //! round trips (apply_edit → ParagraphUpdate) for the shortest and a medium paragraph.
 
 use anyhow::{bail, Result};
-use lode_core::capture::{run_capture, CapturedParagraph};
+use lode_core::capture::run_capture;
 use lode_core::engine::{FastServer, Response};
 use lode_core::texlive::TexLive;
 use lode_core::{Edit, Event, Session, SessionConfig};
@@ -24,13 +24,15 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     let project = project.canonicalize()?;
     std::fs::create_dir_all(&build)?;
     let cap = run_capture(&tl, &project, &main, &build.join("capture"), true)?;
-    let mut cands: Vec<&CapturedParagraph> = cap.json.paragraphs.iter().filter(|p| p.is_top_level() && p.begin.is_some() && p.placements.as_ref().map(|v| !v.is_empty()).unwrap_or(false)).collect();
-    cands.sort_by_key(|p| p.lines.unwrap_or(0));
-    let short = cands.iter().copied().find(|p| p.lines == Some(1));
-    let medium = cands.iter().copied().find(|p| matches!(p.lines, Some(4..=5)));
-    let long = cands.iter().copied().find(|p| p.lines.map(|l| l >= 10).unwrap_or(false));
     let main_text = std::fs::read_to_string(project.join(&main))?;
     let (preamble, _) = lode_core::split_preamble(&main_text).unwrap();
+    let policy = lode_core::eligibility::Policy::from_preamble(preamble, &[], &[]);
+    let (store, fb) = lode_core::layout::LayoutStore::offline(&cap, &project, &main, &policy)?;
+    let mut cands: Vec<(&lode_core::layout::EngineUnit, lode_core::ParaId)> = store.mapped_units().into_iter().filter(|(u, _)| u.kind() == "par" && u.rows() > 0 && u.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false)).collect();
+    cands.sort_by_key(|(u, _)| u.rows());
+    let short = cands.iter().copied().find(|(u, _)| u.rows() == 1);
+    let medium = cands.iter().copied().find(|(u, _)| (4..=5).contains(&u.rows()));
+    let long = cands.iter().copied().find(|(u, _)| u.rows() >= 10);
     let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), preamble, 1)?;
     let mut pings = Vec::new();
     for _ in 0..200 {
@@ -38,16 +40,16 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     }
     println!("ping: median {:.3} ms, P95 {:.3} ms", med(&mut pings), p95(&mut pings));
     for (name, p) in [("short", short), ("medium", medium), ("long", long)] {
-        let Some(p) = p else { continue };
-        let src = crate::slice::paragraph_source(&project, p)?;
-        server.set_context(p.seq, &p.context_json())?;
+        let Some((p, span_id)) = p else { continue };
+        let src = fb.span_text(span_id).unwrap_or("").trim_end_matches('\n').to_string();
+        server.set_context(p.uid, &p.context_json())?;
         for _ in 0..5 {
-            server.compile(p.seq, &src)?;
+            server.compile(p.uid, &src)?;
         }
         let (mut tot, mut tex, mut trav) = (Vec::new(), Vec::new(), Vec::new());
         for i in 0..n {
             let s = if i % 2 == 1 { format!("{src} x") } else { src.clone() };
-            let (r, rt) = server.compile(p.seq, &s)?;
+            let (r, rt) = server.compile(p.uid, &s)?;
             if r.status != "ok" {
                 bail!("{name}: status {}", r.status);
             }
@@ -57,8 +59,8 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
             std::thread::sleep(Duration::from_millis(2));
         }
         let (t, a, b) = (med(&mut tot), med(&mut tex), med(&mut trav));
-        println!("direct {name:6} (seq {} lines {:?}): total {:.3} ms (P95 {:.3}) tex {:.3} traverse {:.3} ipc+parse {:.3}", p.seq, p.lines, t, p95(&mut tot), a, b, t - a - b);
-        let (r, _) = server.compile(p.seq, &src)?;
+        println!("direct {name:6} (unit {} rows {}): total {:.3} ms (P95 {:.3}) tex {:.3} traverse {:.3} ipc+parse {:.3}", p.uid, p.rows(), t, p95(&mut tot), a, b, t - a - b);
+        let (r, _) = server.compile(p.uid, &src)?;
         println!("  engine stages(us): {}  host stages(us) send/wait/read/parse: {:?}", r.stages_us, r.host_us);
         if let Some(b) = &r.dl_binary {
             let path = build.join(format!("{name}.dl"));
@@ -66,7 +68,7 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
             std::fs::write(&path, b)?;
             println!("  display list {} bytes written to {} (identical to previous run: {:?})", b.len(), path.display(), same);
         }
-        if let Response::Profile { us, .. } = server.profile(p.seq, &src, 40)? {
+        if let Response::Profile { us, .. } = server.profile(p.uid, &src, 40)? {
             println!("  profile(us): {}", us);
         }
     }

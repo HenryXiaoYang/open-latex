@@ -1,4 +1,4 @@
-%% lode-capture.sty — record paragraph contexts, line placements and page display lists
+%% lode-capture.sty — record unit/paragraph contexts, row placements and page display lists
 %% during a normal LuaLaTeX run. Adds no nodes; output is unchanged (verified by tests).
 \NeedsTeXFormat{LaTeX2e}
 \ProvidesPackage{lode-capture}[2026/10/07 v0.0.2 lode layout capture]
@@ -7,9 +7,28 @@
   lode_capture = dofile(kpse.find_file("lode-capture.lua", "lua") or "lode-capture.lua")
   lode_capture.setup{ jobname = tex.jobname }
 }
+\AddToHook{begindocument/end}{\directlua{lode_capture.begin_document()}}
 \AddToHook{para/begin}{\directlua{lode_capture.parbegin()}}
+\AddToHook{para/after}{\directlua{lode_capture.parafter()}}
 \AddToHook{shipout/before}{\directlua{lode_capture.shipout(\number\ShipoutBox)}}
+\AddToHook{cmd/@outputpage/before}{\directlua{lode_capture.output_begin()}}
+\AddToHook{cmd/@afterheading/before}{\directlua{lode_capture.afterheading()}}
 \AddToHook{enddocument/afterlastpage}{\directlua{lode_capture.finish()}}
+% Unit boundaries: block environments and sectioning commands. Extra block environments
+% (theorem-like) come from $LODE_UNIT_ENVS, comma separated.
+\directlua{
+  token.set_macro("lode@blockenvs", table.concat(lode_capture.BLOCK_ENVS, ","))
+  token.set_macro("lode@headings", table.concat(lode_capture.HEADINGS, ","))
+}
+\def\lode@hookenv#1{%
+  \edef\lode@tmp{\noexpand\AddToHook{env/#1/begin}{\noexpand\directlua{lode_capture.envbegin("#1")}}%
+    \noexpand\AddToHook{env/#1/after}{\noexpand\directlua{lode_capture.envafter("#1")}}}%
+  \lode@tmp}
+\def\lode@hookheading#1{%
+  \edef\lode@tmp{\noexpand\AddToHook{cmd/#1/before}{\noexpand\directlua{lode_capture.heading("#1")}}}%
+  \lode@tmp}
+\@for\lode@n:=\lode@blockenvs\do{\expandafter\lode@hookenv\expandafter{\lode@n}}
+\@for\lode@n:=\lode@headings\do{\expandafter\lode@hookheading\expandafter{\lode@n}}
 % Map image resource indices to files so IMAGE display-list items can name their source.
 \AddToHook{package/graphicx/after}{%
   \AddToHook{cmd/Gin@setfile/after}{%
