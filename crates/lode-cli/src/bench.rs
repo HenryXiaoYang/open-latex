@@ -95,9 +95,11 @@ fn classify(kind: &str, lines: usize, text: &str) -> Option<&'static str> {
     let has_inline_math = text.contains('$') && !text.contains("\\[") && !text.contains("\\begin{equation") && !text.contains("\\begin{align");
     let has_display = text.contains("\\[") || text.contains("\\begin{equation") || text.contains("\\begin{align");
     let has_footnote = text.contains("\\footnote");
+    // display-math and footnote paragraphs are compared across document sizes, so both
+    // fixtures must pick comparably sized ones (3-8 rows)
     match kind {
-        "par" if has_display => Some("display-math"),
-        "par" if has_footnote => Some("footnote"),
+        "par" if has_display => if (3..=8).contains(&lines) { Some("display-math") } else { None },
+        "par" if has_footnote => if (3..=8).contains(&lines) { Some("footnote") } else { None },
         "par" => match (lines, has_inline_math) {
             (1, false) => Some("short"),
             (4..=5, false) => Some("medium"),
