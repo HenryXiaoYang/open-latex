@@ -59,9 +59,10 @@ fn ineligible_edit_goes_to_background_and_reconverges() {
     let spans = s.spans("main.tex");
     let body = spans.iter().find(|sp| eligible_paragraphs.contains(&sp.id)).unwrap();
     let pos = body.range.end - 1;
-    let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: " See~\\ref{nowhere}.".into() }).unwrap();
+    // \parbox is not on the allow-list (\ref is, since 0.0.2): background path
+    let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: " \\parbox{3cm}{boxed text}.".into() }).unwrap();
     assert_eq!(r.routed, "background");
-    assert!(r.reasons.iter().any(|x| x.contains("ref")), "{:?}", r.reasons);
+    assert!(r.reasons.iter().any(|x| x.contains("parbox")), "{:?}", r.reasons);
     let (ev, _) = s.wait_for(Duration::from_secs(10), |e| matches!(e, Event::BackgroundScheduled { .. }));
     assert!(ev.is_some());
     assert!(matches!(s.convergence(), Some(Convergence::Stale { .. })));
