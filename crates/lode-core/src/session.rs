@@ -220,6 +220,8 @@ struct Shared {
     policy: Mutex<Policy>,
     /// Units over the fast budget: par id → (layout_version when measured, ms).
     slow_units: Mutex<HashMap<ParaId, (u64, u64)>>,
+    /// Units whose last compile was over budget once (a first compile may load fonts).
+    slow_candidates: Mutex<HashMap<ParaId, u64>>,
     edit_counter: AtomicU64,
     convergence: Mutex<Option<Convergence>>,
     overlays: Mutex<HashMap<ParaId, Revision>>,
@@ -273,6 +275,7 @@ impl Session {
             tl,
             policy: Mutex::new(policy),
             slow_units: Mutex::new(HashMap::new()),
+            slow_candidates: Mutex::new(HashMap::new()),
             edit_counter: AtomicU64::new(0),
             convergence: Mutex::new(None),
             overlays: Mutex::new(HashMap::new()),
@@ -828,10 +831,19 @@ fn handle_result(s: &Shared, req: FastRequest, cr: crate::engine::CompileResult,
         status: if reasons.is_empty() { "ok".into() } else { "ok_degraded".into() },
         reasons, fragments, pagination_stale: stale, context_stale: req.context_stale, dl, diagnostics, timing,
     }).ok();
-    // fast budget: a unit whose compile is too slow leaves the fast path until the next layout
+    // fast budget: a unit whose compiles are too slow leaves the fast path until the next
+    // layout. The first slow compile of a unit is forgiven (it may be loading fonts); two in a
+    // row mark the unit.
     if total_us > s.cfg.fast_budget.as_micros() as u64 {
-        s.slow_units.lock().insert(req.par_id, (req.versions.layout_version, total_us / 1000));
-        s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec![reason_str(&Reason::OverBudget(total_us / 1000))], edit_id: req.edit_id }).ok();
+        let mut cand = s.slow_candidates.lock();
+        if cand.remove(&req.par_id).is_some() {
+            s.slow_units.lock().insert(req.par_id, (req.versions.layout_version, total_us / 1000));
+            s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec![reason_str(&Reason::OverBudget(total_us / 1000))], edit_id: req.edit_id }).ok();
+        } else {
+            cand.insert(req.par_id, total_us / 1000);
+        }
+    } else {
+        s.slow_candidates.lock().remove(&req.par_id);
     }
 }
 

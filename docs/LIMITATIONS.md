@@ -23,7 +23,7 @@ question is when the *typeset* view catches up.
 | `minipage`/`parbox` blocks, `\marginpar`, `\verb`, verbatim | background | not allow-listed |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
 | Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
-| Any unit whose fast compile exceeds `fast_budget` (5 ms by default) | background until the next layout | the real-time budget is enforced per unit |
+| Any unit whose fast compiles exceed `fast_budget` (5 ms by default) twice in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compile (font loading) is forgiven |
 
 Every real-time item above is verified by `lode verify`: the fast result of each eligible unit is
 compared scaled-point-exact with the rows of the same unit on the shipped page

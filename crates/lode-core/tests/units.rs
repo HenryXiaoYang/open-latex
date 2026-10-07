@@ -161,11 +161,14 @@ fn over_budget_units_fall_back_to_background() {
     let sp = spans.iter().find(|sp| eligible_paragraphs.contains(&sp.id) && !doc[sp.range.clone()].trim_start().starts_with('\\'))
         .unwrap_or_else(|| panic!("no eligible plain unit; eligible texts: {:?}", spans.iter().filter(|sp| eligible_paragraphs.contains(&sp.id)).map(|sp| doc[sp.range.clone()].chars().take(30).collect::<String>()).collect::<Vec<_>>()));
     let pos = sp.range.start + edit_offset(&doc[sp.range.clone()]);
-    let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "x".into() }).unwrap();
-    assert_eq!(r.routed, "fast");
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
-    assert!(ev.is_some());
-    // the result arrived, but the unit is now over budget: the next edit goes to the background
+    // the first over-budget compile is forgiven (fonts may load); the second marks the unit
+    for _ in 0..2 {
+        let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "x".into() }).unwrap();
+        assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+        let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+        assert!(ev.is_some());
+    }
+    // the second result arrived, and the unit is now over budget: the next edit goes to the background
     let (bg, _) = s.wait_for(Duration::from_secs(10), |e| matches!(e, Event::BackgroundScheduled { reasons, .. } if reasons.iter().any(|r| r.contains("over the budget"))));
     assert!(bg.is_some(), "no over-budget notice");
     let r2 = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "y".into() }).unwrap();
