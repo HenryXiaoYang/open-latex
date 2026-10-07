@@ -117,6 +117,8 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
     let name = project.file_name().and_then(|s| s.to_str()).unwrap_or("project").to_string();
     let mut cfg = SessionConfig::new(project, "main.tex");
     cfg.build_dir = build.join(&name);
+    // the benchmark measures; the gates judge the 5 ms budget, so the session must not re-route
+    cfg.fast_budget = Duration::from_millis(500);
     let session = Session::open(cfg)?;
     let (first, _) = session.wait_for(Duration::from_secs(600), |e| matches!(e, Event::LayoutUpdate { .. }));
     let Some(Event::LayoutUpdate { eligible_paragraphs, placements, .. }) = first else { bail!("no layout") };

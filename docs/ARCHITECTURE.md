@@ -49,9 +49,9 @@ exactly one unit.
    cached row placements (page positions anchored at each page's first row, the fast box's own
    geometry within the page) and a `ParagraphUpdate` is emitted. Row-count changes mark
    `pagination_stale`; inserts (footnote text) and degraded content are listed in `reasons`;
-   both schedule a background pass. A unit whose compiles exceed `fast_budget` (5 ms) twice in a
-   row leaves the fast path until the next layout (`OverBudget`; a first slow compile is
-   forgiven because it may be loading fonts).
+   both schedule a background pass. A unit whose compiles exceed `fast_budget` (5 ms) three times in
+   a row leaves the fast path until the next layout (`OverBudget`; the first slow compiles are
+   forgiven because they may be loading fonts).
 
 ## Background path
 
