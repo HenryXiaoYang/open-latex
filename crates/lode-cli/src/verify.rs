@@ -67,6 +67,7 @@ pub struct Report {
     pub paragraphs: Vec<ParagraphVerdict>,
     pub pages: Vec<PageVerdict>,
     pub pages_degraded: usize,
+    pub capture_pdf_equals_clean: bool,
     pub layer1_pass: bool,
     pub layer2_pass: bool,
     pub layer3_pass: Option<bool>,
@@ -155,6 +156,10 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     };
     println!("capture: {} paragraphs, {} pages ({:.1}s); clean build {:.1}s", cap.json.paragraphs.len(), cap.json.pages, cap.wall.as_secs_f64(), clean.wall.as_secs_f64());
     let mut report = Report { paragraphs_total: cap.json.paragraphs.len(), ..Default::default() };
+    // T3: the capture package must not change the output
+    let t3 = lode_verify::pdfcompare::compare(&cap.pdf, &clean.pdf)?;
+    report.capture_pdf_equals_clean = t3.equal;
+    println!("T3 (instrumented PDF == clean PDF): {}{}", t3.equal, if t3.equal { String::new() } else { format!(" {:?}", t3.differences.iter().take(3).collect::<Vec<_>>()) });
 
     // ---- eligibility + layer 1 ----
     let policy = Policy::default();

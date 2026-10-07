@@ -75,6 +75,8 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         wait: u64,
     },
+    /// Compare two PDFs for typesetting equality (content streams, fonts, images; metadata ignored).
+    PdfCompare { a: PathBuf, b: PathBuf },
     GenBook {
         #[arg(long, default_value_t = 10)]
         pages: u32,
@@ -98,12 +100,19 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Verify { project, main, build, dpi, raster, json_out, max_paragraphs } => {
             let r = verify::run(verify::VerifyOpts { project, main, build, dpi, raster, json_out, max_paragraphs })?;
-            if !(r.layer1_pass && r.layer2_pass && r.layer3_pass.unwrap_or(true)) {
+            if !(r.layer1_pass && r.layer2_pass && r.layer3_pass.unwrap_or(true) && r.capture_pdf_equals_clean) {
                 std::process::exit(1);
             }
         }
         Cmd::Serve { project, main, build } => serve::run(project, main, build)?,
         Cmd::Edit { project, main, byte, find, text, wait } => serve::edit_once(project, main, byte, find, text, wait)?,
+        Cmd::PdfCompare { a, b } => {
+            let d = lode_verify::pdfcompare::compare(&a, &b)?;
+            println!("{}", serde_json::to_string_pretty(&d)?);
+            if !d.equal {
+                std::process::exit(1);
+            }
+        }
         Cmd::GenBook { pages, variant, fonts, seed, out } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;
             println!("wrote {}", out.display());
