@@ -1,5 +1,6 @@
 use lode_core::fixtures as gen_book;
 mod bench;
+mod probe;
 mod serve;
 mod slice;
 mod verify;
@@ -78,7 +79,7 @@ enum Cmd {
     },
     /// Compare two PDFs for typesetting equality (content streams, fonts, images; metadata ignored).
     PdfCompare { a: PathBuf, b: PathBuf },
-    /// Convert a binary display list (v1) to its JSON mirror.
+    /// Convert a binary display list to its JSON mirror.
     Dl2json { file: PathBuf },
     /// Benchmarks: in-engine line breaking (hardware factor) and warm round trips with gates.
     Bench {
@@ -111,6 +112,17 @@ enum Cmd {
         /// Also build the project independently and compare with `lode pdf-compare` rules.
         #[arg(long)]
         check: bool,
+    },
+    /// Latency breakdown of the fast path (direct server, engine profile, session) on one project.
+    Probe {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value = "main.tex")]
+        main: String,
+        #[arg(long, default_value_t = 200)]
+        n: usize,
+        #[arg(long, default_value = "build/probe")]
+        build: PathBuf,
     },
     GenBook {
         #[arg(long, default_value_t = 10)]
@@ -179,6 +191,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Cmd::Probe { project, main, n, build } => probe::run(project, main, n, build)?,
         Cmd::GenBook { pages, variant, fonts, seed, out } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;
             println!("wrote {}", out.display());

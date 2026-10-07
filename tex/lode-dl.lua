@@ -77,7 +77,7 @@ local function font_entry(f)
   local e = font_cache[f]
   if not e then
     local tfm = font.getfont(f)
-    e = { tfm = tfm, chars = tfm and tfm.characters or {}, widths = {},
+    e = { tfm = tfm, chars = tfm and tfm.characters or {}, widths = {}, idx = {},
           virtual = tfm and tfm.type == "virtual" or false,
           fonts = tfm and tfm.fonts or nil }
     font_cache[f] = e
@@ -105,16 +105,26 @@ local function expand(w, ef)
 end
 M.set_expansion_denominator = function(d) EXP_DENOM = d end
 
--- Font descriptors for the "fonts" table of a display list.
+-- Font descriptors for the "fonts" table of a display list. Cached per font id: font ids are
+-- never reused within a process, and font.getfont() builds a fresh (large) table for TFM
+-- fonts on every call.
+local descriptor_cache = {}
 local function font_descriptor(f)
-  local t = font.getfont(f)
-  if not t then return { id = f } end
-  return {
-    id = f, name = t.name, fullname = t.fullname, psname = t.psname, filename = t.filename,
-    format = t.format, type = t.type, size = t.size, designsize = t.designsize,
-    slant = t.slant, extend = t.extend, squeeze = t.squeeze, subfont = t.subfont,
-    encodingbytes = t.encodingbytes, embedding = t.embedding,
-  }
+  local d = descriptor_cache[f]
+  if d then return d end
+  local t = font_entry(f).tfm
+  if not t then
+    d = { id = f }
+  else
+    d = {
+      id = f, name = t.name, fullname = t.fullname, psname = t.psname, filename = t.filename,
+      format = t.format, type = t.type, size = t.size, designsize = t.designsize,
+      slant = t.slant, extend = t.extend, squeeze = t.squeeze, subfont = t.subfont,
+      encodingbytes = t.encodingbytes, embedding = t.embedding,
+    }
+  end
+  descriptor_cache[f] = d
+  return d
 end
 
 ---------------------------------------------------------------------------------------------
@@ -144,8 +154,11 @@ end
 function State:bin_flush_run()
   local run = self.run
   if run then
-    self.buf[#self.buf + 1] = pack("<Bs4", 0x20, pack("<I4i4i4I4", self.run_font, self.run_y, self.run_ef, #run) .. concat(run))
+    local n = self.rn
+    self.glyphs = self.glyphs + n
+    self.buf[#self.buf + 1] = pack("<Bs4", 0x20, pack("<I4i4i4I4", self.run_font, self.run_y, self.run_ef, n) .. concat(run, "", 1, n))
     self.run = nil
+    self.rn = 0
   end
 end
 function State:bin_rec(tag, payload)
@@ -160,10 +173,12 @@ function State:emit(item)
       local f, y, ef = item[2], item[6], item[8] or 0
       if not self.run or f ~= self.run_font or y ~= self.run_y or ef ~= self.run_ef then
         self:bin_flush_run()
-        self.run, self.run_font, self.run_y, self.run_ef = {}, f, y, ef
+        self.run, self.rn, self.run_font, self.run_y, self.run_ef = {}, 0, f, y, ef
       end
-      local run = self.run
-      run[#run + 1] = pack("<I4I4i4i4", item[3] or 0, item[4] or 0xFFFFFFFF, item[5], item[7])
+      local n = self.rn + 1
+      self.rn = n
+      self.run[n] = pack("<I4I4i4i4", item[3] or 0, item[4] or 0xFFFFFFFF, item[5], item[7])
+      -- (binary mode counts glyphs at flush time)
     elseif t == "r" then self:bin_rec(0x21, pack("<i4i4i4i4", item[2], item[3], item[4], item[5]))
     elseif t == "c" then
       local cmd = item[3]; if type(cmd) ~= "number" then cmd = 255 end
@@ -190,12 +205,19 @@ end
 local hlist_out, vlist_out
 
 -- Walk an hlist's content list. Returns final cur_h. `walk` is re-entered for disc replace lists.
+-- The current glyph run (binary mode) is mirrored in locals while walking; `sync_out`/`sync_in`
+-- move it to/from the state around calls that may emit records or recurse.
 hlist_out = function(st, box, left, base_v)
   local last_f, last_e = nil, nil
+  local bin = st.bin
   local g_order, g_sign, g_set = getfield(box, "glue_order"), getfield(box, "glue_sign"), getfield(box, "glue_set")
   local box_w, box_h, box_d = getwhd(box)
   local cur_h = left
   local cur_glue, cur_g = 0.0, 0
+  local run, rn, run_font, run_y, run_ef = st.run, st.rn, st.run_font, st.run_y, st.run_ef
+
+  local function sync_out() st.run, st.rn, st.run_font, st.run_y, st.run_ef = run, rn, run_font, run_y, run_ef end
+  local function sync_in() run, rn, run_font, run_y, run_ef = st.run, st.rn, st.run_font, st.run_y, st.run_ef end
 
   local function glue_advance(wd, st_, sh, sto, sho)
     local rule_wd = wd - cur_g
@@ -213,15 +235,19 @@ hlist_out = function(st, box, left, base_v)
     return rule_wd + cur_g
   end
 
-  local function walk(list)
-    local n = list
-    while n do
+  -- discretionary replace lists are walked in place: the node after the disc is pushed on a
+  -- small stack and resumed when the replace list ends
+  local dstack, ddepth = nil, 0
+  local n = getlist(box)
+  while n do
       local id = getid(n)
+      local nxt = getnext(n)
       if id == glyph_id then
         local f, c = getfont(n), getchar(n)
         local ef = getexpansion(n) or 0
         local xo, yo = getoffsets(n)
-        local w = floor(getwidth(n) + 0.5)
+        -- glyph widths from the engine are integers (scaled points)
+        local w = getwidth(n)
         if ef ~= 0 then w = expand(w, ef) end
         if f ~= last_f then
           last_e = font_entry(f)
@@ -230,19 +256,22 @@ hlist_out = function(st, box, left, base_v)
         end
         local e = last_e
         if e.virtual then
-          st:emit_virtual(f, c, cur_h + (xo or 0), base_v - (yo or 0), ef)
-        elseif st.bin then
+          sync_out(); st:emit_virtual(f, c, cur_h + (xo or 0), base_v - (yo or 0), ef); sync_in()
+        elseif bin then
           -- hot path: pack straight into the current glyph run
-          st.glyphs = st.glyphs + 1
           local y = base_v - yo
-          local run = st.run
-          if not run or f ~= st.run_font or y ~= st.run_y or ef ~= st.run_ef then
-            st:bin_flush_run()
-            run = {}
-            st.run, st.run_font, st.run_y, st.run_ef = run, f, y, ef
+          if not run or f ~= run_font or y ~= run_y or ef ~= run_ef then
+            sync_out(); st:bin_flush_run()
+            run, rn, run_font, run_y, run_ef = {}, 0, f, y, ef
           end
-          local ch = e.chars[c]
-          run[#run + 1] = pack("<I4I4i4i4", c, (ch and ch.index) or 0xFFFFFFFF, cur_h + xo, w)
+          local gi = e.idx[c]
+          if gi == nil then
+            local ch = e.chars[c]
+            gi = (ch and ch.index) or 0xFFFFFFFF
+            e.idx[c] = gi
+          end
+          rn = rn + 1
+          run[rn] = pack("<I4I4i4i4", c, gi, cur_h + xo, w)
         else
           local gi = glyph_index(f, c)
           st.glyphs = st.glyphs + 1
@@ -253,7 +282,24 @@ hlist_out = function(st, box, left, base_v)
         cur_h = cur_h + w
       elseif id == glue_id then
         local wd, st_, sh, sto, sho = getglue(n)
-        local rule_wd = glue_advance(wd, st_, sh, sto, sho)
+        -- inlined glue_advance (hot: every inter-word space)
+        local rule_wd = wd - cur_g
+        if g_sign ~= 0 then
+          if g_sign == 1 then
+            if sto == g_order then
+              cur_glue = cur_glue + st_
+              local g = g_set * cur_glue
+              if g > BILLION then g = BILLION elseif g < -BILLION then g = -BILLION end
+              if g >= 0 then cur_g = floor(g + 0.5) else cur_g = ceil(g - 0.5) end
+            end
+          elseif sho == g_order then
+            cur_glue = cur_glue - sh
+            local g = g_set * cur_glue
+            if g > BILLION then g = BILLION elseif g < -BILLION then g = -BILLION end
+            if g >= 0 then cur_g = floor(g + 0.5) else cur_g = ceil(g - 0.5) end
+          end
+        end
+        rule_wd = rule_wd + cur_g
         local sub = getsubtype(n)
         if sub >= 100 then
           -- leaders (a_leaders=100, c_leaders=101, x_leaders=102, g_leaders=103)
@@ -262,7 +308,7 @@ hlist_out = function(st, box, left, base_v)
             local lw, lh, ld = getwhd(lb)
             if lh == RUNNING then lh = box_h end
             if ld == RUNNING then ld = box_d end
-            if rule_wd > 0 and (lh + ld) > 0 then st:emit({ "r", cur_h, base_v - lh, rule_wd, lh + ld }) end
+            if rule_wd > 0 and (lh + ld) > 0 then sync_out(); st:emit({ "r", cur_h, base_v - lh, rule_wd, lh + ld }); sync_in() end
           elseif lb then
             local leader_wd = getwidth(lb)
             if leader_wd > 0 and rule_wd > 0 then
@@ -287,6 +333,7 @@ hlist_out = function(st, box, left, base_v)
               local lid = getid(lb)
               local lw, lh, ld = getwhd(lb)
               local lshift = getshift(lb)
+              sync_out()
               while cur_h + leader_wd <= edge do
                 if lid == hlist_id then
                   hlist_out(st, lb, cur_h, base_v + lshift)
@@ -295,10 +342,8 @@ hlist_out = function(st, box, left, base_v)
                 end
                 cur_h = cur_h + leader_wd + lx
               end
+              sync_in()
               cur_h = edge - 10
-              rule_wd = 0
-              cur_h = save_h + (edge - 10 - save_h)
-              -- the loop above already advanced cur_h to edge - 10; nothing left to add
               goto continue
             end
           end
@@ -308,22 +353,34 @@ hlist_out = function(st, box, left, base_v)
         -- LuaTeX: kern_width(q) = width(q) + ex_kern(q); for kern nodes the Lua field
         -- `expansion_factor` *is* ex_kern, an amount in sp precomputed by the packer.
         cur_h = cur_h + getkern(n) + (getexpansion(n) or 0)
+      elseif id == disc_id then
+        local pre, post, replace = getdisc(n)
+        if replace then
+          ddepth = ddepth + 1
+          if not dstack then dstack = {} end
+          dstack[ddepth] = nxt
+          nxt = replace
+        end
+      elseif id == penalty_id or id == boundary_id or id == mark_id then
+        -- no output
       elseif id == margin_kern_id then
         cur_h = cur_h + getwidth(n)
       elseif id == hlist_id or id == vlist_id then
         local w, h, d = getwhd(n)
-        local s = getshift(n)
+        local sh = getshift(n)
         local par = st.attr_par and getattribute(n, st.attr_par)
         local line = par and st.attr_line and getattribute(n, st.attr_line)
+        sync_out()
         if par and par >= 0 and id == hlist_id and not st.cur then
-          st:begin_line(n, par, line, cur_h, base_v + s, w, h, d)
-          hlist_out(st, n, cur_h, base_v + s)
+          st:begin_line(n, par, line, cur_h, base_v + sh, w, h, d)
+          hlist_out(st, n, cur_h, base_v + sh)
           st:end_line()
         elseif id == hlist_id then
-          hlist_out(st, n, cur_h, base_v + s)
+          hlist_out(st, n, cur_h, base_v + sh)
         else
-          vlist_out(st, n, cur_h, base_v + s - h)
+          vlist_out(st, n, cur_h, base_v + sh - h)
         end
+        sync_in()
         cur_h = cur_h + w
       elseif id == rule_id then
         local w, h, d = getwhd(n)
@@ -331,6 +388,7 @@ hlist_out = function(st, box, left, base_v)
         if h == RUNNING then h = box_h end
         if d == RUNNING then d = box_d end
         if w == RUNNING then w = 0 end
+        sync_out()
         if sub == RULE_IMAGE then
           st:emit({ "i", getfield(n, "index"), cur_h, base_v - h, w, h + d }); st.images = st.images + 1
         elseif sub == RULE_EMPTY then
@@ -340,14 +398,12 @@ hlist_out = function(st, box, left, base_v)
         elseif w > 0 and (h + d) > 0 then
           st:emit({ "r", cur_h, base_v - h, w, h + d })
         end
+        sync_in()
         cur_h = cur_h + w
-      elseif id == disc_id then
-        local pre, post, replace = getdisc(n)
-        if replace then walk(replace) end
       elseif id == math_id then
         local wd, st_, sh, sto, sho = getglue(n)
         local sub = getsubtype(n)
-        st:emit({ "m", sub == 0 and "on" or "off", cur_h })
+        sync_out(); st:emit({ "m", sub == 0 and "on" or "off", cur_h }); sync_in()
         if wd == 0 and st_ == 0 and sh == 0 then
           cur_h = cur_h + getfield(n, "surround")
         else
@@ -355,6 +411,7 @@ hlist_out = function(st, box, left, base_v)
         end
       elseif id == whatsit_id then
         local sub = getsubtype(n)
+        sync_out()
         if sub == ws_colorstack then
           st:emit({ "c", getfield(n, "stack"), getfield(n, "cmd"), getfield(n, "data") })
         elseif sub == ws_literal then
@@ -368,27 +425,29 @@ hlist_out = function(st, box, left, base_v)
         else
           st:emit({ "u", "whatsit", sub }); st:flag("whatsit", sub)
         end
-      elseif id == penalty_id or id == boundary_id or id == mark_id then
-        -- no output
+        sync_in()
       elseif id == local_par_id then
         local bl = getfield(n, "box_left_width") or 0
         local br = getfield(n, "box_right_width") or 0
         if bl ~= 0 or br ~= 0 then st:flag("local_boxes") end
       elseif id == dir_id then
         local dir = getfield(n, "dir")
-        if dir and dir ~= "TLT" and dir ~= "+TLT" and dir ~= "-TLT" then st:flag("dir", dir); st:emit({ "u", "dir", dir }) end
+        if dir and dir ~= "TLT" and dir ~= "+TLT" and dir ~= "-TLT" then sync_out(); st:flag("dir", dir); st:emit({ "u", "dir", dir }); sync_in() end
       elseif id == ins_id then
-        st:flag("ins"); st:emit({ "u", "ins", cur_h })
+        sync_out(); st:flag("ins"); st:emit({ "u", "ins", cur_h }); sync_in()
       elseif id == adjust_id then
-        st:flag("adjust"); st:emit({ "u", "adjust", cur_h })
+        sync_out(); st:flag("adjust"); st:emit({ "u", "adjust", cur_h }); sync_in()
       else
         st:flag("node_" .. (node.type(id) or tostring(id)))
       end
       ::continue::
-      n = getnext(n)
-    end
+      if nxt == nil and ddepth > 0 then
+        nxt = dstack[ddepth]
+        ddepth = ddepth - 1
+      end
+      n = nxt
   end
-  walk(getlist(box))
+  sync_out()
   return cur_h
 end
 
@@ -544,7 +603,7 @@ function State:emit_virtual(f, c, x, y, ef, depth)
         self:emit_virtual(cur_font, cc, px, py, ef, depth + 1)
       else
         self:usefont(cur_font)
-        self.glyphs = self.glyphs + 1
+        if not self.bin then self.glyphs = self.glyphs + 1 end
         self:emit({ "g", cur_font, cc, glyph_index(cur_font, cc), px, py, w, ef })
       end
       px = px + w
@@ -601,7 +660,7 @@ local function font_kind(d)
   return 0
 end
 
--- Paragraph box straight to binary display-list bytes (format v1). Same traversal as
+-- Paragraph box straight to binary display-list bytes (encoding revision 1). Same traversal as
 -- M.paragraph; records are written as they are produced, META/FONT/FLAG records last.
 -- Returns bytes, line count, glyph count, width, height, depth, flags table.
 function M.paragraph_binary(boxnode, initial_color)
@@ -610,6 +669,7 @@ function M.paragraph_binary(boxnode, initial_color)
   st.depth = 0
   st.bin = true
   st.buf = {}
+  st.rn = 0
   st.nlines = 0
   if initial_color and initial_color ~= "" then st:emit({ "c", 0, 0, initial_color }) end
   local w, h, d = getwhd(box)
@@ -632,6 +692,14 @@ function M.paragraph_binary(boxnode, initial_color)
   buf[#buf + 1] = pack("<Bs4", 0xFF, "")
   local body = concat(buf)
   return pack("<c4I2I2I4I4", "LODL", 1, 0, 16 + #body, 0) .. body, st.nlines, st.glyphs, w, h, d, st.flags
+end
+
+-- Internals exposed for profiling (lode-serve.lua `profile` op).
+M._hlist_out = function(st, box, left, base_v) return hlist_out(st, box, left, base_v) end
+M._new_state_bin = function()
+  local st = new_state({ lines_at_top = true })
+  st.depth = 0; st.bin = true; st.buf = {}; st.rn = 0; st.nlines = 0
+  return st
 end
 
 -- Paragraph box (a \vbox whose top-level hlists are the lines). Origin: top-left of the box.

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/lode-dl", "crates/lode-core", "crates/lode-cli", "crates/lode-verify"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/HenryXiaoYang/open-latex"

@@ -3,7 +3,7 @@
 use crate::background::{run_pass, snapshot_dir, write_snapshot, BibTool};
 use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, SpanKind};
 use crate::eligibility::{check_engine, check_source, Policy, Reason};
-use crate::engine::FastServer;
+use crate::engine::{FastServer, Response};
 use crate::layout::{Fragment, LayoutStore, SnapshotSpan};
 use crate::texlive::TexLive;
 use anyhow::{anyhow, Context, Result};
@@ -145,6 +145,8 @@ pub struct EditResult {
     pub outcome: EditOutcome,
     pub routed: String,
     pub reasons: Vec<String>,
+    /// Host-side stage times in µs: segmentation, eligibility, request dispatch.
+    pub host_us: [u64; 3],
 }
 
 struct FastRequest {
@@ -155,14 +157,37 @@ struct FastRequest {
     span_hash: u64,
     source: String,
     seq: i64,
-    ctx: serde_json::Value,
+    /// Context object for the server; None when the engine link already holds this context
+    /// (the engine thread builds it from the layout store when it must send it).
+    ctx: Option<serde_json::Value>,
     versions: Versions,
     context_stale: bool,
     baselineskip: i64,
     expected_lines: i64,
 }
 
+/// A compile the server is working on (sent either by the engine thread or directly by the
+/// host thread through `EngineLink::writer`).
+struct InFlight {
+    req: FastRequest,
+    t0: Instant,
+}
+
+/// Host-visible side of the fast server: lets `apply_edit` submit a compile frame straight to
+/// the server's stdin when the server is idle, saving the wake-up of the engine thread. The
+/// engine thread owns the server and reads every result, in order.
+#[derive(Default)]
+struct EngineLink {
+    writer: Option<std::fs::File>,
+    generation: u64,
+    inflight: Option<InFlight>,
+    contexts_sent: HashSet<i64>,
+    context_rev_sent: u64,
+    next_req: i64,
+}
+
 struct Shared {
+    link: Mutex<EngineLink>,
     files: Mutex<BTreeMap<String, FileBuf>>,
     ids: Mutex<IdAllocator>,
     source_revision: AtomicU64,
@@ -218,6 +243,7 @@ impl Session {
             policy.trusted_macros.insert(m.clone());
         }
         let shared = Arc::new(Shared {
+            link: Mutex::new(EngineLink { next_req: 1, ..Default::default() }),
             files: Mutex::new(files),
             ids: Mutex::new(ids),
             source_revision: AtomicU64::new(1),
@@ -284,12 +310,13 @@ impl Session {
             self.shared.files.lock().insert(rel_path.to_string(), fb);
             self.schedule_background();
             let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
-            return Ok(EditResult { edit_id, source_revision: rev, outcome: EditOutcome::default(), routed: "background".into(), reasons: vec!["new file".into()] });
+            return Ok(EditResult { edit_id, source_revision: rev, outcome: EditOutcome::default(), routed: "background".into(), reasons: vec!["new file".into()], host_us: [0, 0, 0] });
         }
         self.apply_edit(rel_path, Edit { start_byte: 0, end_byte: len, text: text.to_string() })
     }
 
     pub fn apply_edit(&self, rel_path: &str, edit: Edit) -> Result<EditResult> {
+        let t_start = Instant::now();
         let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
         let (outcome, span_info) = {
@@ -308,14 +335,15 @@ impl Session {
             self.shared.pending.lock().clear();
             self.shared.pending_signal.0.send(()).ok();
             self.schedule_background();
-            return Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "preamble".into(), reasons: vec!["preamble changed".into()] });
+            return Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "preamble".into(), reasons: vec!["preamble changed".into()], host_us: [t_start.elapsed().as_micros() as u64, 0, 0] });
         }
+        let t_seg = t_start.elapsed();
         // split/merge or multi-span edits: background only
         let Some((span, text, (first_line, _last_line))) = span_info else {
             self.note_bg_change(rel_path, rev, &outcome);
             self.schedule_background();
             self.shared.events.send(Event::BackgroundScheduled { par_id: None, reasons: vec!["paragraph boundaries changed".into()], edit_id }).ok();
-            return Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons: vec!["paragraph boundaries changed".into()] });
+            return Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons: vec!["paragraph boundaries changed".into()], host_us: [t_seg.as_micros() as u64, 0, 0] });
         };
         // eligibility
         let mut reasons: Vec<String> = Vec::new();
@@ -353,7 +381,7 @@ impl Session {
                             span_hash: span.hash,
                             source: text.trim_end_matches('\n').to_string(),
                             seq: c.seq,
-                            ctx: c.context_json(),
+                            ctx: None,
                             versions: Versions {
                                 source_revision: rev,
                                 context_revision: layout.context_revision,
@@ -369,17 +397,48 @@ impl Session {
             }
         }
         drop(layout);
+        let t_elig = t_start.elapsed();
         if let Some(req) = request {
-            self.shared.pending.lock().insert(span.id, req);
-            self.shared.pending_signal.0.send(()).ok();
-            self.shared.overlays.lock().insert(span.id, rev);
-            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "fast".into(), reasons })
+            let span_id = span.id;
+            self.shared.overlays.lock().insert(span_id, rev);
+            self.dispatch_fast(req);
+            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "fast".into(), reasons, host_us: [t_seg.as_micros() as u64, (t_elig - t_seg).as_micros() as u64, (t_start.elapsed() - t_elig).as_micros() as u64] })
         } else {
             self.note_bg_change(rel_path, rev, &outcome);
             self.schedule_background();
             self.shared.events.send(Event::BackgroundScheduled { par_id: Some(span.id), reasons: reasons.clone(), edit_id }).ok();
-            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons })
+            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons, host_us: [t_seg.as_micros() as u64, (t_elig - t_seg).as_micros() as u64, 0] })
         }
+    }
+
+    /// Hand a fast request to the server: written straight to its stdin when the server is idle
+    /// and already holds the context (no engine-thread wake-up on the critical path), queued for
+    /// the engine thread otherwise. Queued requests coalesce per paragraph.
+    fn dispatch_fast(&self, req: FastRequest) {
+        let mut link = self.shared.link.lock();
+        let direct = link.writer.is_some()
+            && link.inflight.is_none()
+            && link.generation == req.versions.engine_generation
+            && link.context_rev_sent == req.versions.context_revision
+            && link.contexts_sent.contains(&req.seq);
+        if direct {
+            let req_id = link.next_req;
+            link.next_req += 1;
+            let frame = FastServer::encode_compile(req_id, req.seq, &req.source);
+            let t0 = Instant::now();
+            use std::io::Write;
+            if link.writer.as_mut().unwrap().write_all(&frame).is_ok() {
+                link.inflight = Some(InFlight { req, t0 });
+                drop(link);
+                // wake the engine thread so it is spinning on the FIFO when the result lands
+                self.shared.pending_signal.0.send(()).ok();
+                return;
+            }
+            link.writer = None; // broken pipe: the engine thread restarts the server
+        }
+        drop(link);
+        self.shared.pending.lock().insert(req.par_id, req);
+        self.shared.pending_signal.0.send(()).ok();
     }
 
     fn note_bg_change(&self, rel_path: &str, rev: Revision, outcome: &EditOutcome) {
@@ -494,23 +553,63 @@ fn reason_str(r: &Reason) -> String {
 fn engine_thread(s: Arc<Shared>) {
     let mut server: Option<FastServer> = None;
     let mut server_generation: u64 = u64::MAX;
-    let mut contexts_sent: HashSet<i64> = HashSet::new();
-    let mut context_rev_sent: u64 = 0;
+    let reset_link = |s: &Shared| {
+        let mut l = s.link.lock();
+        l.writer = None;
+        l.inflight = None;
+        l.contexts_sent.clear();
+    };
     loop {
         if s.shutdown.load(Ordering::SeqCst) {
+            reset_link(&s);
             if let Some(mut srv) = server.take() {
                 let _ = srv.shutdown();
             }
             return;
         }
-        // next pending request (any)
+        let wanted_gen = s.engine_generation.load(Ordering::SeqCst);
+        // 1. a compile is in flight (sent by us or directly by the host): read its result
+        let inflight_gen = s.link.lock().inflight.as_ref().map(|f| f.req.versions.engine_generation);
+        if let Some(gen) = inflight_gen {
+            let srv_ok = server.is_some() && server_generation == gen && gen == wanted_gen;
+            if !srv_ok {
+                s.link.lock().inflight = None;
+                continue;
+            }
+            let srv = server.as_mut().unwrap();
+            let result = srv.recv();
+            srv.timeout = s.cfg.compile_timeout;
+            let Some(fl) = s.link.lock().inflight.take() else { continue };
+            match result {
+                Ok(Response::Result(cr)) => {
+                    let rt = crate::engine::RoundTrip { total: fl.t0.elapsed(), t_tex: Duration::from_micros(cr.t_tex_us as u64), t_traverse: Duration::from_micros(cr.t_traverse_us as u64), t_pack: Duration::from_micros(cr.t_pack_us as u64) };
+                    handle_result(&s, fl.req, cr, rt, fl.t0, wanted_gen);
+                }
+                Ok(Response::Fatal { reason, errors, .. }) => {
+                    engine_failed(&s, &fl.req, anyhow!("engine fatal: {reason} {errors:?}"), wanted_gen);
+                    server = None;
+                    reset_link(&s);
+                }
+                Ok(other) => {
+                    engine_failed(&s, &fl.req, anyhow!("unexpected response {other:?}"), wanted_gen);
+                    server = None;
+                    reset_link(&s);
+                }
+                Err(e) => {
+                    engine_failed(&s, &fl.req, e, wanted_gen);
+                    server = None;
+                    reset_link(&s);
+                }
+            }
+            continue;
+        }
+        // 2. next queued request (any)
         let req = {
             let mut p = s.pending.lock();
             let key = p.keys().next().copied();
             key.and_then(|k| p.remove(&k))
         };
-        let wanted_gen = s.engine_generation.load(Ordering::SeqCst);
-        if req.is_none() && server.is_some() && server_generation == wanted_gen {
+        if req.is_none() && server.is_some() && server_generation == wanted_gen && server.as_mut().unwrap().is_alive() {
             let _ = s.pending_signal.1.recv_timeout(Duration::from_millis(200));
             continue;
         }
@@ -519,8 +618,9 @@ fn engine_thread(s: Arc<Shared>) {
                 continue; // superseded by a preamble change
             }
         }
-        // (re)start the server when the generation changed or it died
+        // 3. (re)start the server when the generation changed or it died
         if server.is_none() || server_generation != wanted_gen || !server.as_mut().unwrap().is_alive() {
+            reset_link(&s);
             if let Some(mut old) = server.take() {
                 old.kill();
             }
@@ -533,9 +633,15 @@ fn engine_thread(s: Arc<Shared>) {
             match FastServer::spawn(&s.tl, &s.cfg.project_root, &s.cfg.build_dir.join("serve"), &preamble, wanted_gen) {
                 Ok(mut srv) => {
                     srv.timeout = s.cfg.compile_timeout.max(Duration::from_secs(30)); // first compile loads fonts
+                    {
+                        let mut l = s.link.lock();
+                        l.writer = srv.stdin_clone().ok();
+                        l.generation = wanted_gen;
+                        l.contexts_sent.clear();
+                        l.inflight = None;
+                    }
                     server = Some(srv);
                     server_generation = wanted_gen;
-                    contexts_sent.clear();
                     s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Ready".into(), reason: None }).ok();
                 }
                 Err(e) => {
@@ -545,72 +651,109 @@ fn engine_thread(s: Arc<Shared>) {
                 }
             }
         }
-        let Some(req) = req else { continue };
+        let Some(mut req) = req else { continue };
         let srv = server.as_mut().unwrap();
-        if context_rev_sent != req.versions.context_revision {
-            contexts_sent.clear();
-            context_rev_sent = req.versions.context_revision;
+        // 4. send the context when the server does not hold it, then the compile frame
+        let mut link = s.link.lock();
+        if link.context_rev_sent != req.versions.context_revision {
+            link.contexts_sent.clear();
+            link.context_rev_sent = req.versions.context_revision;
         }
-        if !contexts_sent.contains(&req.seq) {
-            if let Err(e) = srv.set_context(req.seq, &req.ctx) {
+        if !link.contexts_sent.contains(&req.seq) {
+            let ctx = match req.ctx.take() {
+                Some(c) => Some(c),
+                None => {
+                    // built lazily from the current layout; the paragraph may have a new seq there
+                    let layout = s.layout.lock();
+                    layout.engine_paragraph(req.par_id).map(|ep| {
+                        req.seq = ep.seq;
+                        ep.captured.context_json()
+                    })
+                }
+            };
+            let Some(ctx) = ctx else {
+                drop(link);
+                s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec!["context no longer available".into()], edit_id: req.edit_id }).ok();
+                continue;
+            };
+            if link.contexts_sent.contains(&req.seq) {
+                // the lazy lookup mapped to a context already installed
+            } else if let Err(e) = srv.set_context(req.seq, &ctx) {
+                drop(link);
                 s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Restarting".into(), reason: Some(format!("set_context: {e}")) }).ok();
                 server = None;
+                reset_link(&s);
                 continue;
+            } else {
+                link.contexts_sent.insert(req.seq);
             }
-            contexts_sent.insert(req.seq);
         }
+        let req_id = link.next_req;
+        link.next_req += 1;
         let t0 = Instant::now();
-        let result = srv.compile(req.seq, &req.source);
-        srv.timeout = s.cfg.compile_timeout;
-        match result {
-            Err(e) => {
-                s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Restarting".into(), reason: Some(e.to_string()) }).ok();
-                s.events.send(Event::Diagnostics { source: format!("fast:{:?}", req.par_id), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: e.to_string(), context: None }] }).ok();
-                server = None;
-                s.engine_generation.fetch_add(1, Ordering::SeqCst);
-                // the paragraph goes to the background path
-                s.bg_signal.0.send(BgCmd::Pass).ok();
-                s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec!["engine restarted".into()], edit_id: req.edit_id }).ok();
+        match srv.send_compile(req_id, req.seq, &req.source) {
+            Ok(()) => {
+                link.inflight = Some(InFlight { req, t0 });
             }
-            Ok(_) if req.warmup => {}
-            Ok((cr, rt)) => {
-                // discard rule: the span changed meanwhile, or the generation moved on
-                let current_hash = s.files.lock().values().find_map(|fb| fb.span(req.par_id).map(|sp| sp.hash));
-                if current_hash != Some(req.span_hash) || s.engine_generation.load(Ordering::SeqCst) != wanted_gen {
-                    continue;
-                }
-                let diagnostics: Vec<Diagnostic> = cr.errors.iter().map(|e| Diagnostic {
-                    severity: "error".into(), file: None,
-                    line: e.line.map(|l| l - 1), // line 1 is the replay head
-                    message: e.message.clone().unwrap_or_default(), context: e.context.clone(),
-                }).collect();
-                let timing = Timing { total_us: t0.elapsed().as_micros() as u64, tex_us: rt.t_tex.as_micros() as u64, traverse_us: rt.t_traverse.as_micros() as u64, pack_us: rt.t_pack.as_micros() as u64 };
-                if cr.status == "error" || cr.dl.is_none() {
-                    s.events.send(Event::ParagraphUpdate {
-                        par_id: req.par_id, edit_id: req.edit_id, versions: req.versions, status: "error".into(), reasons: vec![],
-                        fragments: vec![], pagination_stale: false, context_stale: req.context_stale, dl: cr.dl.unwrap_or_default(),
-                        diagnostics, timing,
-                    }).ok();
-                    continue;
-                }
-                let dl = cr.dl.unwrap();
-                let baselines: Vec<i64> = dl.lines.iter().map(|l| l.y).collect();
-                let (fragments, mut stale) = s.layout.lock().fragments(req.par_id, &baselines, req.baselineskip).unwrap_or((vec![], true));
-                if req.expected_lines != dl.lines.len() as i64 {
-                    stale = true;
-                }
-                let reasons: Vec<String> = dl.flags_map().keys().cloned().collect();
-                if stale || !reasons.is_empty() {
-                    s.bg_signal.0.send(BgCmd::Pass).ok();
-                }
-                s.events.send(Event::ParagraphUpdate {
-                    par_id: req.par_id, edit_id: req.edit_id, versions: req.versions,
-                    status: if reasons.is_empty() { "ok".into() } else { "ok_degraded".into() },
-                    reasons, fragments, pagination_stale: stale, context_stale: req.context_stale, dl, diagnostics, timing,
-                }).ok();
+            Err(e) => {
+                drop(link);
+                engine_failed(&s, &req, e, wanted_gen);
+                server = None;
+                reset_link(&s);
             }
         }
     }
+}
+
+fn engine_failed(s: &Shared, req: &FastRequest, e: anyhow::Error, wanted_gen: u64) {
+    s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Restarting".into(), reason: Some(e.to_string()) }).ok();
+    s.events.send(Event::Diagnostics { source: format!("fast:{:?}", req.par_id), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: e.to_string(), context: None }] }).ok();
+    s.engine_generation.fetch_add(1, Ordering::SeqCst);
+    // the paragraph goes to the background path
+    s.bg_signal.0.send(BgCmd::Pass).ok();
+    if !req.warmup {
+        s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec!["engine restarted".into()], edit_id: req.edit_id }).ok();
+    }
+}
+
+fn handle_result(s: &Shared, req: FastRequest, cr: crate::engine::CompileResult, rt: crate::engine::RoundTrip, t0: Instant, wanted_gen: u64) {
+    if req.warmup {
+        return;
+    }
+    // discard rule: the span changed meanwhile, or the generation moved on
+    let current_hash = s.files.lock().values().find_map(|fb| fb.span(req.par_id).map(|sp| sp.hash));
+    if current_hash != Some(req.span_hash) || s.engine_generation.load(Ordering::SeqCst) != wanted_gen {
+        return;
+    }
+    let diagnostics: Vec<Diagnostic> = cr.errors.iter().map(|e| Diagnostic {
+        severity: "error".into(), file: None,
+        line: e.line.map(|l| l - 1), // line 1 is the replay head
+        message: e.message.clone().unwrap_or_default(), context: e.context.clone(),
+    }).collect();
+    let timing = Timing { total_us: t0.elapsed().as_micros() as u64, tex_us: rt.t_tex.as_micros() as u64, traverse_us: rt.t_traverse.as_micros() as u64, pack_us: rt.t_pack.as_micros() as u64 };
+    if cr.status == "error" || cr.dl.is_none() {
+        s.events.send(Event::ParagraphUpdate {
+            par_id: req.par_id, edit_id: req.edit_id, versions: req.versions, status: "error".into(), reasons: vec![],
+            fragments: vec![], pagination_stale: false, context_stale: req.context_stale, dl: cr.dl.unwrap_or_default(),
+            diagnostics, timing,
+        }).ok();
+        return;
+    }
+    let dl = cr.dl.unwrap();
+    let baselines: Vec<i64> = dl.lines.iter().map(|l| l.y).collect();
+    let (fragments, mut stale) = s.layout.lock().fragments(req.par_id, &baselines, req.baselineskip).unwrap_or((vec![], true));
+    if req.expected_lines != dl.lines.len() as i64 {
+        stale = true;
+    }
+    let reasons: Vec<String> = dl.flags_map().keys().cloned().collect();
+    if stale || !reasons.is_empty() {
+        s.bg_signal.0.send(BgCmd::Pass).ok();
+    }
+    s.events.send(Event::ParagraphUpdate {
+        par_id: req.par_id, edit_id: req.edit_id, versions: req.versions,
+        status: if reasons.is_empty() { "ok".into() } else { "ok_degraded".into() },
+        reasons, fragments, pagination_stale: stale, context_stale: req.context_stale, dl, diagnostics, timing,
+    }).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -744,7 +887,7 @@ fn run_background_pass(s: &Shared) {
                 // font instances are loaded before the first real keystroke
                 let warm = format!("{} \\emph{{warm}} \\textbf{{warm}} \\textit{{warm}} \\textsc{{warm}} {{\\small warm}} $x^2_i + \\alpha \\sum \\frac{{1}}{{2}} \\mathbf{{v}}$", text.trim_end_matches('\n'));
                 p.insert(id, FastRequest {
-                    warmup: true, par_id: id, edit_id: 0, span_hash: 0, source: warm, seq: c.seq, ctx: c.context_json(),
+                    warmup: true, par_id: id, edit_id: 0, span_hash: 0, source: warm, seq: c.seq, ctx: None,
                     versions: Versions { source_revision: rev, context_revision: layout.context_revision, engine_generation: s.engine_generation.load(Ordering::SeqCst), layout_version: layout.layout_version },
                     context_stale: false, baselineskip: 0, expected_lines: 0,
                 });

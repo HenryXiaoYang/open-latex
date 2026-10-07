@@ -1,7 +1,7 @@
-/* lode — embeddable real-time LuaTeX compilation library. C ABI v1.
+/* lode — embeddable real-time LuaTeX compilation library. C ABI, lode 0.0.2 (unstable before 0.1).
  * Strings are UTF-8. Strings returned as `char*` are owned by the caller and must be released
  * with lode_string_free(); `const char*` results are owned by the object they came from.
- * Display lists are binary format v1 buffers (docs/DISPLAY_LIST.md) owned by the event. */
+ * Display lists are binary (encoding revision 1) buffers (docs/DISPLAY_LIST.md) owned by the event. */
 #ifndef LODE_H
 #define LODE_H
 #include <stdbool.h>

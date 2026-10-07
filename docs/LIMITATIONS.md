@@ -1,4 +1,4 @@
-# Limitations (v1)
+# Limitations (lode 0.0.2)
 
 ## What updates in real time, and what does not
 
@@ -15,7 +15,7 @@ question is when the *typeset* view catches up.
 | Inline math `$…$` from the allow-listed vocabulary | **real time** | fast path |
 | A paragraph that changes its line count (grows/shrinks) | paragraph in real time; following material after the next background pass | page breaks are global; `pagination_stale` says so |
 | Display math `\[…\]`, equation environments | background (seconds) | ends the paragraph in TeX; not isolated by `\vbox` replay |
-| Tables (`tabular`), lists, theorem-like environments | background | environments are background-only in v1 |
+| Tables (`tabular`), lists, theorem-like environments | background | environments are background-only in 0.0.2 |
 | Figures/images, captions, floats | background | float placement is global; `\includegraphics` paragraphs are not allow-listed |
 | TikZ/PGF diagrams | background, and the page renders through the **PDF fallback** | `\pdfliteral` drawing is not representable in the display list |
 | Footnotes, `\ref`/`\cite`/`\label`, counters, headings | background | page-global state |
@@ -23,7 +23,7 @@ question is when the *typeset* view catches up.
 | Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
 
 So the paper's demo items map as follows: typing text and inline math — yes, real time; moving
-paragraphs, adjusting tables, images and fonts "instantly" — not in this v1, those are
+paragraphs, adjusting tables, images and fonts "instantly" — not in 0.0.2, those are
 background-path updates (correct, versioned, but seconds rather than milliseconds). Extending the
 fast path to table cells, display-math blocks and figure boxes is possible with the same
 mechanism (capture a unit's context, re-typeset it in isolation, overlay it) and is the main item

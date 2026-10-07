@@ -256,24 +256,32 @@ impl FileBuf {
         let touches = |sp: &Span| sp.range.start <= end && start <= sp.range.end;
         let first_touched = old_spans.iter().position(touches).or_else(|| old_spans.iter().rposition(|sp| sp.range.end <= start));
         let last_touched = old_spans.iter().rposition(touches).or_else(|| old_spans.iter().position(|sp| sp.range.start >= end));
-        let window_ok = match (first_touched, last_touched) {
-            (Some(a), Some(b)) if a <= b => {
-                let lo = a.saturating_sub(1);
-                let hi = (b + 1).min(old_spans.len() - 1);
-                old_spans[lo..=hi].iter().all(|sp| matches!(sp.kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env))
-                    && lo > 0 && hi + 1 < old_spans.len()
-                    && !edit.text.contains("\\begin{document}") && !edit.text.contains("\\end{document}")
+        // The window is bounded by the neighbouring spans; when a neighbour is the preamble or
+        // the trailer the window starts (ends) at the body boundary instead, which is fixed.
+        let window: Option<(usize, usize)> = match (first_touched, last_touched) {
+            (Some(a), Some(b)) if a <= b && a > 0 && b + 1 < old_spans.len() => {
+                let (lo, hi) = (a - 1, b + 1);
+                let lo_ok = matches!(old_spans[lo].kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env | SpanKind::Preamble);
+                let hi_ok = matches!(old_spans[hi].kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env | SpanKind::Trailer);
+                let mid_ok = old_spans[a..=b].iter().all(|sp| matches!(sp.kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env));
+                if lo_ok && hi_ok && mid_ok && !edit.text.contains("\\begin{document}") && !edit.text.contains("\\end{document}") {
+                    Some((lo, hi))
+                } else {
+                    None
+                }
             }
-            _ => false,
+            _ => None,
         };
-        let new_units: Vec<(Range<usize>, SpanKind)> = if window_ok {
-            let a = first_touched.unwrap().saturating_sub(1);
-            let b = (last_touched.unwrap() + 1).min(old_spans.len() - 1);
-            let win_start = old_spans[a].range.start;
-            let win_end = (old_spans[b].range.end as i64 + delta) as usize;
-            let mut units: Vec<(Range<usize>, SpanKind)> = old_spans[..a].iter().map(|sp| (sp.range.clone(), sp.kind)).collect();
+        let new_units: Vec<(Range<usize>, SpanKind)> = if let Some((lo, hi)) = window {
+            let lo_is_preamble = old_spans[lo].kind == SpanKind::Preamble;
+            let hi_is_trailer = old_spans[hi].kind == SpanKind::Trailer;
+            let win_start = if lo_is_preamble { old_spans[lo].range.end } else { old_spans[lo].range.start };
+            let win_end = (if hi_is_trailer { old_spans[hi].range.start } else { old_spans[hi].range.end } as i64 + delta) as usize;
+            let keep_prefix = if lo_is_preamble { lo + 1 } else { lo };
+            let mut units: Vec<(Range<usize>, SpanKind)> = old_spans[..keep_prefix].iter().map(|sp| (sp.range.clone(), sp.kind)).collect();
             if segment_body(&self.text, win_start, win_end, &mut units) {
-                for sp in &old_spans[b + 1..] {
+                let tail_from = if hi_is_trailer { hi } else { hi + 1 };
+                for sp in &old_spans[tail_from..] {
                     units.push(((sp.range.start as i64 + delta) as usize..(sp.range.end as i64 + delta) as usize, sp.kind));
                 }
                 units

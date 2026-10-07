@@ -34,7 +34,7 @@ engine thread owns the server; one background thread owns passes and exports. `p
 `wait_for` drain a channel; `Session` is `Send` and can be shared behind an `Arc`.
 
 Display lists: `lode_dl::DisplayList` (lines → items; see `docs/PROTOCOL.md` for item kinds and
-`docs/DISPLAY_LIST.md` once the binary format is frozen).
+`docs/DISPLAY_LIST.md`).
 
 Scripted hosts can drive the same API over JSON lines: `lode serve --project DIR` reads
 `{"cmd":"edit","path":"main.tex","start":N,"end":M,"text":"…"}`, `set_document`, `spans`,
@@ -48,7 +48,7 @@ LodeSession *s = lode_session_open("{\"project_root\":\"/proj\",\"main_file\":\"
 char *r = lode_session_apply_edit(s, "main.tex", start, end, " text");   /* JSON EditResult */
 LodeEvent *e = lode_session_poll(s, 16);                                  /* NULL when idle */
 switch (lode_event_kind(e)) {
-  case LODE_EVENT_PARAGRAPH_UPDATE: { size_t n; const uint8_t *dl = lode_event_dl(e, 0, &n); /* binary v1 */ }
+  case LODE_EVENT_PARAGRAPH_UPDATE: { size_t n; const uint8_t *dl = lode_event_dl(e, 0, &n); /* binary display list, encoding revision 1 */ }
   case LODE_EVENT_LAYOUT_UPDATE:    { for (i = 0; i < lode_event_dl_count(e); i++) lode_event_dl(e, i, &n); }
 }
 const char *json = lode_event_json(e);   /* everything else about the event */

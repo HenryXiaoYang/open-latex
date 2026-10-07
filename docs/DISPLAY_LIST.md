@@ -1,4 +1,4 @@
-# Display list format v1
+# Display list format (lode 0.0.2, binary encoding revision 1)
 
 A display list is what lode hands a host to draw: positioned glyphs, rules, images, color
 operations and markers, in scaled points (sp; 65536 sp = 1 pt; 65781.76 sp = 1 bp), y growing
@@ -13,7 +13,7 @@ downward. Two framings exist:
 
 Within a line, items are in content order. `other` precedes the lines.
 
-## Binary encoding (frozen: v1)
+## Binary encoding (revision 1; the header carries the revision number)
 
 Little-endian throughout. `str` = `u16 length` + UTF-8 bytes.
 

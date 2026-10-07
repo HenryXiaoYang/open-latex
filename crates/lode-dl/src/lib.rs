@@ -1,7 +1,7 @@
 //! Display-list model for lode.
 //!
 //! The JSON form produced by `tex/lode-dl.lua` is the provisional interchange format until the
-//! binary format is frozen (milestone M5). Coordinates are in scaled points (sp); y grows down.
+//! binary encoding is revision 1 (docs/DISPLAY_LIST.md). Coordinates are in scaled points (sp); y grows down.
 
 pub mod binary;
 

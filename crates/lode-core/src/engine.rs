@@ -32,7 +32,7 @@ pub struct CompileResult {
     pub errors: Vec<EngineError>,
     #[serde(default)]
     pub dl: Option<DisplayList>,
-    /// The display list as received (binary format v1), kept so hosts need no re-encoding.
+    /// The display list as received (binary encoding revision 1), kept so hosts need no re-encoding.
     #[serde(skip)]
     pub dl_binary: Option<Vec<u8>>,
     #[serde(default)]
@@ -43,6 +43,11 @@ pub struct CompileResult {
     pub t_traverse_us: i64,
     #[serde(default)]
     pub t_pack_us: i64,
+    #[serde(default)]
+    pub stages_us: serde_json::Value,
+    /// Host-side stage times (µs): send, wait, read, parse.
+    #[serde(skip)]
+    pub host_us: [u64; 4],
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -60,6 +65,8 @@ pub enum Response {
     Pong,
     #[serde(rename = "stats")]
     Stats { requests: i64, font_nextid: i64, node_mem: String, grouplevel: i64, nest: i64, luastate: f64 },
+    #[serde(rename = "profile")]
+    Profile { #[serde(default)] us: serde_json::Value, #[serde(default)] input_ptr: i64 },
     #[serde(rename = "bye")]
     Bye,
     #[serde(rename = "error")]
@@ -85,7 +92,10 @@ pub struct FastServer {
     pub startup: Duration,
     /// Per-request watchdog (default 5 s; the first compile of a session loads fonts and may take longer).
     pub timeout: Duration,
+    /// How long to busy-poll for a reply before blocking (default 3 ms; zero disables).
+    pub spin: Duration,
     next_req: i64,
+    frame_buf: Vec<u8>,
 }
 
 impl FastServer {
@@ -104,7 +114,7 @@ impl FastServer {
                 concat!(
                     "\\input{{{}}}\n\\newbox\\lodebox\\newcount\\lodecontinue\\lodecontinue=1\n\\begin{{document}}\n",
                     "\\directlua{{lode_serve = dofile(kpse.find_file(\"lode-serve.lua\", \"lua\") or \"lode-serve.lua\") lode_serve.init(\\number\\lodebox, \\number\\allocationnumber)}}\n",
-                    "\\loop\\directlua{{lode_serve.step()}}\\ifnum\\lodecontinue>0 \\repeat\n\\end{{document}}\n"
+                    "\\loop\\lodestep\\ifnum\\lodecontinue>0 \\repeat\n\\end{{document}}\n"
                 ),
                 preamble_file.display()
             ),
@@ -135,7 +145,9 @@ impl FastServer {
             banner: String::new(),
             startup: Duration::ZERO,
             timeout: Duration::from_secs(5),
+            spin: std::env::var("LODE_SPIN_US").ok().and_then(|v| v.parse().ok()).map(Duration::from_micros).unwrap_or(Duration::from_millis(3)),
             next_req: 1,
+            frame_buf: Vec::with_capacity(1 << 16),
         };
         match s.recv()? {
             Response::Ready { banner, .. } => {
@@ -168,6 +180,18 @@ impl FastServer {
             return Ok(());
         }
         let deadline = Instant::now() + timeout;
+        // Bounded busy-poll: the reply to a compile is expected within a few ms, and waking a
+        // blocked thread costs tens of µs on most systems (more in VMs).
+        if !self.spin.is_zero() {
+            let spin_until = Instant::now() + self.spin;
+            while Instant::now() < spin_until {
+                let mut fds = [PollFd::new(self.resp.get_ref().as_fd(), PollFlags::POLLIN)];
+                if poll(&mut fds, PollTimeout::ZERO)? > 0 {
+                    return Ok(());
+                }
+                std::hint::spin_loop();
+            }
+        }
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -185,11 +209,25 @@ impl FastServer {
 
     pub fn recv(&mut self) -> Result<Response> {
         self.wait_readable(self.timeout)?;
+        self.recv_timed()
+    }
+
+    fn recv_timed(&mut self) -> Result<Response> {
+        let t0 = Instant::now();
         let mut hdr = [0u8; 4];
         self.resp.read_exact(&mut hdr).context("server closed the response channel")?;
         let n = u32::from_le_bytes(hdr) as usize;
-        let mut buf = vec![0u8; n];
-        self.resp.read_exact(&mut buf)?;
+        let mut buf = std::mem::take(&mut self.frame_buf);
+        buf.resize(n, 0);
+        let res = self.resp.read_exact(&mut buf);
+        let r = self.parse_frame(&buf, t0, res);
+        self.frame_buf = buf;
+        r
+    }
+
+    fn parse_frame(&mut self, buf: &[u8], t0: Instant, read: std::io::Result<()>) -> Result<Response> {
+        read?;
+        let t_read = t0.elapsed();
         if buf.is_empty() {
             bail!("empty frame");
         }
@@ -207,6 +245,8 @@ impl FastServer {
                     cr.dl = Some(DisplayList::from_binary(bin).context("decoding binary display list")?);
                     cr.dl_binary = Some(bin.to_vec());
                 }
+                cr.host_us[2] = t_read.as_micros() as u64;
+                cr.host_us[3] = (t0.elapsed() - t_read).as_micros() as u64;
                 Ok(Response::Result(cr))
             }
             k => bail!("unknown frame kind {k}"),
@@ -221,16 +261,49 @@ impl FastServer {
         }
     }
 
+    /// Encode a compile request frame: `C <req> <ctx> <len>\n` followed by the raw source.
+    pub fn encode_compile(req: i64, ctx: i64, source: &str) -> Vec<u8> {
+        let mut v = Vec::with_capacity(source.len() + 32);
+        v.extend_from_slice(format!("C {req} {ctx} {}\n", source.len()).as_bytes());
+        v.extend_from_slice(source.as_bytes());
+        v
+    }
+
+    /// Next request id (shared counter for direct writers, see `Session`).
+    pub fn next_req_id(&mut self) -> i64 {
+        let r = self.next_req;
+        self.next_req += 1;
+        r
+    }
+
+    /// A second handle on the server's stdin so another thread can submit compile frames
+    /// directly (the owner keeps reading results in order).
+    pub fn stdin_clone(&self) -> Result<File> {
+        use std::os::fd::{AsFd, OwnedFd};
+        let fd: OwnedFd = self.stdin.as_fd().try_clone_to_owned()?;
+        Ok(File::from(fd))
+    }
+
+    /// Submit a compile without waiting; the result is read with `recv`.
+    pub fn send_compile(&mut self, req: i64, ctx: i64, source: &str) -> Result<()> {
+        let frame = Self::encode_compile(req, ctx, source);
+        self.stdin.write_all(&frame)?;
+        Ok(())
+    }
+
     /// Compile one paragraph; blocking. Returns the result and host-side timing.
     pub fn compile(&mut self, ctx: i64, source: &str) -> Result<(CompileResult, RoundTrip)> {
-        let req = self.next_req;
-        self.next_req += 1;
+        let req = self.next_req_id();
         let t0 = Instant::now();
-        self.send(&serde_json::json!({"op": "compile", "req": req, "ctx": ctx, "source": source}))?;
-        let r = self.recv()?;
+        self.send_compile(req, ctx, source)?;
+        let t_sent = t0.elapsed();
+        self.wait_readable(self.timeout)?;
+        let t_ready = t0.elapsed();
+        let r = self.recv_timed()?;
         let total = t0.elapsed();
         match r {
-            Response::Result(cr) => {
+            Response::Result(mut cr) => {
+                cr.host_us = [t_sent.as_micros() as u64, (t_ready - t_sent).as_micros() as u64, cr.host_us[2], cr.host_us[3]];
                 let rt = RoundTrip {
                     total,
                     t_tex: Duration::from_micros(cr.t_tex_us as u64),
@@ -242,6 +315,12 @@ impl FastServer {
             Response::Fatal { reason, errors, .. } => bail!("engine fatal: {reason} {errors:?}"),
             other => bail!("compile: unexpected {other:?}"),
         }
+    }
+
+    /// In-engine micro-profile of the replay machinery (diagnostic; uses tex.runtoks).
+    pub fn profile(&mut self, ctx: i64, source: &str, n: usize) -> Result<Response> {
+        self.send(&serde_json::json!({"op": "profile", "req": 0, "ctx": ctx, "source": source, "n": n}))?;
+        self.recv()
     }
 
     pub fn stats(&mut self) -> Result<Response> {

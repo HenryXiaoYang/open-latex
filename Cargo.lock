@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "lode-cli"
-version = "0.1.0"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "lode-core"
-version = "0.1.0"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "lode-dl"
-version = "0.1.0"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "lode-verify"
-version = "0.1.0"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "flate2",

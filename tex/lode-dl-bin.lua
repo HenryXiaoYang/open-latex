@@ -1,4 +1,4 @@
--- lode-dl-bin.lua: binary display-list writer (format v1, docs/DISPLAY_LIST.md).
+-- lode-dl-bin.lua: binary display-list writer (encoding revision 1, docs/DISPLAY_LIST.md).
 -- Input: the table produced by lode-dl.lua. Output: a Lua string.
 local M = {}
 local pack, concat = string.pack, table.concat

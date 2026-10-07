@@ -1,5 +1,5 @@
 //! C ABI. Opaque handles; strings are UTF-8 and owned by the library until freed with
-//! `lode_string_free`; display lists are binary v1 buffers owned by the event.
+//! `lode_string_free`; display lists are binary (encoding revision 1) buffers owned by the event.
 #![allow(clippy::missing_safety_doc)]
 
 use crate::document::Edit;
