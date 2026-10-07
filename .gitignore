@@ -1,0 +1,8 @@
+/target/
+/build/
+/fixtures/**/out/
+/bench/results/*.csv
+*.log
+*.aux
+*.synctex.gz
+__pycache__/

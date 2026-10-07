@@ -1,0 +1,38 @@
+% E1: every paragraph-context parameter must be readable and settable from Lua.
+\documentclass{book}
+\usepackage{microtype}
+\begin{document}
+\directlua{
+  local ints = {"looseness","tolerance","pretolerance","hyphenpenalty","exhyphenpenalty",
+    "adjdemerits","doublehyphendemerits","finalhyphendemerits","linepenalty","lastlinefit",
+    "language","lefthyphenmin","righthyphenmin","uchyph","interlinepenalty","clubpenalty",
+    "widowpenalty","adjustspacing","protrudechars","hangafter"}
+  local dims = {"hsize","parindent","emergencystretch","lineskiplimit","hangindent","mathsurround"}
+  local glues = {"leftskip","rightskip","parfillskip","baselineskip","lineskip","spaceskip","xspaceskip"}
+  local bad = {}
+  for _, k in ipairs(ints) do
+    local ok, v = pcall(function() return tex.get(k) end)
+    if not ok or type(v) ~= "number" then bad[#bad+1] = "get:"..k end
+    local ok2 = pcall(function() tex.set(k, v) end)
+    if not ok2 then bad[#bad+1] = "set:"..k end
+  end
+  for _, k in ipairs(dims) do
+    local ok, v = pcall(function() return tex.get(k) end)
+    if not ok or type(v) ~= "number" then bad[#bad+1] = "get:"..k end
+    local ok2 = pcall(function() tex.set(k, v) end)
+    if not ok2 then bad[#bad+1] = "set:"..k end
+  end
+  for _, k in ipairs(glues) do
+    local ok, w, st, sh, sto, sho = pcall(function() return tex.getglue(k) end)
+    if not ok or type(w) ~= "number" then bad[#bad+1] = "getglue:"..k end
+    local ok2 = pcall(function() tex.setglue(k, w, st, sh, sto, sho) end)
+    if not ok2 then bad[#bad+1] = "setglue:"..k end
+  end
+  local ps = tex.parshape
+  texio.write_nl("term and log", "E1 parshape type=" .. type(ps))
+  texio.write_nl("term and log", "E1 font.current=" .. tostring(font.current()) .. " nextid=" .. tostring(font.nextid()))
+  texio.write_nl("term and log", "E1 everypar=" .. tostring(tex.toks and "toks-ok" or "no-toks"))
+  if \string#bad == 0 then texio.write_nl("term and log", "E1 PASS")
+  else texio.write_nl("term and log", "E1 FAIL " .. table.concat(bad, ",")) end
+}
+\end{document}

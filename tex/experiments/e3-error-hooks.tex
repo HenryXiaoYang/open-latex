@@ -1,0 +1,13 @@
+\documentclass{book}
+\nonstopmode
+\directlua{dofile("e3.lua")}
+\begin{document}
+\directlua{E3.state("before")}
+Text \undefinedmacro more text.
+
+\directlua{E3.state("after undefined macro")}
+Unbalanced { brace paragraph.
+
+\directlua{E3.state("after unbalanced brace")}
+\directlua{E3.report()}
+\end{document}

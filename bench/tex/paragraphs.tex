@@ -1,0 +1,24 @@
+% Benchmark paragraph categories matching the paper (Table 1): short (1 line),
+% medium (4-5 lines), long (10+ lines), inline math, display math.
+\long\def\parShort{The quick brown fox jumps over the lazy dog.}
+\long\def\parMedium{Typesetting a paragraph is a local operation: given the same
+measure and the same content, the line breaker produces identical breaks whatever
+precedes or follows it. Word processors have relied on this for decades, reflowing
+only the paragraph under the cursor while a background process reconciles the
+global layout of the document at its own pace.}
+\long\def\parLong{The line-breaking algorithm considers the paragraph as a whole,
+choosing breakpoints that minimise the total demerits accumulated across all of its
+lines rather than greedily filling each line in turn. Because the optimisation is
+confined to a single paragraph, the result does not depend on any other paragraph
+in the document. Page breaking, by contrast, is global: changing the height of one
+paragraph can move every subsequent line, float and footnote, shifting page numbers
+and cross-references along the way. The insight behind real-time editing is that
+only the first operation needs to happen on every keystroke. The second can run in
+the background and converge within seconds, exactly as a word processor does. With
+microtypographic extensions enabled the engine also expands or shrinks glyphs by a
+few per mille and lets punctuation protrude into the margin, which must be captured
+faithfully by any renderer that bypasses the usual PDF output. All of this happens
+in well under two milliseconds for a paragraph of this length on a modern laptop.}
+\long\def\parInlineMath{Let $f(x) = \sum_{n=0}^{\infty} a_n x^n$ converge for $|x| < R$,
+where $R = 1/\limsup |a_n|^{1/n}$ is the radius of convergence of the series.}
+\long\def\parDisplayMath{\[ \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi} \]}

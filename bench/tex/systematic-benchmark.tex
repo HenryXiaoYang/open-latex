@@ -1,0 +1,43 @@
+% Systematic in-engine line-breaking benchmark (paper Table 1 methodology).
+% Each sample = mean of INNER consecutive \setbox\vbox compiles; WARMUP samples discarded.
+% Run: lualatex systematic-benchmark.tex   (env LODE_BENCH_INNER/WARMUP/SAMPLES override)
+\documentclass{book}
+\usepackage{microtype}
+\usepackage{amsmath}
+\input{paragraphs}
+\newcount\benchinner \newcount\benchsample \newcount\benchtotal
+\directlua{bench = dofile("bench-lib.lua"); bench.engine_info()}
+\begin{document}
+\directlua{tex.count.benchtotal = bench.WARMUP + bench.SAMPLES}
+\long\def\benchrun#1#2{%
+  \benchsample=0
+  \loop\ifnum\benchsample<\benchtotal
+    \directlua{tex.count.benchinner = bench.INNER; bench.start()}%
+    {\loop\ifnum\benchinner>0
+      \setbox0\vbox{\hsize=\textwidth #2\par}%
+      \global\advance\benchinner by -1
+    \repeat}%
+    \directlua{bench.stop("#1", bench.INNER)}%
+    \advance\benchsample by 1
+  \repeat
+  % individual (non-amortized) compiles: 300 single timings
+  \benchinner=300
+  \loop\ifnum\benchinner>0
+    \directlua{bench.start()}%
+    \setbox0\vbox{\hsize=\textwidth #2\par}%
+    \directlua{bench.single_stop("#1")}%
+    \advance\benchinner by -1
+  \repeat
+}
+\benchrun{short}{\parShort}
+\benchrun{medium}{\parMedium}
+\benchrun{long}{\parLong}
+\benchrun{inline-math}{\parInlineMath}
+\benchrun{display-math}{\parDisplayMath}
+\directlua{
+  for _, n in ipairs{"short","medium","long","inline-math","display-math"} do
+    bench.report(n); bench.report_singles(n)
+  end
+  bench.write_csv("systematic-benchmark.csv")
+}
+\end{document}

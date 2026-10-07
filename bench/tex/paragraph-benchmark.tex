@@ -1,0 +1,11 @@
+% Self-contained single-paragraph timing (paper Figure 1). Run: lualatex paragraph-benchmark.tex
+\documentclass{book}
+\usepackage{microtype}
+\begin{document}
+\directlua{t0 = os.gettimeofday()}%
+\setbox0\vbox{The quick brown fox jumps over the lazy dog.\par}
+\directlua{
+  local ms = (os.gettimeofday() - t0) * 1000
+  texio.write_nl("term and log", "Paragraph: " .. math.floor(ms * 100 + 0.5) / 100 .. " ms")
+}
+\end{document}

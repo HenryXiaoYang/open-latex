@@ -1,0 +1,25 @@
+\documentclass{book}
+\usepackage{microtype}
+\directlua{dofile("e2.lua")}
+\AddToHook{para/begin}{\directlua{E2.parbegin()}}
+\begin{document}
+\chapter{One}
+First paragraph of text that is long enough to be broken into a couple of lines when
+set at the usual book measure, so that the callbacks fire as in a real document.
+
+Second paragraph with a \footnote{A footnote paragraph, nested.} footnote and a
+\parbox{3cm}{nested parbox paragraph here} parbox inside it.
+
+\begin{itemize}
+\item An item paragraph.
+\item Another item.
+\end{itemize}
+
+\section{Two}
+Third top-level paragraph, after a section heading.
+\[ a^2 + b^2 = c^2 \]
+Fourth paragraph following display math, which continues the same paragraph in TeX terms.
+
+Fifth and last.
+\directlua{E2.report()}
+\end{document}

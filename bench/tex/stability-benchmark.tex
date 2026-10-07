@@ -1,0 +1,28 @@
+% 500 consecutive compiles of the same paragraph; report windows 1-50, 226-275, 451-500
+% (paper Table 2) plus font-id and node-memory growth.
+\documentclass{book}
+\usepackage{microtype}
+\usepackage{amsmath}
+\input{paragraphs}
+\newcount\benchinner \newcount\benchsample
+\directlua{bench = dofile("bench-lib.lua"); bench.engine_info()}
+\begin{document}
+\long\def\stabrun#1#2{%
+  \directlua{bench.resources("#1 before")}%
+  \benchsample=0
+  \loop\ifnum\benchsample<500
+    \directlua{bench.start()}%
+    \setbox0\vbox{\hsize=\textwidth #2\par}%
+    \directlua{bench.stop("#1", 1)}%
+    \advance\benchsample by 1
+  \repeat
+  \directlua{bench.resources("#1 after")}%
+}
+\stabrun{short}{\parShort}
+\stabrun{multi-line}{\parMedium}
+\directlua{
+  local w = {{1,50},{226,275},{451,500}}
+  bench.window_report("short", w)
+  bench.window_report("multi-line", w)
+}
+\end{document}

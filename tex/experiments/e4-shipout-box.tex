@@ -1,0 +1,11 @@
+\documentclass{book}
+\usepackage{microtype}
+\directlua{dofile("e4.lua")}
+\AddToHook{shipout/before}{\directlua{E4.shipout(\number\ShipoutBox)}}
+\begin{document}
+\chapter{Test}
+A paragraph long enough to break into several lines when typeset at the standard book
+class measure with microtype enabled, so that we get a handful of tagged hlists to find.
+
+Another one.
+\end{document}
