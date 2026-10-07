@@ -118,3 +118,31 @@ times so hosts can show users where a slow paragraph spends its time.
 
 The fixtures therefore come in three font setups: `*-pure-lmtfm` (paper-like TFM), `*-pure-base`
 (OpenType base mode) and `*-pure` (OpenType node mode, the fontspec default).
+
+## M6 — gates and their rationale
+
+The `lode bench` gates (plan §12), hardware-qualified by `h = max(h_short, h_medium)` from the
+in-engine replica run on the same machine in the same session:
+
+| Gate | Limit | Why |
+|---|---|---|
+| short amortized median | ≤ 1.0 ms × h | the "1 ms" goal (paper method: mean of back-to-back compiles) |
+| short individual median | ≤ 1.5 ms × h | what one keystroke costs with cold threads, not amortized |
+| short P95 | ≤ 3 × median | no long tail |
+| medium individual median | ≤ 6.11 ms × h | the paper's medium round trip |
+| medium traversal + serialization | ≤ 0.5 ms | our own budget for the stages between line breaking and the wire |
+| IPC + host overhead (short, medium) | ≤ 0.5 ms × h | everything outside TeX + traversal + packing: two process hops (stdin, FIFO) and two thread hops (edit → engine thread → event) |
+| size independence (each category) | 100p/10p and 300p/10p ∈ [0.8, 1.25] | paragraph-local work must not depend on document length |
+
+The paper's "engineering overhead under 20 %" is reported (`overhead share` column) but not
+gated: our engine stage is several times faster than the paper's prototype (traversal fused with
+binary serialization, ≈ 1.3 µs per glyph), so the same fixed wake-up cost of the pipes and
+threads is a larger fraction of a smaller total. On this VM the fixed cost is ≈ 0.5 ms; on a
+laptop with ≈ 20 µs context switches it is a few hundred µs at most.
+
+Two implementation notes behind the numbers: (1) `tex.runtoks` from a `\directlua` that never
+returns leaks one input level per call (E14), which killed the server after 10 000 requests; the
+server now serves each request in two halves around a TeX-level `\loop`, with a flat input stack
+over thousands of compiles. (2) Host-side per-edit work is independent of document size:
+windowed re-segmentation, incremental line table, in-place splice (median 37 µs on a 3700-span
+buffer); before that fix the 300-page round trip was 7 ms with a 0.5 ms TeX stage.

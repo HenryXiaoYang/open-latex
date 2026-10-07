@@ -22,6 +22,7 @@ local getattribute = D.getattribute or D.get_attribute
 local getdisc, getdata = D.getdisc, D.getdata
 local getleader = D.getleader
 local floor, ceil = math.floor, math.ceil
+local pack, concat = string.pack, table.concat
 
 local T = {}
 for id, name in pairs(node.types()) do T[name] = id end
@@ -132,7 +133,48 @@ local function new_state(opts)
   }, State)
 end
 
+local function bstr(s)
+  s = tostring(s or "")
+  if #s > 65535 then s = s:sub(1, 65535) end
+  return pack("<s2", s)
+end
+
+-- Binary sink (docs/DISPLAY_LIST.md): records are appended to self.buf as they are produced;
+-- consecutive glyphs with the same font/baseline/expansion are coalesced into one GLYPHS run.
+function State:bin_flush_run()
+  local run = self.run
+  if run then
+    self.buf[#self.buf + 1] = pack("<Bs4", 0x20, pack("<I4i4i4I4", self.run_font, self.run_y, self.run_ef, #run) .. concat(run))
+    self.run = nil
+  end
+end
+function State:bin_rec(tag, payload)
+  self:bin_flush_run()
+  self.buf[#self.buf + 1] = pack("<Bs4", tag, payload)
+end
+
 function State:emit(item)
+  if self.bin then
+    local t = item[1]
+    if t == "g" then
+      local f, y, ef = item[2], item[6], item[8] or 0
+      if not self.run or f ~= self.run_font or y ~= self.run_y or ef ~= self.run_ef then
+        self:bin_flush_run()
+        self.run, self.run_font, self.run_y, self.run_ef = {}, f, y, ef
+      end
+      local run = self.run
+      run[#run + 1] = pack("<I4I4i4i4", item[3] or 0, item[4] or 0xFFFFFFFF, item[5], item[7])
+    elseif t == "r" then self:bin_rec(0x21, pack("<i4i4i4i4", item[2], item[3], item[4], item[5]))
+    elseif t == "c" then
+      local cmd = item[3]; if type(cmd) ~= "number" then cmd = 255 end
+      self:bin_rec(0x22, pack("<BBI2", cmd, 0, item[2] or 0) .. bstr(item[4]))
+    elseif t == "l" then self:bin_rec(0x23, pack("<i4", item[2] or 0) .. bstr(item[3]))
+    elseif t == "u" then self:bin_rec(0x24, bstr(item[2]) .. bstr(type(item[3]) == "table" and "" or item[3]))
+    elseif t == "m" then self:bin_rec(0x25, pack("<Bi4", item[2] == "on" and 1 or 0, item[3]))
+    elseif t == "i" then self:bin_rec(0x26, pack("<i4i4i4i4i4", item[2] or 0, item[3], item[4], item[5], item[6]))
+    end
+    return
+  end
   local tgt = self.cur and self.cur.items or self.other
   tgt[#tgt + 1] = item
 end
@@ -149,6 +191,7 @@ local hlist_out, vlist_out
 
 -- Walk an hlist's content list. Returns final cur_h. `walk` is re-entered for disc replace lists.
 hlist_out = function(st, box, left, base_v)
+  local last_f, last_e = nil, nil
   local g_order, g_sign, g_set = getfield(box, "glue_order"), getfield(box, "glue_sign"), getfield(box, "glue_set")
   local box_w, box_h, box_d = getwhd(box)
   local cur_h = left
@@ -180,12 +223,28 @@ hlist_out = function(st, box, left, base_v)
         local xo, yo = getoffsets(n)
         local w = floor(getwidth(n) + 0.5)
         if ef ~= 0 then w = expand(w, ef) end
-        local e = font_entry(f)
+        if f ~= last_f then
+          last_e = font_entry(f)
+          last_f = f
+          if not st.fonts[f] then st:usefont(f) end
+        end
+        local e = last_e
         if e.virtual then
           st:emit_virtual(f, c, cur_h + (xo or 0), base_v - (yo or 0), ef)
+        elseif st.bin then
+          -- hot path: pack straight into the current glyph run
+          st.glyphs = st.glyphs + 1
+          local y = base_v - yo
+          local run = st.run
+          if not run or f ~= st.run_font or y ~= st.run_y or ef ~= st.run_ef then
+            st:bin_flush_run()
+            run = {}
+            st.run, st.run_font, st.run_y, st.run_ef = run, f, y, ef
+          end
+          local ch = e.chars[c]
+          run[#run + 1] = pack("<I4I4i4i4", c, (ch and ch.index) or 0xFFFFFFFF, cur_h + xo, w)
         else
           local gi = glyph_index(f, c)
-          st:usefont(f)
           st.glyphs = st.glyphs + 1
           local item = { "g", f, c, gi, cur_h + (xo or 0), base_v - (yo or 0), w, ef }
           if st.glyph_attr then item[9] = getattribute(n, st.glyph_attr) end
@@ -505,10 +564,22 @@ end
 
 function State:begin_line(n, par, line, x, baseline, w, h, d)
   local gs = getfield(n, "glue_set")
+  if self.bin then
+    self.nlines = self.nlines + 1
+    self.cur = true
+    self:bin_rec(0x10, pack("<i4i4i4i4i4i4i4dBB", par or 0, line or 0, x, baseline, w, h, d, gs or 0.0,
+      getfield(n, "glue_sign") or 0, getfield(n, "glue_order") or 0))
+    return
+  end
   self.cur = { par = par, i = line, x = x, y = baseline, w = w, h = h, d = d,
                gs = gs, gsign = getfield(n, "glue_sign"), gorder = getfield(n, "glue_order"), items = {} }
 end
 function State:end_line()
+  if self.bin then
+    self:bin_rec(0x11, "")
+    self.cur = nil
+    return
+  end
   self.lines[#self.lines + 1] = self.cur
   self.cur = nil
 end
@@ -520,6 +591,47 @@ local function result(st, kind, extra)
               flags = st.flags, glyphs = st.glyphs, images = st.images }
   if extra then for k, v in pairs(extra) do r[k] = v end end
   return r
+end
+
+local function font_kind(d)
+  if d.type == "virtual" then return 5 end
+  local fmt = d.format
+  if fmt == "opentype" then return 1 elseif fmt == "truetype" then return 2
+  elseif fmt == "type1" then return 3 elseif fmt == "type3" then return 4 end
+  return 0
+end
+
+-- Paragraph box straight to binary display-list bytes (format v1). Same traversal as
+-- M.paragraph; records are written as they are produced, META/FONT/FLAG records last.
+-- Returns bytes, line count, glyph count, width, height, depth, flags table.
+function M.paragraph_binary(boxnode, initial_color)
+  local box = todirect(boxnode)
+  local st = new_state({ lines_at_top = true })
+  st.depth = 0
+  st.bin = true
+  st.buf = {}
+  st.nlines = 0
+  if initial_color and initial_color ~= "" then st:emit({ "c", 0, 0, initial_color }) end
+  local w, h, d = getwhd(box)
+  vlist_out(st, box, 0, 0)
+  st:bin_flush_run()
+  local buf = st.buf
+  buf[#buf + 1] = pack("<Bs4", 0x01, pack("<i4i4i4i4i4i4i4i4I4I4", w, h, d, 0, 0, 0, 0, 0, st.glyphs, st.images))
+  local ids = {}
+  for id in pairs(st.fonts) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local fd = st.fonts[id]
+    buf[#buf + 1] = pack("<Bs4", 0x02, pack("<I4i4BBI2i4i4i4i4", fd.id or id, floor((fd.size or 0) + 0.5), font_kind(fd), 0,
+      fd.subfont or 0, floor((fd.slant or 0) + 0.5), floor((fd.extend or 0) + 0.5), floor((fd.squeeze or 0) + 0.5),
+      floor((fd.designsize or 0) + 0.5)) .. bstr(fd.filename) .. bstr(fd.psname) .. bstr(fd.name) .. bstr(fd.fullname) .. bstr(fd.format))
+  end
+  for k, v in pairs(st.flags) do
+    buf[#buf + 1] = pack("<Bs4", 0x03, bstr(k) .. pack("<i4", type(v) == "number" and floor(v) or 1))
+  end
+  buf[#buf + 1] = pack("<Bs4", 0xFF, "")
+  local body = concat(buf)
+  return pack("<c4I2I2I4I4", "LODL", 1, 0, 16 + #body, 0) .. body, st.nlines, st.glyphs, w, h, d, st.flags
 end
 
 -- Paragraph box (a \vbox whose top-level hlists are the lines). Origin: top-left of the box.

@@ -133,27 +133,22 @@ function S.finish()
     os.exit(3)
   end
   local box = tex.box[S.boxnum]
-  local result, t2
+  local bytes, nlines, nglyphs, bw, bh, bd, flags = "", 0, 0, nil, nil, nil, nil
   if box then
     local color = ctx.begin and ctx.begin.color
     if color == "0 g 0 G" then color = nil end
-    result = dl.paragraph(box, color)
-    t2 = gettime()
-  else
-    t2 = t1
+    -- traversal and serialization fused: records are written while walking the nodes
+    bytes, nlines, nglyphs, bw, bh, bd, flags = dl.paragraph_binary(box, color)
   end
-  local t3 = gettime()
-  local bytes = result and dlbin.encode(result) or ""
-  local t4 = gettime()
+  local t2 = gettime()
   local payload = {
     op = "result", req = req.req, ctx = req.ctx,
-    status = (#S.errors > 0) and "error" or ((result and next(result.flags)) and "ok_degraded" or "ok"),
+    status = (#S.errors > 0) and "error" or ((flags and next(flags)) and "ok_degraded" or "ok"),
     errors = S.errors,
-    lines = result and #result.lines or 0, glyphs = result and result.glyphs or 0,
-    width = result and result.width, height = result and result.height, depth = result and result.depth,
+    lines = nlines, glyphs = nglyphs, width = bw, height = bh, depth = bd,
     t_tex_us = math.floor((t1 - cur.t0) * 1e6 + 0.5),
     t_traverse_us = math.floor((t2 - t1) * 1e6 + 0.5),
-    t_pack_us = math.floor((t4 - t3) * 1e6 + 0.5),
+    t_pack_us = 0,
     t_font_us = math.floor(cur.t_font * 1e6 + 0.5),
     font_changed = cur.font_changed,
     dl_bytes = #bytes,
