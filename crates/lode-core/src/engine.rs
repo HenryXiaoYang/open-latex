@@ -32,6 +32,11 @@ pub struct CompileResult {
     pub errors: Vec<EngineError>,
     #[serde(default)]
     pub dl: Option<DisplayList>,
+    /// The display list as received (binary format v1), kept so hosts need no re-encoding.
+    #[serde(skip)]
+    pub dl_binary: Option<Vec<u8>>,
+    #[serde(default)]
+    pub dl_bytes: i64,
     #[serde(default)]
     pub t_tex_us: i64,
     #[serde(default)]
@@ -180,7 +185,27 @@ impl FastServer {
         let n = u32::from_le_bytes(hdr) as usize;
         let mut buf = vec![0u8; n];
         self.resp.read_exact(&mut buf)?;
-        Ok(serde_json::from_slice(&buf).with_context(|| format!("bad response: {}", String::from_utf8_lossy(&buf[..buf.len().min(300)])))?)
+        if buf.is_empty() {
+            bail!("empty frame");
+        }
+        match buf[0] {
+            0 => Ok(serde_json::from_slice(&buf[1..]).with_context(|| format!("bad response: {}", String::from_utf8_lossy(&buf[1..buf.len().min(300)])))?),
+            1 => {
+                if buf.len() < 5 {
+                    bail!("short result frame");
+                }
+                let jl = u32::from_le_bytes(buf[1..5].try_into().unwrap()) as usize;
+                let json = &buf[5..5 + jl];
+                let bin = &buf[5 + jl..];
+                let mut cr: CompileResult = serde_json::from_slice(json).with_context(|| format!("bad result header: {}", String::from_utf8_lossy(&json[..json.len().min(300)])))?;
+                if !bin.is_empty() {
+                    cr.dl = Some(DisplayList::from_binary(bin).context("decoding binary display list")?);
+                    cr.dl_binary = Some(bin.to_vec());
+                }
+                Ok(Response::Result(cr))
+            }
+            k => bail!("unknown frame kind {k}"),
+        }
     }
 
     pub fn set_context(&mut self, id: i64, ctx: &serde_json::Value) -> Result<()> {

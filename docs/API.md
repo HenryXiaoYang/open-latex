@@ -1,4 +1,4 @@
-# API (Rust; the C ABI is generated from it in M5)
+# API
 
 ```rust
 use lode_core::{Session, SessionConfig, Edit, Event};
@@ -40,3 +40,23 @@ Scripted hosts can drive the same API over JSON lines: `lode serve --project DIR
 `{"cmd":"edit","path":"main.tex","start":N,"end":M,"text":"…"}`, `set_document`, `spans`,
 `status`, `request_layout`, `export_pdf`, `quit` on stdin and writes events and replies as JSON
 objects on stdout.
+
+## C ABI (`include/lode.h`, `liblode_core.{so,a}`)
+
+```c
+LodeSession *s = lode_session_open("{\"project_root\":\"/proj\",\"main_file\":\"main.tex\"}", &err);
+char *r = lode_session_apply_edit(s, "main.tex", start, end, " text");   /* JSON EditResult */
+LodeEvent *e = lode_session_poll(s, 16);                                  /* NULL when idle */
+switch (lode_event_kind(e)) {
+  case LODE_EVENT_PARAGRAPH_UPDATE: { size_t n; const uint8_t *dl = lode_event_dl(e, 0, &n); /* binary v1 */ }
+  case LODE_EVENT_LAYOUT_UPDATE:    { for (i = 0; i < lode_event_dl_count(e); i++) lode_event_dl(e, i, &n); }
+}
+const char *json = lode_event_json(e);   /* everything else about the event */
+lode_event_free(e); lode_string_free(r); lode_session_close(s);
+```
+
+Build: `cargo build --release -p lode-core` produces `target/release/liblode_core.so` (and `.a`);
+`examples/c/edit_loop.c` is a complete host (see its header comment for the compile line). The
+header is maintained by hand and checked against the exported symbols in CI (`scripts/check-abi.sh`).
+Event JSON mirrors the Rust `Event` enum (serde, `"event"` tag) with display-list payloads replaced
+by `{"bytes": n, "index": i}`; `lode_dl_to_json` converts a binary display list to the JSON mirror.

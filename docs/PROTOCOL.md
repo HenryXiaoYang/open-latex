@@ -1,7 +1,7 @@
 # Engine protocol (fast paragraph server)
 
-Status: **provisional** (M1). JSON framing is used until the binary display list is frozen in M5;
-the request/response *semantics* below are intended to stay.
+Status: **v1 (frozen in M5)**. Requests are JSON lines; responses are framed, with compile
+results carrying a JSON header followed by the binary display list (docs/DISPLAY_LIST.md).
 
 ## Process
 
@@ -21,8 +21,10 @@ enters `lode_serve.run(boxnum)`. The server lives inside the document body, so e
 `AtBeginDocument` hook (fontspec, microtype) has run.
 
 Requests travel on the server's **stdin** as JSON, one object per line. Responses come back on
-the **FIFO** as frames: `u32 little-endian length` followed by that many bytes of JSON. stdout is
-not used because LuaTeX prints its banner there even in batch mode (ENGINE_NOTES, E5).
+the **FIFO** as frames: `u32 little-endian length` (of everything that follows), `u8 kind`, payload.
+Kind 0 is a JSON object. Kind 1 is a compile result: `u32 json_length`, the JSON header, then the
+binary display list. stdout is not used because LuaTeX prints its banner there even in batch mode
+(ENGINE_NOTES, E5).
 
 The host must open the FIFO's read end exactly once (non-blocking open, then `poll` for the
 first frame) before or while the server starts; closing and reopening it loses frames.
@@ -63,18 +65,17 @@ one `tex.runtoks` call.
 ### `ready`
 `{"op":"ready","banner":…,"luatex_version":124,"fingerprint":…,"font_nextid":…}` — first frame.
 
-### `result`
+### `result` (frame kind 1)
+JSON header:
 ```json
 { "op":"result", "req":7, "ctx":25,
   "status":"ok" | "ok_degraded" | "error",
   "errors":[{"message":"Undefined control sequence","context":"…","line":2}],
-  "dl": { "kind":"paragraph", "unit":"sp", "width":…, "height":…, "depth":…,
-          "fonts": {"27": {"id":27,"filename":"…/texgyrepagella-regular.otf","size":717619,"psname":"TeXGyrePagella-Regular", "...":0}},
-          "lines": [ {"i":1,"par":0,"x":0,"y":526015,"w":22609920,"h":526015,"d":203086,"gs":0.19,"gsign":2,"gorder":0,
-                      "items": [["g",27,84,53,1114112,526015,431102,-20000], ["r",x,y_top,w,h], ["c",stack,cmd,"0 g 0 G"], ["m","on",x]]} ],
-          "other": [], "flags": {} , "glyphs": 166 },
-  "t_tex_us": 1632, "t_traverse_us": 284, "t_pack_us": 1341 }
+  "lines":3, "glyphs":166, "width":22609920, "height":…, "depth":…, "dl_bytes":5055,
+  "t_tex_us": 1437, "t_traverse_us": 279, "t_pack_us": 130 }
 ```
+followed by `dl_bytes` of binary display list (paragraph framing; empty when `status` is `error`
+and no box was produced).
 Error `line` numbers count from the first printed line; line 1 is the replay head, so source line
 = `line − 1`. `status:"error"` means TeX reported at least one error while typesetting; a display
 list may still be present (TeX recovers in batch mode) but must not be trusted.
@@ -87,7 +88,8 @@ status 3 right after sending this; the host restarts it with a new `engine_gener
 
 ## Display-list items
 
-See `docs/DISPLAY_LIST.md` (M5). Provisional JSON item encodings:
+The binary format is specified in `docs/DISPLAY_LIST.md`; the JSON mirror used by the capture
+files and by `lode dl2json` has these item encodings:
 
 | tag | fields | meaning |
 |---|---|---|

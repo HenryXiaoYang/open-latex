@@ -5,6 +5,7 @@ pub mod capture;
 pub mod document;
 pub mod eligibility;
 pub mod engine;
+pub mod ffi;
 pub mod fixtures;
 pub mod layout;
 pub mod session;

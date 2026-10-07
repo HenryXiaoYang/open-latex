@@ -77,6 +77,8 @@ enum Cmd {
     },
     /// Compare two PDFs for typesetting equality (content streams, fonts, images; metadata ignored).
     PdfCompare { a: PathBuf, b: PathBuf },
+    /// Convert a binary display list (v1) to its JSON mirror.
+    Dl2json { file: PathBuf },
     GenBook {
         #[arg(long, default_value_t = 10)]
         pages: u32,
@@ -112,6 +114,11 @@ fn main() -> anyhow::Result<()> {
             if !d.equal {
                 std::process::exit(1);
             }
+        }
+        Cmd::Dl2json { file } => {
+            let bytes = std::fs::read(&file)?;
+            let dl = lode_dl::DisplayList::from_binary(&bytes)?;
+            println!("{}", serde_json::to_string_pretty(&dl)?);
         }
         Cmd::GenBook { pages, variant, fonts, seed, out } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;

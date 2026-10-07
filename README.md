@@ -39,6 +39,9 @@ cargo test --workspace                                                          
 texlua tex/tests/run.lua                                                            # Lua-side unit tests
 ```
 
+C hosts: `cargo build --release -p lode-core` builds `liblode_core.so`; see `include/lode.h`,
+`examples/c/edit_loop.c` and `docs/API.md`. Display lists: `docs/DISPLAY_LIST.md`.
+
 See `docs/FIDELITY.md` for how output is verified, `docs/BENCHMARKS.md` for measured numbers,
 `docs/PROTOCOL.md` for the engine protocol and `docs/ENGINE_NOTES.md` for what the engine
 experiments established.

@@ -73,3 +73,21 @@ Where the time goes relative to the paper's medium round trip (6.11 ms): line br
 (`\selectfont`, parameter assignment, `tex.runtoks`), and JSON serialization plus parsing is a
 further ≈ 1.9 ms. The binary format (M5) and context-replay caching target bringing the round trip
 under 1.5 ms for this paragraph; the short-paragraph gate stays `1.0 ms × h`.
+
+## M5 — binary display list
+
+Same slice as M1 after switching the engine protocol to the binary display list (fonts table,
+glyph runs as typed records): the paragraph's display list is 5 055 bytes instead of ≈ 27 kB of
+JSON.
+
+| Stage | median | P95 |
+|---|---|---|
+| TeX (context replay + macro expansion + line breaking + box) | 1.44 ms | 1.99 ms |
+| Traversal | 0.28 ms | 0.45 ms |
+| Serialization (binary) | 0.13 ms | 0.20 ms |
+| IPC + host-side decode | ≈ 0.33 ms | — |
+| **Round trip, individual edits** | **2.17 ms** | 2.97 ms |
+| Round trip, amortized (20 back-to-back) | 1.87 ms | 3.33 ms |
+
+Engineering overhead outside line breaking is now dominated by the TeX replay (`\selectfont`,
+parameter assignment, `tex.runtoks`), addressed in M6.

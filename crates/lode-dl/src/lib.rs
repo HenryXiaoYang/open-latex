@@ -3,6 +3,8 @@
 //! The JSON form produced by `tex/lode-dl.lua` is the provisional interchange format until the
 //! binary format is frozen (milestone M5). Coordinates are in scaled points (sp); y grows down.
 
+pub mod binary;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -194,6 +196,12 @@ pub struct DisplayList {
 }
 
 impl DisplayList {
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, binary::BinError> {
+        binary::decode(bytes)
+    }
+    pub fn to_binary(&self) -> Vec<u8> {
+        binary::encode(self)
+    }
     /// Degradation flags as a map (empty when the extractor saw nothing unsupported).
     pub fn flags_map(&self) -> BTreeMap<String, serde_json::Value> {
         match &self.flags {

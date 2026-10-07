@@ -193,6 +193,8 @@ enum BgCmd {
 pub struct Session {
     shared: Arc<Shared>,
     events: Receiver<Event>,
+    /// Events taken out by a poll but handed back (C ABI returns one event per call).
+    requeued: Mutex<std::collections::VecDeque<Event>>,
     threads: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -242,7 +244,7 @@ impl Session {
         }
         shared.bg_signal.0.send(BgCmd::Pass).ok();
         shared.pending_signal.0.send(()).ok(); // eager server start
-        Ok(Session { shared, events: rx, threads })
+        Ok(Session { shared, events: rx, requeued: Mutex::new(std::collections::VecDeque::new()), threads })
     }
 
     pub fn versions(&self) -> Versions {
@@ -397,11 +399,18 @@ impl Session {
         job
     }
 
+    /// Put an event back at the front of the queue (used by the C ABI's one-at-a-time poll).
+    pub fn requeue(&self, e: Event) {
+        self.requeued.lock().push_back(e);
+    }
+
     /// Drain available events, waiting up to `timeout` for the first one.
     pub fn poll(&self, timeout: Duration) -> Vec<Event> {
-        let mut v = Vec::new();
-        if let Ok(e) = self.events.recv_timeout(timeout) {
-            v.push(e);
+        let mut v: Vec<Event> = self.requeued.lock().drain(..).collect();
+        if v.is_empty() {
+            if let Ok(e) = self.events.recv_timeout(timeout) {
+                v.push(e);
+            }
         }
         while let Ok(e) = self.events.try_recv() {
             v.push(e);
@@ -413,6 +422,13 @@ impl Session {
     pub fn wait_for(&self, timeout: Duration, mut pred: impl FnMut(&Event) -> bool) -> (Option<Event>, Vec<Event>) {
         let deadline = Instant::now() + timeout;
         let mut others = Vec::new();
+        let queued: Vec<Event> = self.requeued.lock().drain(..).collect();
+        for e in queued {
+            if pred(&e) {
+                return (Some(e), others);
+            }
+            others.push(e);
+        }
         loop {
             let now = Instant::now();
             if now >= deadline {

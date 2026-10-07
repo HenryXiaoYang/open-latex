@@ -4,14 +4,22 @@
 local S = { contexts = {}, errors = {}, requests = 0 }
 local json = dofile(kpse.find_file("lode-json.lua", "lua") or "lode-json.lua")
 local dl = dofile(kpse.find_file("lode-dl.lua", "lua") or "lode-dl.lua")
+local dlbin = dofile(kpse.find_file("lode-dl-bin.lua", "lua") or "lode-dl-bin.lua")
 local gettime = os.gettimeofday
 local pack = string.pack
 
 local resp
 
+-- Frame: u32 length (of everything after it), u8 kind, payload.
+-- kind 0: JSON object. kind 1: u32 json_len, JSON header, binary display list.
 local function send(tbl)
   local s = json.encode(tbl)
-  resp:write(pack("<I4", #s), s)
+  resp:write(pack("<I4B", #s + 1, 0), s)
+  resp:flush()
+end
+local function send_result(tbl, dlbytes)
+  local s = json.encode(tbl)
+  resp:write(pack("<I4B", 1 + 4 + #s + #dlbytes, 1), pack("<I4", #s), s, dlbytes)
   resp:flush()
 end
 
@@ -102,20 +110,21 @@ function S.compile(req)
   else
     t2 = t1
   end
+  local t3 = gettime()
+  local bytes = result and dlbin.encode(result) or ""
+  local t4 = gettime()
   local payload = {
     op = "result", req = req.req, ctx = req.ctx,
     status = (#S.errors > 0) and "error" or ((result and next(result.flags)) and "ok_degraded" or "ok"),
-    errors = S.errors, dl = result,
+    errors = S.errors,
+    lines = result and #result.lines or 0, glyphs = result and result.glyphs or 0,
+    width = result and result.width, height = result and result.height, depth = result and result.depth,
     t_tex_us = math.floor((t1 - t0) * 1e6 + 0.5),
     t_traverse_us = math.floor((t2 - t1) * 1e6 + 0.5),
+    t_pack_us = math.floor((t4 - t3) * 1e6 + 0.5),
+    dl_bytes = #bytes,
   }
-  local t3 = gettime()
-  local s = json.encode(payload)
-  local t4 = gettime()
-  -- append serialization time by patching the tail of the JSON (cheap, avoids re-encoding)
-  s = s:sub(1, -2) .. string.format(',"t_pack_us":%d}', math.floor((t4 - t3) * 1e6 + 0.5))
-  resp:write(pack("<I4", #s), s)
-  resp:flush()
+  send_result(payload, bytes)
   S.requests = S.requests + 1
 end
 
