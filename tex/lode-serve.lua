@@ -69,48 +69,66 @@ end
 -- The font selected at the server's outer level persists across requests; re-select only when
 -- the context's NFSS state differs from the last one selected (saves ~0.3-0.5 ms per request).
 local last_nfss = nil
-local function ensure_font(ctx)
+-- Returns the font-selection tokens to print before the request's group (or "" when the
+-- previously selected font is already the right one).
+local function font_tokens(ctx)
   local toks = nfss_tokens(ctx)
-  if toks == last_nfss then return false end
-  tex.runtoks(function() tex.print(toks) end)
+  if toks == last_nfss then return "" end
   last_nfss = toks
-  return true
+  return toks
 end
 
--- Compile ----------------------------------------------------------------------------------------
-function S.compile(req)
+-- Compile -----------------------------------------------------------------------------------------
+-- A request is served in two halves without any nested TeX main loop (tex.runtoks leaks one
+-- input level per call when invoked from a \directlua that never returns, E14):
+--   step()   reads the request and *prints* the tokens that build the paragraph box, ending with
+--            \directlua{lode_serve.finish()}; then returns to TeX, which executes them;
+--   finish() traverses the box, checks the state fingerprint and sends the result.
+-- The TeX side runs `\loop\directlua{lode_serve.step()}\ifnum\lodecontinue>0 \repeat`.
+S.current = nil
+
+function S.begin_compile(req)
   local ctx = S.contexts[req.ctx]
   if not ctx then
-    send{ op = "result", req = req.req, status = "error", errors = { { message = "unknown context " .. tostring(req.ctx) } } }
+    send_result({ op = "result", req = req.req, status = "error", errors = { { message = "unknown context " .. tostring(req.ctx) } },
+                  lines = 0, glyphs = 0, t_tex_us = 0, t_traverse_us = 0, t_pack_us = 0, dl_bytes = 0 }, "")
     return
   end
   if not EVERYPAR_ALLOWED[ctx.everypar or ""] then
-    send{ op = "result", req = req.req, status = "error", errors = { { message = "context has a non-replayable \\everypar" } } }
+    send_result({ op = "result", req = req.req, status = "error", errors = { { message = "context has a non-replayable \\everypar" } },
+                  lines = 0, glyphs = 0, t_tex_us = 0, t_traverse_us = 0, t_pack_us = 0, dl_bytes = 0 }, "")
     return
   end
   S.errors = {}
   local tf0 = gettime()
-  local font_changed = ensure_font(ctx)
+  local ftoks = font_tokens(ctx)
   local tf1 = gettime()
-  local fp0 = S.fingerprint()
   local lines = {}
   for line in (req.source .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
   if #lines > 0 and lines[#lines] == "" then lines[#lines] = nil end
-  local head = "\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\directlua{lode_serve.apply(" .. req.ctx .. ")}"
-  local tail = "\\par\\egroup\\endgroup"
-  local t0 = gettime()
-  local ok, err = pcall(tex.runtoks, function()
-    tex.print(head)
-    tex.print(lines)
-    tex.print(tail)
-  end)
+  S.current = { req = req, ctx = ctx, t_font = tf1 - tf0, font_changed = ftoks ~= "", t0 = gettime(), fp0 = nil }
+  -- the fingerprint is taken after the font selection has executed, at the start of the group
+  tex.print(ftoks .. "\\directlua{lode_serve.mark()}\\begingroup\\global\\setbox\\lodebox\\vbox\\bgroup\\directlua{lode_serve.apply(" .. req.ctx .. ")}")
+  tex.print(lines)
+  tex.print("\\par\\egroup\\endgroup\\directlua{lode_serve.finish()}")
+end
+
+function S.mark()
+  if S.current then
+    S.current.fp0 = S.fingerprint()
+    S.current.t0 = gettime()
+  end
+end
+
+function S.finish()
+  local cur = S.current
+  S.current = nil
+  if not cur then return end
+  local req, ctx = cur.req, cur.ctx
   local t1 = gettime()
   local fp1 = S.fingerprint()
-  if not ok then
-    S.errors[#S.errors + 1] = { message = "lua: " .. tostring(err) }
-  end
-  if fp1 ~= fp0 then
-    send{ op = "fatal", req = req.req, reason = "state_mismatch", before = fp0, after = fp1, errors = S.errors }
+  if cur.fp0 and fp1 ~= cur.fp0 then
+    send{ op = "fatal", req = req.req, reason = "state_mismatch", before = cur.fp0, after = fp1, errors = S.errors }
     resp:flush()
     os.exit(3)
   end
@@ -133,24 +151,31 @@ function S.compile(req)
     errors = S.errors,
     lines = result and #result.lines or 0, glyphs = result and result.glyphs or 0,
     width = result and result.width, height = result and result.height, depth = result and result.depth,
-    t_tex_us = math.floor((t1 - t0) * 1e6 + 0.5),
+    t_tex_us = math.floor((t1 - cur.t0) * 1e6 + 0.5),
     t_traverse_us = math.floor((t2 - t1) * 1e6 + 0.5),
     t_pack_us = math.floor((t4 - t3) * 1e6 + 0.5),
-    t_font_us = math.floor((tf1 - tf0) * 1e6 + 0.5),
-    font_changed = font_changed,
+    t_font_us = math.floor(cur.t_font * 1e6 + 0.5),
+    font_changed = cur.font_changed,
     dl_bytes = #bytes,
   }
   send_result(payload, bytes)
   S.requests = S.requests + 1
 end
 
--- Profile the replay overhead: empty runtoks, parameter replay only, head+tail without source,
--- and a full compile of `source`, each repeated `n` times (default 50). Returns medians in us.
+-- Profile the replay overhead (diagnostic only; uses tex.runtoks, which leaks one input level per
+-- call, so do not run it thousands of times in a long-lived server).
 function S.profile(req)
   local ctx = S.contexts[req.ctx]
   local n = req.n or 50
   local function med(t) table.sort(t); return math.floor(t[(#t + 1) // 2] * 1e6 + 0.5) end
-  local function timeit(f) local r = {} for _ = 1, n do local a = gettime(); f(); r[#r + 1] = gettime() - a end return med(r) end
+  local ptrs = {}
+  local function timeit(f)
+    local r = {}
+    local p0 = status.input_ptr
+    for _ = 1, n do local a = gettime(); f(); r[#r + 1] = gettime() - a end
+    ptrs[#ptrs + 1] = string.format("%d->%d", p0, status.input_ptr)
+    return med(r)
+  end
   local lines = {}
   for line in ((req.source or "") .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
   local out = {}
@@ -174,12 +199,14 @@ function S.profile(req)
   local r = dl.paragraph(tex.box[S.boxnum])
   out.encode = timeit(function() dlbin.encode(r) end)
   out.n = n
-  send{ op = "profile", req = req.req, us = out }
+  send{ op = "profile", req = req.req, us = out, input_ptr_track = ptrs, input_ptr = status.input_ptr }
 end
 
 function S.stats()
   send{ op = "stats", requests = S.requests, font_nextid = font.nextid(), node_mem = status.node_mem_usage,
-        grouplevel = tex.currentgrouplevel, nest = tex.nest.ptr, luastate = collectgarbage("count") }
+        grouplevel = tex.currentgrouplevel, nest = tex.nest.ptr, luastate = collectgarbage("count"),
+        input_ptr = status.input_ptr, max_in_stack = status.max_in_stack, save_size = status.save_size,
+        cs_count = status.cs_count, buf_size = status.buf_size }
 end
 
 function S.dispatch(req)
@@ -187,7 +214,7 @@ function S.dispatch(req)
     S.contexts[req.id] = req.ctx
     send{ op = "ok", id = req.id }
   elseif req.op == "compile" then
-    S.compile(req)
+    S.begin_compile(req)
   elseif req.op == "ping" then
     send{ op = "pong" }
   elseif req.op == "stats" then
@@ -200,8 +227,12 @@ function S.dispatch(req)
 end
 
 -- Main loop ----------------------------------------------------------------------------------------
-function S.run(boxnum)
+-- init(boxnum, countnum): open the FIFO, register hooks, send ready.
+-- step(): read and dispatch ONE request, then return to TeX (which executes any printed tokens
+-- and re-enters step() through the \loop in the driver). Sets \count<countnum> to 0 to stop.
+function S.init(boxnum, countnum)
   S.boxnum = boxnum
+  S.countnum = countnum
   local path = os.getenv("LODE_RESP")
   resp = assert(io.open(path, "wb"), "cannot open response FIFO " .. tostring(path))
   resp:setvbuf("full", 1 << 16)
@@ -209,34 +240,37 @@ function S.run(boxnum)
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,
         fingerprint = S.fingerprint(), font_nextid = font.nextid() }
   log("ready")
-  while true do
-    local line = io.stdin:read("*l")
-    if not line then log("stdin closed"); break end
-    if line ~= "" then
-      local ok, req = pcall(json.decode, line)
-      if not ok then
-        send{ op = "error", message = "bad request: " .. tostring(req) }
-      elseif req.op == "shutdown" then
-        send{ op = "bye" }
-        break
+end
+
+function S.stop()
+  tex.setcount(S.countnum, 0)
+  if resp then resp:close() end
+end
+
+function S.step()
+  local line = io.stdin:read("*l")
+  if not line then log("stdin closed"); S.stop(); return end
+  if line == "" then return end
+  local ok, req = pcall(json.decode, line)
+  if not ok then
+    send{ op = "error", message = "bad request: " .. tostring(req) }
+  elseif req.op == "shutdown" then
+    send{ op = "bye" }
+    S.stop()
+  else
+    local hok, herr = pcall(S.dispatch, req)
+    if not hok then
+      log("handler error: " .. tostring(herr))
+      S.current = nil
+      if req.op == "compile" then
+        send_result({ op = "result", req = req.req, ctx = req.ctx, status = "error",
+                      errors = { { message = "lua: " .. tostring(herr) } }, lines = 0, glyphs = 0,
+                      t_tex_us = 0, t_traverse_us = 0, t_pack_us = 0, dl_bytes = 0 }, "")
       else
-        -- a Lua error inside a handler must never take the server down: report it as an
-        -- error result for that request and keep serving
-        local hok, herr = pcall(S.dispatch, req)
-        if not hok then
-          log("handler error: " .. tostring(herr))
-          if req.op == "compile" then
-            send_result({ op = "result", req = req.req, ctx = req.ctx, status = "error",
-                          errors = { { message = "lua: " .. tostring(herr) } }, lines = 0, glyphs = 0,
-                          t_tex_us = 0, t_traverse_us = 0, t_pack_us = 0, dl_bytes = 0 }, "")
-          else
-            send{ op = "error", message = "lua: " .. tostring(herr) }
-          end
-        end
+        send{ op = "error", message = "lua: " .. tostring(herr) }
       end
     end
   end
-  resp:close()
 end
 
 return S

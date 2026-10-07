@@ -101,7 +101,11 @@ impl FastServer {
         std::fs::write(
             &driver,
             format!(
-                "\\input{{{}}}\n\\newbox\\lodebox\n\\begin{{document}}\n\\directlua{{lode_serve = dofile(kpse.find_file(\"lode-serve.lua\", \"lua\") or \"lode-serve.lua\") lode_serve.run(\\number\\lodebox)}}\n\\end{{document}}\n",
+                concat!(
+                    "\\input{{{}}}\n\\newbox\\lodebox\\newcount\\lodecontinue\\lodecontinue=1\n\\begin{{document}}\n",
+                    "\\directlua{{lode_serve = dofile(kpse.find_file(\"lode-serve.lua\", \"lua\") or \"lode-serve.lua\") lode_serve.init(\\number\\lodebox, \\number\\allocationnumber)}}\n",
+                    "\\loop\\directlua{{lode_serve.step()}}\\ifnum\\lodecontinue>0 \\repeat\n\\end{{document}}\n"
+                ),
                 preamble_file.display()
             ),
         )?;
