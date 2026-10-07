@@ -11,6 +11,19 @@ with their own renderer; exported PDFs match a clean LuaLaTeX build.
 The architecture follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*
 (TUGboat 2026 / TUG 2026).
 
+## Measured (this container, Xeon 2.1 GHz VM; `docs/BENCHMARKS.md`)
+
+| | 10 pages | 100 pages | 300 pages | paper |
+|---|---|---|---|---|
+| short paragraph, per keystroke (amortized) | 0.69 ms (0.40) | 0.74 ms (0.37) | 0.76 ms (0.53) | 0.79 ms |
+| medium paragraph, per keystroke | 1.41 ms | 1.52 ms | 1.52 ms | 6.11 ms |
+| long paragraph (10–11 lines), per keystroke | — | 2.47 ms | 2.45 ms | — |
+
+Paper-like font setup (TFM Latin Modern + microtype); OpenType fonts in luaotfload base mode
+are equally fast, fontspec's default node mode pays Lua shaping in the TeX stage. Output equals
+LuaTeX's own positions to the scaled point (`docs/FIDELITY.md`); exported PDFs are byte-equal to
+an independent clean build on the fixtures.
+
 ## Status
 
 | Area | State |
@@ -63,3 +76,11 @@ C hosts: `cargo build --release -p lode-core` builds `liblode_core.so`; see `inc
 See `docs/FIDELITY.md` for how output is verified, `docs/BENCHMARKS.md` for measured numbers,
 `docs/PROTOCOL.md` for the engine protocol and `docs/ENGINE_NOTES.md` for what the engine
 experiments established.
+
+## Continuous integration
+
+`.github/workflows/ci.yml`: a `unit` job (build, unit tests, C ABI header/symbol check, C example
+compile), an `integration` job with a cached TeX Live install (Lua tests, all gated Rust tests,
+the three fidelity layers on the 10-page fixture, export equality) and a `perf` job on pushes
+that runs the smoke benchmark and uploads the results; performance gates on shared runners are
+reported as warnings because they are hardware-qualified.
