@@ -19,7 +19,11 @@
 - Display list: `LINE_UNIT`, `IMAGE_INFO` and `MATRIX` records (graphicx scaling is now exact,
   not degraded); unit lists carry an insert count.
 - `lode gen-book --variant units` fixture; `lode verify` works per unit kind with `--units` and
-  `--dump-rows`.
+  `--dump-rows`; `lode bench` categories display-math/footnote/list/figure/table/heading with
+  5 ms × h and size-independence gates.
+- Measured on the reference container (100-page book, per keystroke): display-math paragraph
+  1.33 ms, footnote paragraph 2.38 ms, list 1.60 ms, figure 1.91 ms, table 1.34 ms, heading
+  0.95 ms; short paragraph 0.45 ms (0.20 ms amortized), medium 1.21 ms, long 2.26 ms.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

@@ -221,8 +221,49 @@ coalescing, index lookup and packing a renderer needs. Caching font descriptors 
 keystrokes; the `profile` op shows the same box build running 2–3× faster in a hot loop than in
 the real flow.
 
-## 0.0.2 — units (`lode bench` with the `units` fixtures)
+## 0.0.2 — units (`lode bench`, `bench/results/roundtrip-20261007-1834.md`)
 
-Categories added to `lode bench`: `display-math` (paragraph with a display), `footnote`,
-`list`, `figure`, `table`, `heading`. Results: see the latest `bench/results/roundtrip-*.md`
-(filled in by the run recorded below).
+Categories added to `lode bench`: `display-math` (paragraph containing a display, 3–8 rows),
+`footnote` (paragraph with a footnote mark, 3–8 rows), `list`, `figure`, `table`, `heading`,
+picked by unit kind from the `units` fixtures (`gen-book --variant units --fonts lm-tfm`).
+Hardware factor this run h = 1.30; 300 individual edits per cell, 2 ms apart; the session runs
+with a wide budget so the gates, not the budget, judge the 5 ms limit.
+
+**Paper-like setup (`lm-tfm`), individual-keystroke medians / amortized, text categories:**
+
+| Pages | Short (1 line) | Medium (4 lines) | Long (10–12 lines) | Inline math (2–3 lines) |
+|---|---|---|---|---|
+| 10 | 0.505 / 0.213 ms | 1.018 / 0.739 ms | — | 0.908 / 0.571 ms |
+| 100 | 0.448 / 0.197 ms | 1.205 / 0.892 ms | 2.258 / 1.940 ms | 0.884 / 0.541 ms |
+| 300 | 0.521 / 0.238 ms | 1.162 / 0.888 ms | 2.117 / 1.751 ms | 0.997 / 0.708 ms |
+| 0.0.1 (300) | 0.762 / 0.527 ms | 1.518 / 1.327 ms | 2.445 / 2.377 ms | 1.352 / 1.205 ms |
+| paper round trip | 0.79 ms | 6.11 ms | — | — |
+
+Stage medians at 300 pages (short / medium): TeX 0.16 / 0.55 ms, traversal + serialization
+0.07 / 0.30 ms, IPC + host 0.28 / 0.31 ms (0.0.1: 0.51 / 0.58 ms).
+
+**Unit kinds, individual-keystroke medians (P95) / amortized:**
+
+| Unit | 10 pages | 100 pages | rows / glyphs (100 p) | TeX stage (100 p) |
+|---|---|---|---|---|
+| paragraph with display math | 1.315 (1.65) / 1.058 ms | 1.330 (1.69) / 1.081 ms | 5 / 195 | 0.71 ms |
+| paragraph with a footnote | 2.483 (3.21) / 2.298 ms | 2.376 (4.23) / 2.057 ms | 3 / 187 | 1.69 ms |
+| list (3 items) | 1.513 (1.95) / 1.247 ms | 1.597 (3.37) / 1.230 ms | 3 / 97 | 1.04 ms |
+| figure (image + 2 caption rows) | 1.952 (3.22) / 1.702 ms | 1.914 (2.36) / 1.720 ms | 3 / 105 | 1.39 ms |
+| table (booktabs, caption) | 1.347 (1.58) / 1.130 ms | 1.337 (1.54) / 1.109 ms | 2 / 74 | 0.86 ms |
+| heading (`\section`) | 0.935 (1.14) / 0.662 ms | 0.954 (1.17) / 0.640 ms | 1 / 15 | 0.62 ms |
+
+The TeX stage dominates every environment kind: a footnote paragraph typesets the footnote text
+as well (an insert, not drawn until the next layout); a figure re-reads the PNG (`\includegraphics`
+through graphicx, ≈ 0.7 ms of its TeX stage); lists, tables and headings pay LaTeX's environment
+and sectioning machinery (`\list`, `\halign`, `\@startsection`, counters, `\addcontentsline`).
+Traversal stays at ≈ 1 µs per glyph and IPC + host at ≈ 0.3 ms.
+
+**Gates (26):** all unit-kind gates pass — every kind ≤ 5 ms × h (worst: footnote 2.38 ms ≤
+6.52 ms) and document-size independent (100p/10p ratios 0.96–1.06); the 0.0.1 text gates pass
+with margin (short amortized 0.23 ≤ 1.30 ms, short individual 0.49 ≤ 1.96 ms, IPC + host 0.28 /
+0.33 ≤ 0.65 ms, medium 1.21 ≤ 7.97 ms, traversal + serialization 0.32 ≤ 0.5 ms). One gate
+failed in this run: inline-math size independence 300p/10p = 1.33 (limit 1.25); it compares two
+different paragraphs (139 glyphs with fractions vs 170 glyphs) whose ratio was 1.10 and 1.22 in
+the two preceding runs of the day, so this is run-to-run noise on a 1 ms figure in a shared VM,
+not a size dependence (100p/10p is 1.08 and the medium/long ratios are 0.96–1.17).
