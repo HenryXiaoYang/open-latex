@@ -182,6 +182,23 @@ function S.stats()
         grouplevel = tex.currentgrouplevel, nest = tex.nest.ptr, luastate = collectgarbage("count") }
 end
 
+function S.dispatch(req)
+  if req.op == "context" then
+    S.contexts[req.id] = req.ctx
+    send{ op = "ok", id = req.id }
+  elseif req.op == "compile" then
+    S.compile(req)
+  elseif req.op == "ping" then
+    send{ op = "pong" }
+  elseif req.op == "stats" then
+    S.stats()
+  elseif req.op == "profile" then
+    S.profile(req)
+  else
+    send{ op = "error", message = "unknown op " .. tostring(req.op) }
+  end
+end
+
 -- Main loop ----------------------------------------------------------------------------------------
 function S.run(boxnum)
   S.boxnum = boxnum
@@ -199,22 +216,23 @@ function S.run(boxnum)
       local ok, req = pcall(json.decode, line)
       if not ok then
         send{ op = "error", message = "bad request: " .. tostring(req) }
-      elseif req.op == "context" then
-        S.contexts[req.id] = req.ctx
-        send{ op = "ok", id = req.id }
-      elseif req.op == "compile" then
-        S.compile(req)
-      elseif req.op == "ping" then
-        send{ op = "pong" }
-      elseif req.op == "stats" then
-        S.stats()
-      elseif req.op == "profile" then
-        S.profile(req)
       elseif req.op == "shutdown" then
         send{ op = "bye" }
         break
       else
-        send{ op = "error", message = "unknown op " .. tostring(req.op) }
+        -- a Lua error inside a handler must never take the server down: report it as an
+        -- error result for that request and keep serving
+        local hok, herr = pcall(S.dispatch, req)
+        if not hok then
+          log("handler error: " .. tostring(herr))
+          if req.op == "compile" then
+            send_result({ op = "result", req = req.req, ctx = req.ctx, status = "error",
+                          errors = { { message = "lua: " .. tostring(herr) } }, lines = 0, glyphs = 0,
+                          t_tex_us = 0, t_traverse_us = 0, t_pack_us = 0, dl_bytes = 0 }, "")
+          else
+            send{ op = "error", message = "lua: " .. tostring(herr) }
+          end
+        end
       end
     end
   end

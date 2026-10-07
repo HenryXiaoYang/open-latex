@@ -94,7 +94,8 @@ impl FastServer {
     pub fn spawn(tl: &TexLive, cwd: &Path, work_dir: &Path, preamble: &str, generation: u64) -> Result<FastServer> {
         std::fs::create_dir_all(work_dir)?;
         let work_dir = &work_dir.canonicalize()?;
-        let driver = work_dir.join("lode-serve.tex");
+        // one driver/log per generation so a crashed server's log survives the restart
+        let driver = work_dir.join(format!("lode-serve-g{generation}.tex"));
         let preamble_file = work_dir.join("lode-preamble.tex");
         std::fs::write(&preamble_file, preamble)?;
         std::fs::write(
@@ -143,7 +144,7 @@ impl FastServer {
     }
 
     pub fn log_path(&self) -> PathBuf {
-        self.work_dir.join("lode-serve.log")
+        self.work_dir.join(format!("lode-serve-g{}.log", self.generation))
     }
 
     fn send(&mut self, v: &serde_json::Value) -> Result<()> {
