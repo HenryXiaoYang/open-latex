@@ -159,8 +159,16 @@ pub fn roundtrip(project: &Path, categories: &[String], samples: usize, inner: u
             if r.routed != "fast" {
                 bail!("edit not routed fast: {:?}", r.reasons);
             }
-            let (ev, _) = session.wait_for(Duration::from_secs(30), |e| matches!(e, Event::ParagraphUpdate { .. }));
-            let Some(Event::ParagraphUpdate { timing, dl, status, .. }) = ev else { bail!("no paragraph update") };
+            let (ev, others) = session.wait_for(Duration::from_secs(30), |e| matches!(e, Event::ParagraphUpdate { .. }));
+            let Some(Event::ParagraphUpdate { timing, dl, status, .. }) = ev else {
+                let seen: Vec<String> = others.iter().map(|e| match e {
+                    Event::EngineState { state, reason, .. } => format!("EngineState {state} {reason:?}"),
+                    Event::BackgroundScheduled { reasons, .. } => format!("BackgroundScheduled {reasons:?}"),
+                    Event::Diagnostics { items, .. } => format!("Diagnostics {:?}", items.iter().map(|d| d.message.clone()).collect::<Vec<_>>()),
+                    other => format!("{}", serde_json::to_value(other).map(|v| v["event"].to_string()).unwrap_or_default()),
+                }).collect();
+                bail!("no paragraph update for par {pid} ({cat}); events seen: {seen:?}; edit result: {:?}", r.reasons)
+            };
             if status != "ok" {
                 bail!("status {status}");
             }
