@@ -40,6 +40,12 @@ local function silent_whatsit(sub)
 end
 
 local RUNNING = -1073741824  -- null_flag: running dimension for rules
+local RS = node.subtypes("rule")
+local RULE_IMAGE, RULE_EMPTY, RULE_USER, RULE_OUTLINE = 2, 3, 4, 9
+for k, v in pairs(RS) do
+  if v == "image" then RULE_IMAGE = k elseif v == "empty" then RULE_EMPTY = k
+  elseif v == "user" then RULE_USER = k elseif v == "outline" then RULE_OUTLINE = k end
+end
 
 -- TeX's round(): web2c zround.
 local function tex_round(r)
@@ -70,7 +76,9 @@ local function font_entry(f)
   local e = font_cache[f]
   if not e then
     local tfm = font.getfont(f)
-    e = { tfm = tfm, chars = tfm and tfm.characters or {}, widths = {} }
+    e = { tfm = tfm, chars = tfm and tfm.characters or {}, widths = {},
+          virtual = tfm and tfm.type == "virtual" or false,
+          fonts = tfm and tfm.fonts or nil }
     font_cache[f] = e
   end
   return e
@@ -120,7 +128,7 @@ local function new_state(opts)
     opts = opts or {}, fonts = {}, lines = {}, other = {}, cur = nil, flags = {},
     attr_par = opts and opts.attr_par, attr_line = opts and opts.attr_line,
     glyph_attr = opts and opts.glyph_attr,
-    glyphs = 0,
+    glyphs = 0, images = 0,
   }, State)
 end
 
@@ -171,20 +179,72 @@ hlist_out = function(st, box, left, base_v)
         local ef = getexpansion(n) or 0
         local xo, yo = getoffsets(n)
         local w = floor(getwidth(n) + 0.5)
-        local gi = glyph_index(f, c)
         if ef ~= 0 then w = expand(w, ef) end
-        st:usefont(f)
-        st.glyphs = st.glyphs + 1
-        local item = { "g", f, c, gi, cur_h + (xo or 0), base_v - (yo or 0), w, ef }
-        if st.glyph_attr then item[9] = getattribute(n, st.glyph_attr) end
-        st:emit(item)
+        local e = font_entry(f)
+        if e.virtual then
+          st:emit_virtual(f, c, cur_h + (xo or 0), base_v - (yo or 0), ef)
+        else
+          local gi = glyph_index(f, c)
+          st:usefont(f)
+          st.glyphs = st.glyphs + 1
+          local item = { "g", f, c, gi, cur_h + (xo or 0), base_v - (yo or 0), w, ef }
+          if st.glyph_attr then item[9] = getattribute(n, st.glyph_attr) end
+          st:emit(item)
+        end
         cur_h = cur_h + w
       elseif id == glue_id then
         local wd, st_, sh, sto, sho = getglue(n)
-        local adv = glue_advance(wd, st_, sh, sto, sho)
+        local rule_wd = glue_advance(wd, st_, sh, sto, sho)
         local sub = getsubtype(n)
-        if sub >= 100 then st:flag("leaders", sub); st:emit({ "u", "leaders", cur_h }) end
-        cur_h = cur_h + adv
+        if sub >= 100 then
+          -- leaders (a_leaders=100, c_leaders=101, x_leaders=102, g_leaders=103)
+          local lb = getleader(n)
+          if lb and getid(lb) == rule_id then
+            local lw, lh, ld = getwhd(lb)
+            if lh == RUNNING then lh = box_h end
+            if ld == RUNNING then ld = box_d end
+            if rule_wd > 0 and (lh + ld) > 0 then st:emit({ "r", cur_h, base_v - lh, rule_wd, lh + ld }) end
+          elseif lb then
+            local leader_wd = getwidth(lb)
+            if leader_wd > 0 and rule_wd > 0 then
+              rule_wd = rule_wd + 10
+              local edge = cur_h + rule_wd
+              local lx = 0
+              local save_h = cur_h
+              if sub == 100 then
+                -- aligned leaders: boxes at multiples of leader_wd from the enclosing box's left edge
+                cur_h = left + leader_wd * ((cur_h - left) // leader_wd)
+                if cur_h < save_h then cur_h = cur_h + leader_wd end
+              else
+                local lq = rule_wd // leader_wd
+                local lr = rule_wd % leader_wd
+                if sub == 101 then
+                  cur_h = cur_h + lr // 2
+                else
+                  lx = lr // (lq + 1)
+                  cur_h = cur_h + (lr - (lq - 1) * lx) // 2
+                end
+              end
+              local lid = getid(lb)
+              local lw, lh, ld = getwhd(lb)
+              local lshift = getshift(lb)
+              while cur_h + leader_wd <= edge do
+                if lid == hlist_id then
+                  hlist_out(st, lb, cur_h, base_v + lshift)
+                else
+                  vlist_out(st, lb, cur_h, base_v + lshift - lh)
+                end
+                cur_h = cur_h + leader_wd + lx
+              end
+              cur_h = edge - 10
+              rule_wd = 0
+              cur_h = save_h + (edge - 10 - save_h)
+              -- the loop above already advanced cur_h to edge - 10; nothing left to add
+              goto continue
+            end
+          end
+        end
+        cur_h = cur_h + rule_wd
       elseif id == kern_id then
         -- LuaTeX: kern_width(q) = width(q) + ex_kern(q); for kern nodes the Lua field
         -- `expansion_factor` *is* ex_kern, an amount in sp precomputed by the packer.
@@ -208,10 +268,19 @@ hlist_out = function(st, box, left, base_v)
         cur_h = cur_h + w
       elseif id == rule_id then
         local w, h, d = getwhd(n)
+        local sub = getsubtype(n)
         if h == RUNNING then h = box_h end
         if d == RUNNING then d = box_d end
         if w == RUNNING then w = 0 end
-        if w > 0 and (h + d) > 0 then st:emit({ "r", cur_h, base_v - h, w, h + d }) end
+        if sub == RULE_IMAGE then
+          st:emit({ "i", getfield(n, "index"), cur_h, base_v - h, w, h + d }); st.images = st.images + 1
+        elseif sub == RULE_EMPTY then
+          -- \nullfont / empty rule: occupies space, draws nothing
+        elseif sub == RULE_USER or sub == RULE_OUTLINE then
+          st:emit({ "u", "rule_subtype", sub }); st:flag("rule_subtype", sub)
+        elseif w > 0 and (h + d) > 0 then
+          st:emit({ "r", cur_h, base_v - h, w, h + d })
+        end
         cur_h = cur_h + w
       elseif id == disc_id then
         local pre, post, replace = getdisc(n)
@@ -256,6 +325,7 @@ hlist_out = function(st, box, left, base_v)
       else
         st:flag("node_" .. (node.type(id) or tostring(id)))
       end
+      ::continue::
       n = getnext(n)
     end
   end
@@ -298,10 +368,18 @@ vlist_out = function(st, box, left, top)
       cur_v = cur_v + d
     elseif id == rule_id then
       local w, h, d = getwhd(n)
+      local sub = getsubtype(n)
       if w == RUNNING then w = box_w end
       if h == RUNNING then h = 0 end
       if d == RUNNING then d = 0 end
-      if w > 0 and (h + d) > 0 then st:emit({ "r", left, cur_v, w, h + d }) end
+      if sub == RULE_IMAGE then
+        st:emit({ "i", getfield(n, "index"), left, cur_v, w, h + d }); st.images = st.images + 1
+      elseif sub == RULE_EMPTY then
+      elseif sub == RULE_USER or sub == RULE_OUTLINE then
+        st:emit({ "u", "rule_subtype", sub }); st:flag("rule_subtype", sub)
+      elseif w > 0 and (h + d) > 0 then
+        st:emit({ "r", left, cur_v, w, h + d })
+      end
       cur_v = cur_v + h + d
     elseif id == glue_id then
       local wd, st_, sh, sto, sho = getglue(n)
@@ -315,7 +393,41 @@ vlist_out = function(st, box, left, top)
       end
       rule_ht = rule_ht + cur_g
       local sub = getsubtype(n)
-      if sub >= 100 then st:flag("leaders", sub) end
+      if sub >= 100 then
+        local lb = getleader(n)
+        if lb and getid(lb) == rule_id then
+          local lw = getwidth(lb)
+          if lw == RUNNING then lw = box_w end
+          if lw > 0 and rule_ht > 0 then st:emit({ "r", left, cur_v, lw, rule_ht }) end
+        elseif lb then
+          local lw, lh, ld = getwhd(lb)
+          local leader_ht = lh + ld
+          if leader_ht > 0 and rule_ht > 0 then
+            rule_ht = rule_ht + 10
+            local edge = cur_v + rule_ht
+            local lx = 0
+            local save_v = cur_v
+            if sub == 100 then
+              cur_v = top + leader_ht * ((cur_v - top) // leader_ht)
+              if cur_v < save_v then cur_v = cur_v + leader_ht end
+            else
+              local lq = rule_ht // leader_ht
+              local lr = rule_ht % leader_ht
+              if sub == 101 then cur_v = cur_v + lr // 2
+              else lx = lr // (lq + 1); cur_v = cur_v + (lr - (lq - 1) * lx) // 2 end
+            end
+            local lshift = getshift(lb)
+            while cur_v + leader_ht <= edge do
+              cur_v = cur_v + lh
+              if getid(lb) == hlist_id then hlist_out(st, lb, left + lshift, cur_v)
+              else vlist_out(st, lb, left + lshift, cur_v - lh) end
+              cur_v = cur_v + ld + lx
+            end
+            cur_v = edge - 10
+            goto vcontinue
+          end
+        end
+      end
       cur_v = cur_v + rule_ht
     elseif id == kern_id then
       cur_v = cur_v + getkern(n)
@@ -337,9 +449,58 @@ vlist_out = function(st, box, left, top)
     else
       st:flag("node_" .. (node.type(id) or tostring(id)))
     end
+    ::vcontinue::
     n = getnext(n)
   end
   return cur_v
+end
+
+-- Expand a virtual-font character into real-font glyphs/rules (LuaTeX font `commands`).
+-- Nested virtual fonts are expanded recursively (depth-limited).
+function State:emit_virtual(f, c, x, y, ef, depth)
+  depth = depth or 0
+  local e = font_entry(f)
+  local ch = e.chars[c]
+  local cmds = ch and ch.commands
+  if not cmds or depth > 4 then
+    self:flag("virtual_unexpanded"); self:emit({ "u", "virtual", f }); return
+  end
+  local fonts = e.fonts or {}
+  local cur_font = fonts[1] and fonts[1].id or f
+  local px, py = x, y
+  local stack = {}
+  for _, cmd in ipairs(cmds) do
+    local op = cmd[1]
+    if op == "font" then
+      local fe = fonts[cmd[2]]
+      cur_font = fe and fe.id or cur_font
+    elseif op == "char" or op == "slot" then
+      local cc = op == "char" and cmd[2] or cmd[3]
+      if op == "slot" then local fe = fonts[cmd[2]]; cur_font = fe and fe.id or cur_font end
+      local fe2 = font_entry(cur_font)
+      local w = (fe2.chars[cc] and fe2.chars[cc].width) or 0
+      w = floor(w + 0.5)
+      if ef ~= 0 then w = expand(w, ef) end
+      if fe2.virtual and cur_font ~= f then
+        self:emit_virtual(cur_font, cc, px, py, ef, depth + 1)
+      else
+        self:usefont(cur_font)
+        self.glyphs = self.glyphs + 1
+        self:emit({ "g", cur_font, cc, glyph_index(cur_font, cc), px, py, w, ef })
+      end
+      px = px + w
+    elseif op == "right" then px = px + floor(cmd[2] + 0.5)
+    elseif op == "down" then py = py + floor(cmd[2] + 0.5)
+    elseif op == "push" then stack[#stack + 1] = { px, py }
+    elseif op == "pop" then local t = stack[#stack]; if t then px, py = t[1], t[2]; stack[#stack] = nil end
+    elseif op == "rule" then
+      local h, w = floor(cmd[2] + 0.5), floor(cmd[3] + 0.5)
+      if w > 0 and h > 0 then self:emit({ "r", px, py - h, w, h }) end
+      px = px + w
+    elseif op == "special" or op == "pdf" or op == "lua" or op == "image" or op == "node" then
+      self:flag("virtual_" .. op); self:emit({ "u", "virtual_" .. op, cur_font })
+    end
+  end
 end
 
 function State:begin_line(n, par, line, x, baseline, w, h, d)
@@ -356,16 +517,18 @@ local function result(st, kind, extra)
   local fonts = {}
   for id, d in pairs(st.fonts) do fonts[tostring(id)] = d end
   local r = { kind = kind, unit = "sp", fonts = fonts, lines = st.lines, other = st.other,
-              flags = st.flags, glyphs = st.glyphs }
+              flags = st.flags, glyphs = st.glyphs, images = st.images }
   if extra then for k, v in pairs(extra) do r[k] = v end end
   return r
 end
 
 -- Paragraph box (a \vbox whose top-level hlists are the lines). Origin: top-left of the box.
-function M.paragraph(boxnode)
+-- `initial_color` (raw PDF color operators) is the color in force when the paragraph starts.
+function M.paragraph(boxnode, initial_color)
   local box = todirect(boxnode)
   local st = new_state({ lines_at_top = true })
   st.depth = 0
+  if initial_color and initial_color ~= "" then st.other[1] = { "c", 0, 0, initial_color } end
   local w, h, d = getwhd(box)
   vlist_out(st, box, 0, 0)
   return result(st, "paragraph", { width = w, height = h, depth = d })

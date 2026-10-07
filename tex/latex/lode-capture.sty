@@ -10,4 +10,10 @@
 \AddToHook{para/begin}{\directlua{lode_capture.parbegin()}}
 \AddToHook{shipout/before}{\directlua{lode_capture.shipout(\number\ShipoutBox)}}
 \AddToHook{enddocument/afterlastpage}{\directlua{lode_capture.finish()}}
+% Map image resource indices to files so IMAGE display-list items can name their source.
+\AddToHook{package/graphicx/after}{%
+  \AddToHook{cmd/Gin@setfile/after}{%
+    \directlua{lode_capture.image(\number\lastsavedimageresourceindex,
+      "\luaescapestring{\Gin@base\Gin@ext}", "\luaescapestring{\Gin@page}",
+      \number\lastsavedimageresourcepages)}}}
 \endinput

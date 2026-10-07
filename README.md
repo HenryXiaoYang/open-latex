@@ -32,5 +32,13 @@ cargo build --workspace
 cargo run -p lode-cli -- gen-book --pages 10 --out build/fx/book-10-pure
 ```
 
-See `docs/BENCHMARKS.md` for measured numbers and `docs/ENGINE_NOTES.md` for what the
-engine experiments established.
+```bash
+cargo run --release -p lode-cli -- verify --project build/fx/book-10-pure --raster   # three fidelity layers
+cargo run --release -p lode-cli -- slice  --project build/fx/book-10-pure            # timing of one paragraph
+cargo test --workspace                                                              # unit + engine tests
+texlua tex/tests/run.lua                                                            # Lua-side unit tests
+```
+
+See `docs/FIDELITY.md` for how output is verified, `docs/BENCHMARKS.md` for measured numbers,
+`docs/PROTOCOL.md` for the engine protocol and `docs/ENGINE_NOTES.md` for what the engine
+experiments established.

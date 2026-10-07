@@ -682,6 +682,7 @@ name = "lode-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "crossbeam-channel",
  "hex",
  "libc",

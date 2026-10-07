@@ -101,11 +101,17 @@ function C.post_linebreak(head, groupcode)
   return true
 end
 
+C.images = {}
+function C.image(index, file, page, pages)
+  C.images[tostring(index)] = { index = index, file = file, page = tonumber(page) or 1, pages = pages }
+end
+
 function C.shipout(boxnum)
   C.page = C.page + 1
   local b = tex.box[boxnum]
   if not b then return end
   local page = dl.page(b, C.attr_par, C.attr_line, C.page)
+  page.images_info = C.images
   C.pages[#C.pages + 1] = page
   for _, line in ipairs(page.lines) do
     local pl = C.placements[line.par]
@@ -129,7 +135,7 @@ function C.finish()
     end
   end
   local out = {
-    version = 1, jobname = C.jobname, pages = C.page,
+    version = 1, jobname = C.jobname, pages = C.page, images = C.images,
     engine = status.banner, luatex_version = status.luatex_version,
     paragraphs = paras,
   }

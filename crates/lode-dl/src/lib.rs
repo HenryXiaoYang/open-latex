@@ -74,6 +74,8 @@ pub enum Item {
     Unsupported { kind: String, detail: serde_json::Value },
     /// Inline math boundary marker (on/off) at x.
     Math { on: bool, x: Sp },
+    /// Image placement: engine image resource index, x, top y, width, height.
+    Image { index: i64, x: Sp, y_top: Sp, width: Sp, height: Sp },
 }
 
 impl Serialize for Item {
@@ -88,6 +90,7 @@ impl Serialize for Item {
             Item::Literal { mode, data } => json!(["l", mode, data]),
             Item::Unsupported { kind, detail } => json!(["u", kind, detail]),
             Item::Math { on, x } => json!(["m", if *on { "on" } else { "off" }, x]),
+            Item::Image { index, x, y_top, width, height } => json!(["i", index, x, y_top, width, height]),
         };
         v.serialize(s)
     }
@@ -129,6 +132,7 @@ impl<'de> Deserialize<'de> for Item {
                 detail: arr.get(2).cloned().unwrap_or(serde_json::Value::Null),
             },
             "m" => Item::Math { on: arr.get(1).and_then(|d| d.as_str()) == Some("on"), x: g(2)? },
+            "i" => Item::Image { index: g(1).unwrap_or(0), x: g(2)?, y_top: g(3)?, width: g(4)?, height: g(5)? },
             other => return Err(D::Error::custom(format!("unknown item tag {other}"))),
         })
     }

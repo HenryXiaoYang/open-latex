@@ -65,13 +65,6 @@ fn dl_glyphs<'a>(dl: &'a DisplayList, lines: &[&'a Line]) -> Vec<DlGlyph<'a>> {
             }
         }
     }
-    if lines.is_empty() {
-        for it in &dl.other {
-            if let Item::Glyph { expansion, .. } = it {
-                v.push(DlGlyph { line: 0, par: 0, item: it, scale: 1.0 + *expansion as f64 / 1_000_000.0 });
-            }
-        }
-    }
     let _ = dl;
     v
 }

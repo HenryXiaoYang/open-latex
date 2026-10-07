@@ -1,6 +1,8 @@
 //! lode-core: persistent LuaTeX paragraph server, background compiler, versioned layout store.
 
 pub mod capture;
+pub mod eligibility;
+pub mod fixtures;
 pub mod engine;
 pub mod texlive;
 

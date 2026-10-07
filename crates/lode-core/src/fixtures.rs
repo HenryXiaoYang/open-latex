@@ -165,7 +165,14 @@ pub fn preamble(fonts: FontSet, mixed: bool) -> String {
     s.push_str("\\usepackage{fontspec}\n");
     s.push_str(font);
     s.push('\n');
-    s.push_str("\\usepackage{microtype}\n\\usepackage{amsmath}\n\\usepackage{amssymb}\n\\usepackage{xcolor}\n");
+    // unicode-math keeps every font OpenType (no Type1 CM math), which hosts and our rasterizer
+    // can render from glyph indices alone.
+    s.push_str("\\usepackage{microtype}\n\\usepackage{amsmath}\n\\usepackage{unicode-math}\n");
+    s.push_str(match fonts {
+        FontSet::Pagella => "\\setmathfont{TeX Gyre Pagella Math}\n",
+        FontSet::LatinModern => "\\setmathfont{Latin Modern Math}\n",
+    });
+    s.push_str("\\usepackage{xcolor}\n");
     if mixed {
         s.push_str("\\usepackage{graphicx}\n\\usepackage[backend=biber,style=numeric]{biblatex}\n\\addbibresource{refs.bib}\n");
     }
@@ -224,12 +231,24 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
             }
             if rng.chance(35) {
                 fig += 1;
-                let _ = writeln!(
-                    body,
-                    "\\begin{{figure}}[tbp]\\centering\\rule{{0.6\\textwidth}}{{3cm}}\\caption{{Figure {} placeholder.}}\\label{{fig:{}}}\\end{{figure}}\n",
-                    fig, fig
-                );
+                if fig % 2 == 0 {
+                    let _ = writeln!(
+                        body,
+                        "\\begin{{figure}}[tbp]\\centering\\includegraphics[width=0.5\\textwidth]{{figure.png}}\\caption{{Figure {} (image).}}\\label{{fig:{}}}\\end{{figure}}\n",
+                        fig, fig
+                    );
+                } else {
+                    let _ = writeln!(
+                        body,
+                        "\\begin{{figure}}[tbp]\\centering\\rule{{0.6\\textwidth}}{{3cm}}\\caption{{Figure {} placeholder.}}\\label{{fig:{}}}\\end{{figure}}\n",
+                        fig, fig
+                    );
+                }
                 words += 120;
+            }
+            if rng.chance(30) {
+                let _ = writeln!(body, "A \\textcolor{{red}}{{colored}} word and {{\\color{{blue}}a blue phrase}} inside a paragraph that also has a footnote.\\footnote{{Footnote text for the colored paragraph.}}\n");
+                words += 20;
             }
         }
     }
@@ -244,6 +263,7 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
     main.push_str("\\end{document}\n");
     std::fs::write(out.join("main.tex"), main)?;
     if mixed {
+        std::fs::write(out.join("figure.png"), png_placeholder())?;
         std::fs::write(
             out.join("refs.bib"),
             "@article{knuth1981,\n  author = {Donald E. Knuth and Michael F. Plass},\n  title = {Breaking paragraphs into lines},\n  journal = {Software: Practice and Experience},\n  year = {1981},\n  volume = {11},\n  number = {11},\n  pages = {1119--1184}\n}\n",
@@ -257,4 +277,70 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
         }))?,
     )?;
     Ok(())
+}
+
+/// A deterministic 64×40 RGB PNG (diagonal gradient) written without external crates.
+fn png_placeholder() -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut table = [0u32; 256];
+        for i in 0..256u32 {
+            let mut c = i;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB88320 ^ (c >> 1) } else { c >> 1 };
+            }
+            table[i as usize] = c;
+        }
+        let mut crc = 0xFFFFFFFFu32;
+        for &b in data {
+            crc = table[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+        }
+        crc ^ 0xFFFFFFFF
+    }
+    fn adler32(data: &[u8]) -> u32 {
+        let (mut a, mut b) = (1u32, 0u32);
+        for &d in data {
+            a = (a + d as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        (b << 16) | a
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut c = kind.to_vec();
+        c.extend_from_slice(data);
+        out.extend_from_slice(&c);
+        out.extend_from_slice(&crc32(&c).to_be_bytes());
+    }
+    let (w, h) = (64usize, 40usize);
+    let mut raw = Vec::new();
+    for y in 0..h {
+        raw.push(0u8); // filter none
+        for x in 0..w {
+            raw.push((x * 4) as u8);
+            raw.push((y * 6) as u8);
+            raw.push(((x + y) * 2) as u8);
+        }
+    }
+    // zlib stream with stored (uncompressed) deflate blocks
+    let mut z = vec![0x78, 0x01];
+    let mut i = 0;
+    while i < raw.len() {
+        let n = (raw.len() - i).min(65535);
+        let last = if i + n == raw.len() { 1u8 } else { 0u8 };
+        z.push(last);
+        z.extend_from_slice(&(n as u16).to_le_bytes());
+        z.extend_from_slice(&(!(n as u16)).to_le_bytes());
+        z.extend_from_slice(&raw[i..i + n]);
+        i += n;
+    }
+    z.extend_from_slice(&adler32(&raw).to_be_bytes());
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
 }

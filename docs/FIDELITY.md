@@ -17,9 +17,15 @@ This layer does not depend on PDF parsing at all and does not change the typeset
 
 The persistent server typesets the paragraph from its captured context; `lode-capture` runs the
 same traversal on the shipped page of a full compile. For the same paragraph the two display
-lists must be identical after translating by the first line's placement: fonts (by stable font
-key), glyph indices, x/baseline positions, advances, expansion factors, line boxes and glue
-ratios. Current status (10-page `pure` fixture, paragraph of 3 lines, 166 glyphs): 166/166.
+lists must be identical after translating each page fragment by its first line's placement
+(book-class margins alternate between odd and even pages, so a paragraph that crosses a page
+break has one offset per page): fonts (by stable font key), glyph indices, x/baseline positions,
+advances, expansion factors, line boxes and glue ratios.
+
+Status (`lode verify`): 10-page `pure` fixture 49/49 paragraphs eligible, 21 396/21 396 glyphs
+identical; 10-page `mixed` fixture 29/104 paragraphs eligible (the rest are background-only
+for the reasons the allow-list reports: `\footnote`, `\ref`, `\cite`, `\label`, list items,
+headings, TOC lines, display math, floats), 12 709/12 709 glyphs identical.
 
 ## Layer 2 — PDF content stream (independent parser, quantified tolerance)
 
@@ -37,18 +43,42 @@ Tolerances are derived from what LuaTeX actually writes, not chosen to make test
 | Horizontal scale (`Tm` a-component) | 10⁻³ | printed with 3 decimals; equals `1 + expansion_factor / 10⁶` |
 | Rules | 10⁻² bp | stroked-line geometry printed with 3 decimals |
 
-Measured on the fixture page: anchored glyphs max 0.0005 bp, interior glyphs max 0.0105 bp
-(< 1 TJ unit), scale error 0.000000, 2268/2268 glyphs matched, rule matched. The backend oracle
+Status: all 10 pages of `pure` and all 16 pages of `mixed` pass with anchored glyphs max
+0.0005 bp, interior glyphs max 0.0106 bp (< 1 TJ unit), zero scale error, every glyph matched,
+all rules (footnote rules, fraction bars, `\rule` placeholders, TOC leaders) and images
+(`\includegraphics`, matched by the `Do` operator's CTM rectangle) matched. The backend oracle
 shows the same ≤ 1 TJ-unit deviation between LuaTeX's cursor and its PDF, i.e. the display list
 is as precise as the engine and slightly more precise than the PDF rendering of it.
 
 A fourth cross-check used during development: PyMuPDF's per-character origins agree with the
 Rust parser (same deltas to 10⁻⁵ bp).
 
-## Layer 3 — rendered comparison (M2)
+## Layer 3 — rendered comparison
 
-PDF pages rasterized with PyMuPDF versus the display list rasterized with the fonts named in its
-font table; anti-aliasing-tolerant pixel comparison. Added in milestone M2.
+`crates/lode-verify/src/raster.rs` rasterizes the page display list at 150 dpi with the font
+files it names (OpenType/TrueType outlines via `ttf-parser`, horizontal scale from the expansion
+factor, `slant`/`extend` honoured) and compares it with PyMuPDF's raster of the PDF page. The
+metric is anti-aliasing tolerant: an ink pixel counts as matched if the other image has ink
+within one pixel; the unmatched fraction must stay below 1 % and no glyph may be skipped.
+
+Status: `pure` 0.007 % unmatched ink (worst page), `mixed` 0.018 %. Fixtures use `unicode-math`
+so every glyph, including math, is an OpenType glyph; Type1 fonts (classic Computer Modern
+math) are reported as skipped by the rasterizer and documented in LIMITATIONS.
+
+## Degraded pages
+
+When the traversal meets something it cannot represent (non-TLT direction, `\pdfliteral`
+drawing, unknown whatsits, …) the page display list carries flags and the page is *Degraded*:
+`lode verify` reports it separately and the library hands hosts the PDF page as fallback (M4).
+Both fixtures currently have 0 degraded pages; TOC dot leaders, images and color stacks are
+represented natively.
+
+## Robustness (crates/lode-core/tests/engine_robustness.rs)
+
+Undefined macros and unbalanced braces produce `error` results with diagnostics and leave the
+engine state fingerprint intact; a `\footnote` yields `ok_degraded` with an `ins` flag; a
+runaway `\loop` is killed by the per-request watchdog and a fresh generation serves again;
+results do not depend on request order.
 
 ## Running
 

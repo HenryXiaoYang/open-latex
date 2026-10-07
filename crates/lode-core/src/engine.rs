@@ -78,6 +78,8 @@ pub struct FastServer {
     pub work_dir: PathBuf,
     pub banner: String,
     pub startup: Duration,
+    /// Per-request watchdog (default 5 s; the first compile of a session loads fonts and may take longer).
+    pub timeout: Duration,
     next_req: i64,
 }
 
@@ -122,6 +124,7 @@ impl FastServer {
             work_dir: work_dir.to_path_buf(),
             banner: String::new(),
             startup: Duration::ZERO,
+            timeout: Duration::from_secs(5),
             next_req: 1,
         };
         match s.recv()? {
@@ -146,7 +149,32 @@ impl FastServer {
         Ok(())
     }
 
+    /// Wait until a frame header is readable or `timeout` elapses (watchdog). On timeout the
+    /// server is killed; the caller restarts it with a new generation.
+    fn wait_readable(&mut self, timeout: Duration) -> Result<()> {
+        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+        use std::os::fd::AsFd;
+        if self.resp.buffer().len() >= 4 {
+            return Ok(());
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.kill();
+                bail!("engine watchdog: no response within {:?}; server killed", timeout);
+            }
+            let ms = remaining.as_millis().min(u16::MAX as u128) as u16;
+            let mut fds = [PollFd::new(self.resp.get_ref().as_fd(), PollFlags::POLLIN)];
+            let n = poll(&mut fds, PollTimeout::from(ms))?;
+            if n > 0 {
+                return Ok(());
+            }
+        }
+    }
+
     pub fn recv(&mut self) -> Result<Response> {
+        self.wait_readable(self.timeout)?;
         let mut hdr = [0u8; 4];
         self.resp.read_exact(&mut hdr).context("server closed the response channel")?;
         let n = u32::from_le_bytes(hdr) as usize;

@@ -77,6 +77,15 @@ pub struct PdfRule {
     pub h: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PdfImage {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PdfPage {
     pub number: u32,
@@ -84,6 +93,7 @@ pub struct PdfPage {
     pub height: f64,
     pub glyphs: Vec<PdfGlyph>,
     pub rules: Vec<PdfRule>,
+    pub images: Vec<PdfImage>,
     pub color_ops: Vec<String>,
     pub fonts: HashMap<String, PdfFont>,
     /// Number of decimals LuaTeX used for coordinates (inferred from the first Tm operands).
@@ -356,6 +366,12 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                 "n" | "h" => {
                     path_segments.clear();
                     path_start = None;
+                }
+                "Do" if ops.len() == 1 => {
+                    // unit square mapped by the CTM
+                    let (x0, y0) = ctm.apply(0.0, 0.0);
+                    let (x1, y1) = ctm.apply(1.0, 1.0);
+                    page.images.push(PdfImage { name: ops[0].as_name().map(|n| String::from_utf8_lossy(n).to_string()).unwrap_or_default(), x: x0.min(x1), y: y0.min(y1), w: (x1 - x0).abs(), h: (y1 - y0).abs() });
                 }
                 "re" if ops.len() == 4 => {
                     let (x, y, w, h) = (f(&ops[0])?, f(&ops[1])?, f(&ops[2])?, f(&ops[3])?);

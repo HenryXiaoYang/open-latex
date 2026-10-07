@@ -171,6 +171,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
                 Item::Glyph { x, y, .. } => { *x += ox; *y += oy; }
                 Item::Rule { x, y_top, .. } => { *x += ox; *y_top += oy; }
                 Item::Math { x, .. } => { *x += ox; }
+                Item::Image { x, y_top, .. } => { *x += ox; *y_top += oy; }
                 _ => {}
             }
         }

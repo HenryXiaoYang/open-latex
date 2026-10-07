@@ -1,5 +1,6 @@
-mod gen_book;
+use lode_core::fixtures as gen_book;
 mod slice;
+mod verify;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -30,6 +31,24 @@ enum Cmd {
         #[arg(long)]
         json_out: Option<PathBuf>,
     },
+    /// Run the fidelity layers over a whole project (all eligible paragraphs, all pages).
+    Verify {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value = "main.tex")]
+        main: String,
+        #[arg(long, default_value = "build/verify")]
+        build: PathBuf,
+        #[arg(long, default_value_t = 150)]
+        dpi: u32,
+        /// Also run the rendered comparison (needs python3 + PyMuPDF).
+        #[arg(long)]
+        raster: bool,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        max_paragraphs: Option<usize>,
+    },
     GenBook {
         #[arg(long, default_value_t = 10)]
         pages: u32,
@@ -50,6 +69,12 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Slice { project, main, paragraph, edits, build, json_out } => {
             slice::run(slice::SliceOpts { project, main, paragraph, edits, build, json_out })?;
+        }
+        Cmd::Verify { project, main, build, dpi, raster, json_out, max_paragraphs } => {
+            let r = verify::run(verify::VerifyOpts { project, main, build, dpi, raster, json_out, max_paragraphs })?;
+            if !(r.layer1_pass && r.layer2_pass && r.layer3_pass.unwrap_or(true)) {
+                std::process::exit(1);
+            }
         }
         Cmd::GenBook { pages, variant, fonts, seed, out } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;

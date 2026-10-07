@@ -35,6 +35,10 @@ end
 
 -- Context replay -------------------------------------------------------------------------------
 -- Called from TeX inside the paragraph \vbox group, before any text.
+-- \everypar contents that may be replayed verbatim (anything else makes the paragraph
+-- background-only on the host side; the server refuses it too).
+local EVERYPAR_ALLOWED = { [""] = true, ["\\leftprotrusion "] = true }
+
 function S.apply(ctx_id)
   local ctx = S.contexts[ctx_id]
   if not ctx then return end
@@ -42,6 +46,8 @@ function S.apply(ctx_id)
   for k, v in pairs(ctx.dims or {}) do tex.set(k, v) end
   for k, v in pairs(ctx.glues or {}) do tex.setglue(k, v[1] or 0, v[2] or 0, v[3] or 0, v[4] or 0, v[5] or 0) end
   if ctx.parshape and #ctx.parshape > 0 then tex.parshape = ctx.parshape end
+  local ep = ctx.everypar or ""
+  if EVERYPAR_ALLOWED[ep] then tex.settoks("everypar", ep) end
 end
 
 local function nfss_tokens(ctx)
@@ -57,6 +63,10 @@ function S.compile(req)
   local ctx = S.contexts[req.ctx]
   if not ctx then
     send{ op = "result", req = req.req, status = "error", errors = { { message = "unknown context " .. tostring(req.ctx) } } }
+    return
+  end
+  if not EVERYPAR_ALLOWED[ctx.everypar or ""] then
+    send{ op = "result", req = req.req, status = "error", errors = { { message = "context has a non-replayable \\everypar" } } }
     return
   end
   S.errors = {}
@@ -85,7 +95,9 @@ function S.compile(req)
   local box = tex.box[S.boxnum]
   local result, t2
   if box then
-    result = dl.paragraph(box)
+    local color = ctx.begin and ctx.begin.color
+    if color == "0 g 0 G" then color = nil end
+    result = dl.paragraph(box, color)
     t2 = gettime()
   else
     t2 = t1

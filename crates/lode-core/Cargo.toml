@@ -19,4 +19,5 @@ regex.workspace = true
 sha2.workspace = true
 hex.workspace = true
 nix.workspace = true
+clap.workspace = true
 libc.workspace = true
