@@ -67,6 +67,10 @@ enum Cmd {
         /// Research: ignore the allow-list and let the row comparison judge every unit.
         #[arg(long)]
         permissive: bool,
+        /// Pass layer 1 with up to this many differing units (fixtures with known state-dependent
+        /// units, which the comparison must catch).
+        #[arg(long)]
+        max_differing: Option<usize>,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -80,6 +84,9 @@ enum Cmd {
         /// times in a row goes to the background path until the next layout (default 5).
         #[arg(long, default_value_t = 5)]
         fast_budget_ms: u64,
+        /// How units qualify for the fast path: probe (default) or allowlist.
+        #[arg(long, default_value = "probe")]
+        eligibility: String,
     },
     /// Open a session, apply one edit, print the resulting paragraph update.
     Edit {
@@ -195,6 +202,7 @@ fn main() -> anyhow::Result<()> {
             dump_rows,
             min_eligible,
             permissive,
+            max_differing,
         } => {
             let r = verify::run(verify::VerifyOpts {
                 project,
@@ -208,6 +216,7 @@ fn main() -> anyhow::Result<()> {
                 dump_rows,
                 min_eligible,
                 permissive,
+                max_differing,
             })?;
             if !(r.layer1_pass
                 && r.layer2_pass
@@ -222,7 +231,8 @@ fn main() -> anyhow::Result<()> {
             main,
             build,
             fast_budget_ms,
-        } => serve::run(project, main, build, fast_budget_ms)?,
+            eligibility,
+        } => serve::run(project, main, build, fast_budget_ms, &eligibility)?,
         Cmd::Edit {
             project,
             main,

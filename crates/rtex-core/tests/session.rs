@@ -149,21 +149,24 @@ fn ineligible_edit_goes_to_background_and_reconverges() {
         .iter()
         .find(|sp| eligible_paragraphs.contains(&sp.id))
         .unwrap();
-    let pos = body.range.end - 1;
-    // \marginpar is not on the allow-list (\parbox and \ref are, since 0.0.2): background path
+    let doc = s.document_text("main.tex").unwrap();
+    let pos = body.range.start + doc[body.range.clone()].find(' ').unwrap();
+    // a block environment inline in the paragraph with text after it is structurally not a
+    // unit (the capture closes the unit at the environment's end): background path in every
+    // eligibility mode
     let r = s
         .apply_edit(
             "main.tex",
             Edit {
                 start_byte: pos,
                 end_byte: pos,
-                text: " \\marginpar{a note}.".into(),
+                text: " \\begin{center}boxed\\end{center} trailing".into(),
             },
         )
         .unwrap();
-    assert_eq!(r.routed, "background");
+    assert_eq!(r.routed, "background", "{:?}", r.reasons);
     assert!(
-        r.reasons.iter().any(|x| x.contains("marginpar")),
+        r.reasons.iter().any(|x| x.contains("TextAfterEnvironment")),
         "{:?}",
         r.reasons
     );
@@ -1033,5 +1036,231 @@ fn body_setup_statements_reach_the_server() {
     // (the brace is unbalanced now: still a preamble change, the server reports the error)
     assert_eq!(r2.routed, "preamble", "{:?}", r2.reasons);
     assert!(s.versions().engine_generation > gen_before);
+    s.close();
+}
+
+/// Probe mode: a unit whose vocabulary is not allow-listed is proven against the layout before
+/// its edits go live; one that cannot be proven stays on the background path; one that leaks a
+/// global definition is demoted and the engine restarted.
+#[test]
+fn probe_mode_verifies_and_demotes() {
+    if rtex_core::texlive::TexLive::discover().is_err() {
+        eprintln!("SKIP: no lualatex");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("rtex-session-{}-probe", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\usepackage{graphicx}\n\\begin{document}\nScaled: a paragraph with \\scalebox{1.2}{scaled} text, long enough to wrap onto a second line of the page when it is typeset.\n\n\\newpage\n\nPaged: on page \\thepage{} this paragraph mentions its own page number, which a fast compile cannot know, plus more words.\n\nLeaky: this paragraph defines \\gdef\\leakmacro{leaked} globally and then uses \\leakmacro{} right here in the text.\n\\end{document}\n",
+    )
+    .unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.debounce = Duration::from_millis(50);
+    assert_eq!(cfg.eligibility, rtex_core::session::EligibilityMode::Probe);
+    let s = Session::open(cfg).unwrap();
+    let Event::LayoutUpdate {
+        eligible_paragraphs,
+        ..
+    } = wait_layout(&s)
+    else {
+        unreachable!()
+    };
+    let doc = s.document_text("main.tex").unwrap();
+    let spans = s.spans("main.tex");
+    let find = |w: &str| {
+        spans
+            .iter()
+            .find(|sp| doc[sp.range.clone()].starts_with(w))
+            .unwrap()
+            .clone()
+    };
+    let (scaled, paged, leaky) = (find("Scaled"), find("Paged"), find("Leaky"));
+    // structurally sound units are eligible (optimistically) in probe mode
+    for sp in [&scaled, &paged, &leaky] {
+        assert!(eligible_paragraphs.contains(&sp.id));
+    }
+    if let (
+        Some(Event::LayoutUpdate {
+            eligible_paragraphs: e2,
+            versions,
+            ..
+        }),
+        _,
+    ) = wait(&s, 3, |e| matches!(e, Event::LayoutUpdate { .. }))
+    {
+        eprintln!(
+            "[test] second layout v{} eligible {:?}",
+            versions.layout_version, e2
+        );
+    }
+    step("verified unit");
+    let scaled = {
+        let doc = s.document_text("main.tex").unwrap();
+        s.spans("main.tex")
+            .into_iter()
+            .find(|sp| doc[sp.range.clone()].starts_with("Scaled"))
+            .unwrap()
+    };
+    let pos = scaled.range.start + "Scaled:".len();
+    let r = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " edited".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    let (ev, _) = wait(&s, 60, |e| {
+        matches!(
+            e,
+            Event::ParagraphUpdate { .. } | Event::BackgroundScheduled { .. }
+        )
+    });
+    let Some(Event::ParagraphUpdate {
+        par_id, status, dl, ..
+    }) = ev
+    else {
+        panic!("expected a live result, got {ev:?}")
+    };
+    assert_eq!(par_id, scaled.id);
+    assert!(status.starts_with("ok"), "{status}");
+    assert!(dl.glyph_count() > 20);
+    step("unverifiable unit (page number)");
+    while let (
+        Some(Event::LayoutUpdate {
+            eligible_paragraphs: e2,
+            versions,
+            ..
+        }),
+        _,
+    ) = wait(&s, 3, |e| matches!(e, Event::LayoutUpdate { .. }))
+    {
+        eprintln!(
+            "[test] later layout v{} src {} eligible {:?}",
+            versions.layout_version, versions.source_revision, e2
+        );
+    }
+    let paged = {
+        let doc = s.document_text("main.tex").unwrap();
+        s.spans("main.tex")
+            .into_iter()
+            .find(|sp| doc[sp.range.clone()].starts_with("Paged"))
+            .unwrap()
+    };
+    let pos = paged.range.start + "Paged:".len();
+    let r2 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " edited".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r2.routed, "fast", "{:?}", r2.reasons); // the probe decides asynchronously
+    let (ev, _) = wait(&s, 60, |e| {
+        matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == paged.id)
+            || matches!(e, Event::BackgroundScheduled { .. })
+    });
+    let Some(Event::BackgroundScheduled {
+        par_id, reasons, ..
+    }) = ev
+    else {
+        panic!("expected demotion, got {ev:?}")
+    };
+    assert_eq!(par_id, Some(paged.id));
+    assert!(
+        reasons.iter().any(|r| r.starts_with("unverified:")),
+        "{reasons:?}"
+    );
+    // the verdict is remembered for this layout: the next edit is routed to the background up front
+    let r3 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " more".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r3.routed, "background", "{:?}", r3.reasons);
+    assert!(
+        r3.reasons.iter().any(|r| r.starts_with("unverified:")),
+        "{:?}",
+        r3.reasons
+    );
+    while let (
+        Some(Event::LayoutUpdate {
+            eligible_paragraphs: e2,
+            versions,
+            ..
+        }),
+        _,
+    ) = wait(&s, 3, |e| matches!(e, Event::LayoutUpdate { .. }))
+    {
+        eprintln!(
+            "[test] later layout v{} src {} eligible {:?}",
+            versions.layout_version, versions.source_revision, e2
+        );
+    }
+    step("leaking unit");
+    let gen_before = s.versions().engine_generation;
+    let leaky = {
+        let doc = s.document_text("main.tex").unwrap();
+        s.spans("main.tex")
+            .into_iter()
+            .find(|sp| doc[sp.range.clone()].starts_with("Leaky"))
+            .unwrap()
+    };
+    let pos = leaky.range.start + "Leaky:".len();
+    let r4 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " edited".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r4.routed, "fast", "{:?}", r4.reasons);
+    let (ev, _) = wait(
+        &s,
+        60,
+        |e| matches!(e, Event::BackgroundScheduled { par_id, .. } if *par_id == Some(leaky.id)),
+    );
+    let Some(Event::BackgroundScheduled { reasons, .. }) = ev else {
+        panic!("expected demotion")
+    };
+    assert!(
+        reasons.iter().any(|r| r.contains("redefines")),
+        "{reasons:?}"
+    );
+    let (ready, _) = wait(
+        &s,
+        60,
+        |e| matches!(e, Event::EngineState { state, engine_generation, .. } if state == "Ready" && *engine_generation > gen_before),
+    );
+    assert!(ready.is_some(), "engine restarted after the leak");
+    let r5 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " more".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r5.routed, "background", "{:?}", r5.reasons);
     s.close();
 }

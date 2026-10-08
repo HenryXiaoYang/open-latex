@@ -5,7 +5,8 @@ use crate::background::{
 };
 use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, Span, SpanKind};
 use crate::eligibility::{
-    check_engine_unit, classify_source, everypar_allowed, Policy, Reason, UnitShape,
+    check_engine_unit, classify_source, classify_source_with, everypar_allowed, Policy, Reason,
+    UnitShape,
 };
 use crate::engine::{FastServer, Response};
 use crate::layout::{EngineUnit, Fragment, LayoutStore, SnapshotSpan};
@@ -41,6 +42,45 @@ pub struct SessionConfig {
     /// Keep a standby lualatex with the preamble loaded for background passes (default true):
     /// a pass then only typesets the body, 3–4× faster for short documents.
     pub warm_background: bool,
+    /// How a unit qualifies for the fast path (default `Probe`).
+    pub eligibility: EligibilityMode,
+}
+
+/// Diagnostic view of one layout unit (`Session::layout_units`, `rtex serve` `units`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LayoutUnitInfo {
+    pub uid: i64,
+    pub kind: String,
+    pub name: Option<String>,
+    pub file: Option<String>,
+    pub first_line: i64,
+    pub last_line: Option<i64>,
+    pub rows: i64,
+    pub span: Option<ParaId>,
+}
+
+/// How the session decides that a unit may be typeset live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EligibilityMode {
+    /// Only units whose every command is on the allow-list (`eligibility.rs`).
+    AllowList,
+    /// Any structurally sound unit: one whose vocabulary is not allow-listed is probed first —
+    /// its text as the last pass typeset it is compiled once and compared row by row with the
+    /// pass; a match verifies it for this layout, anything else keeps it on the background
+    /// path (`BackgroundScheduled` with an `unverified:` reason). Allow-listed units skip the
+    /// probe.
+    #[default]
+    Probe,
+}
+
+impl EligibilityMode {
+    pub fn parse(s: &str) -> Option<EligibilityMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "probe" => Some(EligibilityMode::Probe),
+            "allowlist" | "allow-list" | "allow_list" => Some(EligibilityMode::AllowList),
+            _ => None,
+        }
+    }
 }
 
 impl SessionConfig {
@@ -59,6 +99,7 @@ impl SessionConfig {
             fast_budget: Duration::from_millis(5),
             unit_envs: Vec::new(),
             warm_background: true,
+            eligibility: EligibilityMode::Probe,
         }
     }
 }
@@ -203,6 +244,9 @@ struct FastRequest {
     versions: Versions,
     context_stale: bool,
     expected_rows: i64,
+    /// Probe mode: the span's snapshot text to compile and compare with the layout before this
+    /// request is sent (None: verified, or allow-listed).
+    probe_source: Option<String>,
 }
 
 /// A compile the server is working on (sent either by the engine thread or directly by the
@@ -224,6 +268,9 @@ struct EngineLink {
     context_rev_sent: u64,
     labels_sent: u64,
     next_req: i64,
+    /// Probe mode statistics: probe compiles run and their total time.
+    probes: u64,
+    probe_us: u64,
 }
 
 struct Shared {
@@ -263,6 +310,11 @@ struct Shared {
     /// Counters the last fast compile of a span advanced (what the layout saw until then): a
     /// change renumbers what follows and needs a pass.
     counters_seen: Mutex<HashMap<ParaId, BTreeMap<String, i64>>>,
+    /// Probe results for this layout (probe mode): span → verified, or why not.
+    probe: Mutex<HashMap<ParaId, Result<(), String>>>,
+    /// Spans whose compile changed the meaning of a control sequence (a definition leaked):
+    /// background-only until the preamble changes.
+    leaky: Mutex<HashMap<ParaId, String>>,
     /// Row count of the latest fast result per span (anchors paragraphs placed after it).
     live_rows: Mutex<HashMap<ParaId, i64>>,
     /// Standby background engine (preamble loaded, waiting for the body).
@@ -303,7 +355,8 @@ impl Session {
         let mut files = BTreeMap::new();
         let preamble = effective_preamble(&texts, &cfg.main_file);
         let preamble_inputs = preamble_input_set(&texts, &cfg.main_file);
-        let policy = Policy::from_preamble(&preamble, &cfg.trusted_macros, &cfg.unit_envs);
+        let mut policy = Policy::from_preamble(&preamble, &cfg.trusted_macros, &cfg.unit_envs);
+        policy.permissive = cfg.eligibility == EligibilityMode::Probe;
         let envs: Vec<String> = policy.theorem_envs.iter().cloned().collect();
         // the main file first so its span ids come first
         files.insert(
@@ -348,6 +401,8 @@ impl Session {
             overlays: Mutex::new(HashMap::new()),
             derived: Mutex::new(HashMap::new()),
             counters_seen: Mutex::new(HashMap::new()),
+            probe: Mutex::new(HashMap::new()),
+            leaky: Mutex::new(HashMap::new()),
             live_rows: Mutex::new(HashMap::new()),
             standby: Mutex::new(None),
         });
@@ -386,6 +441,26 @@ impl Session {
             engine_generation: self.shared.engine_generation.load(Ordering::SeqCst),
             layout_version: layout.layout_version,
         }
+    }
+
+    /// Diagnostic view of the installed layout's units: (unit id, kind, first line, last line,
+    /// mapped span).
+    pub fn layout_units(&self) -> Vec<LayoutUnitInfo> {
+        let layout = self.shared.layout.lock();
+        layout
+            .units
+            .iter()
+            .map(|u| LayoutUnitInfo {
+                uid: u.uid,
+                kind: u.captured.kind.clone(),
+                name: u.captured.name.clone(),
+                file: u.captured.file.clone(),
+                first_line: u.captured.begin_line,
+                last_line: u.captured.end_line,
+                rows: u.rows(),
+                span: u.span,
+            })
+            .collect()
     }
 
     pub fn convergence(&self) -> Option<Convergence> {
@@ -519,11 +594,12 @@ impl Session {
                 *self.shared.preamble_inputs.lock() =
                     preamble_input_set(&texts, &self.shared.cfg.main_file);
                 *self.shared.inputted.lock() = crate::document::inputted_files(&texts);
-                let policy = Policy::from_preamble(
+                let mut policy = Policy::from_preamble(
                     &preamble,
                     &self.shared.cfg.trusted_macros,
                     &self.shared.cfg.unit_envs,
                 );
+                policy.permissive = self.shared.cfg.eligibility == EligibilityMode::Probe;
                 let envs: Vec<String> = policy.theorem_envs.iter().cloned().collect();
                 *self.shared.policy.lock() = policy;
                 drop(files);
@@ -547,6 +623,8 @@ impl Session {
             }
             self.shared.overlays.lock().clear();
             self.shared.slow_units.lock().clear();
+            self.shared.probe.lock().clear();
+            self.shared.leaky.lock().clear();
             self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
             self.shared.pending.lock().clear();
             self.shared.pending_signal.0.send(()).ok();
@@ -725,16 +803,37 @@ impl Session {
         if matches!(span.kind, SpanKind::Preamble | SpanKind::Trailer) {
             reasons.push(format!("{:?} span", span.kind));
         }
-        let (shape, src_reasons) = classify_source(text, policy);
+        let probe_mode = self.shared.cfg.eligibility == EligibilityMode::Probe;
+        let (shape, src_reasons) = classify_source_with(text, policy, false);
+        let mut needs_probe = false;
         for r in src_reasons {
-            reasons.push(reason_str(&r));
+            if probe_mode && crate::eligibility::is_vocabulary_reason(&r) {
+                // not a verdict: the probe compile decides
+                needs_probe = true;
+            } else {
+                reasons.push(reason_str(&r));
+            }
+        }
+        if let Some(why) = self.shared.leaky.lock().get(&span.id) {
+            reasons.push(format!("unverified: {why}"));
         }
         let mut seq = 0i64;
         let mut ctx: Option<serde_json::Value> = None;
         let mut expected_rows = 0i64;
         let mut derived_from: Option<(ParaId, bool)> = None;
+        let mut probe_source: Option<String> = None;
         match layout.unit(span.id) {
             Some(eu) => {
+                if needs_probe {
+                    match self.shared.probe.lock().get(&span.id) {
+                        Some(Ok(())) => {}
+                        Some(Err(why)) => reasons.push(format!("unverified: {why}")),
+                        None => match layout.snapshot_text(span.id) {
+                            Some(t) => probe_source = Some(t.trim_end_matches('\n').to_string()),
+                            None => reasons.push("unverified: no snapshot to compare with".into()),
+                        },
+                    }
+                }
                 let c = &eu.captured;
                 for r in check_engine_unit(
                     &c.kind,
@@ -770,6 +869,10 @@ impl Session {
                 expected_rows = eu.rows();
             }
             None => {
+                if needs_probe {
+                    // a borrowed context has no layout rows to prove the result against
+                    reasons.push("unverified: no layout unit to compare with".into());
+                }
                 if reasons.is_empty() && shape == UnitShape::Par && span.kind == SpanKind::Body {
                     match self.derive_context(fb, span, layout) {
                         Some((parent, after, json)) => {
@@ -826,6 +929,7 @@ impl Session {
             },
             context_stale: stale,
             expected_rows,
+            probe_source,
         };
         (Some(req), reasons)
     }
@@ -886,7 +990,8 @@ impl Session {
     /// the engine thread otherwise. Queued requests coalesce per paragraph.
     fn dispatch_fast(&self, req: FastRequest) {
         let mut link = self.shared.link.lock();
-        let direct = link.writer.is_some()
+        let direct = req.probe_source.is_none()
+            && link.writer.is_some()
             && link.inflight.is_none()
             && link.generation == req.versions.engine_generation
             && link.context_rev_sent == req.versions.context_revision
@@ -1373,6 +1478,72 @@ fn engine_thread(s: Arc<Shared>) {
                 link.contexts_sent.insert(req.seq);
             }
         }
+        // 4b. probe mode: prove the unit first (its snapshot text against the layout's rows)
+        if let Some(probe_src) = req.probe_source.take() {
+            let verdict = match s.probe.lock().get(&req.par_id) {
+                Some(v) => Some(v.clone()),
+                None => None,
+            };
+            let verdict = match verdict {
+                Some(v) => v,
+                None => {
+                    let t_probe = Instant::now();
+                    let v = match srv.compile(req.seq, &probe_src) {
+                        Ok((cr, _)) => {
+                            if !cr.leaks.is_empty() {
+                                Err(format!("the unit redefines \\{}", cr.leaks.join(", \\")))
+                            } else if cr.status == "error" {
+                                Err(format!(
+                                    "probe compile failed: {}",
+                                    cr.errors
+                                        .first()
+                                        .and_then(|e| e.message.clone())
+                                        .unwrap_or_default()
+                                ))
+                            } else {
+                                match &cr.dl {
+                                    Some(dl) => s.layout.lock().probe_check(req.par_id, dl),
+                                    None => Err("probe produced no box".into()),
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            drop(link);
+                            engine_failed(&s, &req, e, wanted_gen);
+                            server = None;
+                            reset_link(&s);
+                            continue;
+                        }
+                    };
+                    link.probe_us += t_probe.elapsed().as_micros() as u64;
+                    link.probes += 1;
+                    s.probe.lock().insert(req.par_id, v.clone());
+                    v
+                }
+            };
+            if let Err(why) = verdict {
+                drop(link);
+                let leaked = why.starts_with("the unit redefines");
+                if leaked {
+                    s.leaky.lock().insert(req.par_id, why.clone());
+                }
+                s.events
+                    .send(Event::BackgroundScheduled {
+                        par_id: Some(req.par_id),
+                        reasons: vec![format!("unverified: {why}")],
+                        edit_id: req.edit_id,
+                    })
+                    .ok();
+                s.bg_signal.0.send(BgCmd::Pass).ok();
+                if leaked {
+                    // the server's state is no longer the document's: start over
+                    s.engine_generation.fetch_add(1, Ordering::SeqCst);
+                    server = None;
+                    reset_link(&s);
+                }
+                continue;
+            }
+        }
         let req_id = link.next_req;
         link.next_req += 1;
         let t0 = Instant::now();
@@ -1484,6 +1655,24 @@ fn handle_result(
                 timing,
             })
             .ok();
+        return;
+    }
+    if !cr.leaks.is_empty() {
+        // the compile changed the meaning of a control sequence it mentions: the result may be
+        // right, but the server is no longer the document's state. Demote the span until the
+        // preamble changes and restart the engine.
+        let why = format!("the unit redefines \\{}", cr.leaks.join(", \\"));
+        s.leaky.lock().insert(req.par_id, why.clone());
+        s.events
+            .send(Event::BackgroundScheduled {
+                par_id: Some(req.par_id),
+                reasons: vec![format!("unverified: {why}")],
+                edit_id: req.edit_id,
+            })
+            .ok();
+        s.bg_signal.0.send(BgCmd::Pass).ok();
+        s.engine_generation.fetch_add(1, Ordering::SeqCst);
+        s.pending_signal.0.send(()).ok();
         return;
     }
     let mut dl = cr.dl.unwrap();
@@ -1732,6 +1921,7 @@ fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpan>, Revisio
                 last_line: b,
                 last_revision: sp.last_revision,
                 background_only,
+                text: text.to_string(),
             });
         }
     }
@@ -2032,6 +2222,7 @@ fn run_background_pass(s: &Shared) {
                         },
                         context_stale: false,
                         expected_rows: 0,
+                        probe_source: None,
                     },
                 );
                 s.pending_signal.0.send(()).ok();
@@ -2044,6 +2235,7 @@ fn run_background_pass(s: &Shared) {
     s.derived.lock().clear();
     s.live_rows.lock().clear();
     s.counters_seen.lock().clear();
+    s.probe.lock().clear();
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !outcome.aux_stable {

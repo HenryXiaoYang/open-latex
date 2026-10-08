@@ -51,6 +51,10 @@ pub struct CompileResult {
     /// Counters the compile advanced: name → value at the end (see rtex-serve.lua finish()).
     #[serde(default)]
     pub counters: std::collections::BTreeMap<String, i64>,
+    /// Control sequences the source mentions whose meaning the compile changed (a definition
+    /// or \let that leaked out of the unit's box).
+    #[serde(default)]
+    pub leaks: Vec<String>,
     /// Host-side stage times (µs): send, wait, read, parse.
     #[serde(skip)]
     pub host_us: [u64; 4],

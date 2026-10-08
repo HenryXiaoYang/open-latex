@@ -183,3 +183,51 @@ fn paragraph_result_is_independent_of_request_order() {
     s.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A compile that changes the meaning of a control sequence its source mentions reports it.
+#[test]
+fn leaked_definitions_are_reported() {
+    let Some((tl, root, project)) = setup("leaks") else {
+        return;
+    };
+    let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
+    let (seq, ctx) = paragraph_units(&cap, &project).remove(0);
+    let mut s = FastServer::spawn(
+        &tl,
+        &project,
+        &root.join("serve"),
+        &preamble(&project),
+        1,
+        None,
+    )
+    .unwrap();
+    s.set_context(seq, &ctx).unwrap();
+    let (clean, _) = s
+        .compile(seq, "Plain text with \\emph{emphasis} only.")
+        .unwrap();
+    assert_eq!(clean.status, "ok");
+    assert!(clean.leaks.is_empty(), "{:?}", clean.leaks);
+    // a local definition dies with the unit's box group: no leak
+    let (local, _) = s
+        .compile(
+            seq,
+            "Defines \\newcommand{\\lkmacro}{local} and uses \\lkmacro{} here.",
+        )
+        .unwrap();
+    assert_eq!(local.status, "ok", "{:?}", local.errors);
+    assert!(local.leaks.is_empty(), "{:?}", local.leaks);
+    let (leaky, _) = s
+        .compile(
+            seq,
+            "Defines \\gdef\\lkglobal{leaked} and uses \\lkglobal{} here.",
+        )
+        .unwrap();
+    assert_eq!(leaky.status, "ok", "{:?}", leaky.errors);
+    assert_eq!(leaky.leaks, vec!["lkglobal".to_string()]);
+    let (relet, _) = s
+        .compile(seq, "Text \\global\\let\\emph\\relax more.")
+        .unwrap();
+    assert_eq!(relet.leaks, vec!["emph".to_string()], "{:?}", relet.leaks);
+    s.shutdown().unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}

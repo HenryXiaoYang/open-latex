@@ -107,6 +107,13 @@
   internals (rejected); `rtex verify --permissive` ignores the allow-list and lets the row
   comparison judge every unit — 26 of 28 constructs the allow-list rejects are exact, and the
   comparison catches the two that are not. Research fixture `fixtures/research/permissive`.
+- **Probe mode** (default): eligibility is decided by comparison, not vocabulary. A unit whose
+  commands are not allow-listed is compiled once as the last pass typeset it and compared row
+  by row with the pass; a match makes its edits live, a mismatch keeps it on the background
+  path for that layout (`unverified:` reasons). The server reports leaked definitions
+  (`leaks`), which demote the unit and restart the engine. `SessionConfig::eligibility`,
+  C ABI `"eligibility"`, `rtex serve --eligibility`; `rtex verify --permissive --max-differing`
+  gates it in CI. Units reported on the blank line before a span map to that span.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

@@ -12,9 +12,12 @@ pub fn run(
     main: String,
     build: Option<PathBuf>,
     fast_budget_ms: u64,
+    eligibility: &str,
 ) -> Result<()> {
     let mut cfg = SessionConfig::new(project, main);
     cfg.fast_budget = std::time::Duration::from_millis(fast_budget_ms);
+    cfg.eligibility = rtex_core::session::EligibilityMode::parse(eligibility)
+        .ok_or_else(|| anyhow::anyhow!("--eligibility: probe or allowlist, not {eligibility:?}"))?;
     if let Some(b) = build {
         cfg.build_dir = b;
     }
@@ -104,6 +107,9 @@ pub fn run(
                     .unwrap_or("main.tex")
                     .to_string();
                 serde_json::json!({"reply": "spans", "spans": session.spans(&path)})
+            }
+            "units" => {
+                serde_json::json!({"reply": "units", "units": session.layout_units()})
             }
             "status" => {
                 serde_json::json!({"reply": "status", "versions": session.versions(), "convergence": session.convergence()})

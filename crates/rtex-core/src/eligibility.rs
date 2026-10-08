@@ -1543,7 +1543,33 @@ struct Frame {
 }
 
 /// Lexical check of a unit's source. Returns its shape and the (possibly empty) list of reasons.
+/// Reasons about the unit's vocabulary (what the allow-list knows), as opposed to its structure.
+/// In probe mode these do not decide eligibility: the fast result is compared with the layout.
+pub fn is_vocabulary_reason(r: &Reason) -> bool {
+    matches!(
+        r,
+        Reason::DisallowedMacro(_)
+            | Reason::DisallowedMathMacro(_)
+            | Reason::DisallowedEnvironment(_)
+            | Reason::NeedsPackage(_)
+            | Reason::MacroOutsideContext(_)
+            | Reason::SizeDeclarationOutsideGroup(_)
+            | Reason::LeadingCounter(_)
+            | Reason::Verbatim
+    )
+}
+
 pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
+    classify_source_with(src, policy, policy.permissive)
+}
+
+/// `classify_source` with the permissive flag given explicitly (`false`: every reason,
+/// vocabulary included).
+pub fn classify_source_with(
+    src: &str,
+    policy: &Policy,
+    permissive: bool,
+) -> (UnitShape, Vec<Reason>) {
     let text = strip_comments(src);
     let mut reasons: Vec<Reason> = Vec::new();
     let push = |reasons: &mut Vec<Reason>, r: Reason| {
@@ -2143,20 +2169,8 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
     if shape == UnitShape::Par && text.contains("\\maketitle") {
         shape = UnitShape::Env("center".into());
     }
-    if policy.permissive {
-        reasons.retain(|r| {
-            !matches!(
-                r,
-                Reason::DisallowedMacro(_)
-                    | Reason::DisallowedMathMacro(_)
-                    | Reason::DisallowedEnvironment(_)
-                    | Reason::NeedsPackage(_)
-                    | Reason::MacroOutsideContext(_)
-                    | Reason::SizeDeclarationOutsideGroup(_)
-                    | Reason::LeadingCounter(_)
-                    | Reason::Verbatim
-            )
-        });
+    if permissive {
+        reasons.retain(|r| !is_vocabulary_reason(r));
     }
     (shape, reasons)
 }
@@ -2479,6 +2493,17 @@ mod tests {
         assert!(p2.trusted_macros.contains("eg"));
         assert!(check_source("\\enquote{quoted} and \\ce{H2O + CO2} \\eg", &p2).is_empty());
         assert!(!reasons("\\enquote{x}").is_empty());
+    }
+    #[test]
+    fn permissive_keeps_structural_reasons() {
+        let mut p = pol();
+        p.permissive = true;
+        assert!(check_source("Text with \\scalebox{2}{x} and \\foo.", &p).is_empty());
+        assert!(check_source("Text {unbalanced", &p).contains(&Reason::UnbalancedBraces));
+        assert!(check_source("\\begin{center}x\\end{center} more text", &p)
+            .contains(&Reason::TextAfterEnvironment));
+        let (_, strict) = classify_source_with("\\foo{x}", &p, false);
+        assert!(strict.iter().all(is_vocabulary_reason) && !strict.is_empty());
     }
     #[test]
     fn setup_spans() {

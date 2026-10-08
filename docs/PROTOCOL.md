@@ -110,6 +110,9 @@ images the header carries `"images": {index: {file, page, pages}}` (the server h
 at the end}` for every counter whose final value differs from the replayed start value; the
 server then restores its idle values, and the session compares the map with what the layout saw
 the unit advance, scheduling a pass when it differs.
+When the compile changed the meaning of a control sequence the source mentions (`\gdef`,
+`\global\let`), the header carries `"leaks": [names]`; the session demotes the unit and restarts
+the engine (docs/ELIGIBILITY.md).
 followed by `dl_bytes` of binary display list (paragraph framing; empty when `status` is `error`
 and no box was produced).
 Error `line` numbers count from the first printed line; line 1 is the replay head, so source line

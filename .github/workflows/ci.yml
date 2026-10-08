@@ -53,6 +53,13 @@ jobs:
           for d in cs:17 math:10 report:10 layout:10 code:8 multi:14 counters:9; do
             cargo run --release -p rtex-cli -- verify --project fixtures/corpus/${d%%:*} --build build/corpus/${d%%:*} --min-eligible ${d##*:}
           done
+      - name: Probe mode (allow-list off, every difference must be caught by the row comparison)
+        run: |
+          cargo run --release -p rtex-cli -- verify --project fixtures/research/permissive --build build/research/permissive --permissive --min-eligible 28 --max-differing 2
+          for d in cs math report layout code multi; do
+            cargo run --release -p rtex-cli -- verify --project fixtures/corpus/$d --build build/research/corpus-$d --permissive
+          done
+          cargo run --release -p rtex-cli -- verify --project fixtures/corpus/counters --build build/research/corpus-counters --permissive --max-differing 1
       - name: Export equality
         run: cargo run --release -p rtex-cli -- export --project build/fx/book-10-pure --out build/export.pdf --check
       - uses: actions/upload-artifact@v4

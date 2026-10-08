@@ -65,10 +65,17 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
             continue;
         }
         let path = entry.path();
+        // never descend into the build tree the snapshot itself lives in (a host may keep it
+        // inside the project under any name), and skip FIFOs, sockets and devices
+        if dst.starts_with(&path) {
+            continue;
+        }
         if path.is_dir() {
             let sub = dst.join(&name);
             std::fs::create_dir_all(&sub)?;
             copy_tree(&path, &sub, depth + 1)?;
+        } else if !path.is_file() {
+            continue;
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if matches!(

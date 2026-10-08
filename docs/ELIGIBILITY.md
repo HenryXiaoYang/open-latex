@@ -96,9 +96,36 @@ another unit uses). Two cheap additions close most of it when probing is on: com
 meanings of every control sequence the unit's source mentions before and after the compile,
 and extend the fingerprint to all `\count`/`\dimen`/`\skip` registers 0–255.
 
-Recommendation: implement the probe as a session mode (`eligibility: "probe"`), keep the
-allow-list as the no-probe fast lane, and gate it in CI with `rtex verify --permissive` on the
-corpus plus the research fixture, where "every difference must be detected" is the assertion.
+## Probe mode (implemented; the default)
+
+`SessionConfig::eligibility` (C ABI JSON `"eligibility": "probe" | "allowlist"`, CLI
+`rtex serve --eligibility`) selects the mechanism; `probe` is the default.
+
+In probe mode `classify_source` keeps only the structural reasons. When a unit's vocabulary
+has reasons the allow-list would reject, the edit is routed as "fast" and its request carries
+the span's **snapshot text** (recorded with every layout). The engine thread compiles that text
+first and `LayoutStore::probe_check` compares the result with the pass's rows (row count,
+each row's box and glue set, every glyph's font, char, position, width and expansion — the
+same comparison `rtex verify` runs). A match verifies the unit for this layout; its request
+is then sent and every later edit skips the probe. A mismatch, a compile error or a leak
+demotes it: `BackgroundScheduled { reasons: ["unverified: …"] }`, a layout pass is scheduled,
+and until the next layout `apply_edit` routes the unit to the background up front with the
+same reason. Verdicts are cleared when a layout is installed. Allow-listed units never probe.
+
+**Leaks.** The server records the meaning of every control sequence a unit's source mentions
+before the compile and compares after it; names whose meaning changed are reported as `leaks`
+in the result (`\gdef`, `\global\let`; a `\newcommand` inside a paragraph is local to the
+unit's box group and is *not* a leak). A leak demotes the unit until the preamble changes and
+restarts the engine, because the server's state is no longer the document's.
+
+Tests: `probe_mode_verifies_and_demotes` (session) walks the three outcomes on one document
+(`\scalebox` verified live; `\thepage` on page 2 demoted with the glyph difference; a `\gdef`
+demoted with a restart); `leaked_definitions_are_reported` (engine). CI runs
+`rtex verify --permissive` on the research fixture (`--min-eligible 28 --max-differing 2`)
+and on the corpus, so a construct the comparison stops catching, or one it starts rejecting,
+fails the build.
+
+Cost: one extra compile (1–5 ms) per not-allow-listed unit per layout, on its first edit.
 
 ## The fast budget is a parameter
 

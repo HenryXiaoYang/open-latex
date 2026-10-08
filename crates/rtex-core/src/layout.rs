@@ -3,7 +3,7 @@
 
 use crate::capture::{CaptureResult, CapturedParagraph, CapturedUnit, Placement};
 use crate::document::{ParaId, Revision};
-use rtex_dl::{DisplayList, Sp};
+use rtex_dl::{DisplayList, Item, Line, Sp};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -32,6 +32,8 @@ pub struct SnapshotSpan {
     pub last_line: i64,
     pub last_revision: Revision,
     pub background_only: bool,
+    /// The span's text as the pass typeset it (what a probe compile replays).
+    pub text: String,
 }
 
 /// A capture unit with the derived data the session needs.
@@ -120,6 +122,7 @@ pub fn snapshot_spans_of(
                 last_line: b,
                 last_revision: sp.last_revision,
                 background_only,
+                text: text.to_string(),
             }
         })
         .collect()
@@ -171,13 +174,25 @@ impl LayoutStore {
                 }
             }
             if span.is_none() {
-                // a unit that begins on the blank line after a span comes from that span: a
-                // macro at the end of its last line read ahead before producing the unit
-                // (hyperref's \maketitle wrapper)
-                span = snapshot
+                // a unit that begins on a blank line between two spans: it belongs to the next
+                // span when it extends into it (the engine reported the paragraph a line early,
+                // seen after \newpage in standby passes), otherwise to the previous one (a macro
+                // at the end of its last line read ahead before producing the unit: hyperref's
+                // \maketitle wrapper)
+                let next = snapshot
                     .iter()
-                    .find(|s| s.file == file && s.last_line + 1 == u.begin_line)
+                    .find(|s| {
+                        s.file == file
+                            && s.first_line > u.begin_line
+                            && u.end_line.unwrap_or(u.begin_line) >= s.first_line
+                    })
                     .map(|s| s.id);
+                span = next.or_else(|| {
+                    snapshot
+                        .iter()
+                        .find(|s| s.file == file && s.last_line + 1 == u.begin_line)
+                        .map(|s| s.id)
+                });
             }
             if let Some(id) = span {
                 *per_span_count.entry(id).or_default() += 1;
@@ -328,6 +343,41 @@ impl LayoutStore {
         self.by_span.get(&id).map(|i| &self.units[*i])
     }
 
+    /// The text of span `id` as the installed pass typeset it.
+    pub fn snapshot_text(&self, id: ParaId) -> Option<&str> {
+        self.snapshot_spans
+            .iter()
+            .find(|sp| sp.id == id)
+            .map(|sp| sp.text.as_str())
+    }
+
+    /// Probe check: does `fast`, the fast compile of the span's snapshot text, reproduce the
+    /// rows the pass shipped for its unit? `Ok` when every row has the same box, glue set and
+    /// glyphs (font, char, position, width, expansion); `Err(why)` names the first difference.
+    pub fn probe_check(&self, id: ParaId, fast: &DisplayList) -> Result<(), String> {
+        let Some(eu) = self.unit(id) else {
+            return Err("no layout unit to compare with".into());
+        };
+        let mut pnos: Vec<i64> = eu.captured.placements.iter().map(|pl| pl.page).collect();
+        pnos.sort();
+        pnos.dedup();
+        let pages: Vec<(i64, &DisplayList)> = pnos
+            .iter()
+            .filter_map(|p| self.pages.get(p).map(|d| (*p, d)))
+            .collect();
+        if pages.len() != pnos.len() {
+            return Err("page display lists not available".into());
+        }
+        let (same, total, notes) = compare_unit_rows(fast, &pages, &eu.uids);
+        if let Some(n) = notes.first() {
+            return Err(n.clone());
+        }
+        if same != total {
+            return Err(format!("{} of {} glyphs differ", total - same, total));
+        }
+        Ok(())
+    }
+
     /// Units mapped to spans, in document order: (unit, span id).
     pub fn mapped_units(&self) -> Vec<(&EngineUnit, ParaId)> {
         let mut v: Vec<(&EngineUnit, ParaId)> = self
@@ -473,4 +523,125 @@ impl LayoutStore {
         }
         Some((frags, stale))
     }
+}
+
+/// Compare a fast-path unit display list with the pass's rows for the same unit, which may be
+/// spread over several pages. Every row gets its own (x, y) offset from its placement, so the
+/// comparison is of each row's content and geometry, not of the vertical arrangement (which the
+/// page builder owns). Returns (identical glyphs, compared glyphs, notes on differences).
+pub fn compare_unit_rows(
+    fast: &DisplayList,
+    pages: &[(i64, &DisplayList)],
+    uids: &[i64],
+) -> (usize, usize, Vec<String>) {
+    // rows of every member unit (a composite unit is several capture units), in member order
+    let mut keyed: Vec<((usize, i64), i64, &Line)> = Vec::new();
+    for (k, uid) in uids.iter().enumerate() {
+        for (pno, page) in pages {
+            for l in page.rows_of(*uid) {
+                keyed.push(((k, l.row), *pno, l));
+            }
+        }
+    }
+    keyed.sort_by_key(|(key, _, _)| *key);
+    let ref_rows: Vec<(i64, &Line)> = keyed.into_iter().map(|(_, pno, l)| (pno, l)).collect();
+    let mut notes = Vec::new();
+    if ref_rows.len() != fast.lines.len() {
+        notes.push(format!(
+            "row count: fast {} vs capture {}",
+            fast.lines.len(),
+            ref_rows.len()
+        ));
+    }
+    if ref_rows.is_empty() || fast.lines.is_empty() {
+        return (0, 0, notes);
+    }
+    let (mut same, mut total) = (0, 0);
+    for (k, (fl, (pno, rl))) in fast.lines.iter().zip(ref_rows.iter()).enumerate() {
+        let page: &DisplayList = pages
+            .iter()
+            .find(|(p, _)| p == pno)
+            .map(|(_, d)| *d)
+            .unwrap();
+        let (ox, oy) = (rl.x - fl.x, rl.y - fl.y);
+        if fl.w != rl.w || fl.h != rl.h || fl.d != rl.d || (fl.gs - rl.gs).abs() > 1e-12 {
+            notes.push(format!(
+                "row {} box/glue differs: fast ({},{},{} gs {}) capture ({},{},{} gs {})",
+                k + 1,
+                fl.w,
+                fl.h,
+                fl.d,
+                fl.gs,
+                rl.w,
+                rl.h,
+                rl.d,
+                rl.gs
+            ));
+        }
+        let fg: Vec<&Item> = fl
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Glyph { .. }))
+            .collect();
+        let rg: Vec<&Item> = rl
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Glyph { .. }))
+            .collect();
+        if fg.len() != rg.len() {
+            notes.push(format!(
+                "row {} glyph count {} vs {}",
+                k + 1,
+                fg.len(),
+                rg.len()
+            ));
+        }
+        for (a, b) in fg.iter().zip(rg.iter()) {
+            total += 1;
+            if let (
+                Item::Glyph {
+                    font: fa,
+                    char: ca,
+                    index: ia,
+                    x: xa,
+                    y: ya,
+                    width: wa,
+                    expansion: ea,
+                },
+                Item::Glyph {
+                    font: fb,
+                    char: cb,
+                    index: ib,
+                    x: xb,
+                    y: yb,
+                    width: wb,
+                    expansion: eb,
+                },
+            ) = (a, b)
+            {
+                let font_ok = match (fast.font(*fa), page.font(*fb)) {
+                    (Some(da), Some(db)) => da.key() == db.key(),
+                    _ => fa == fb,
+                };
+                if font_ok
+                    && ca == cb
+                    && ia == ib
+                    && xa + ox == *xb
+                    && ya + oy == *yb
+                    && wa == wb
+                    && ea == eb
+                {
+                    same += 1;
+                } else if notes.len() < 6 {
+                    notes.push(format!(
+                        "row {} glyph differs: fast {:?} capture {:?}",
+                        k + 1,
+                        a,
+                        b
+                    ));
+                }
+            }
+        }
+    }
+    (same, total, notes)
 }

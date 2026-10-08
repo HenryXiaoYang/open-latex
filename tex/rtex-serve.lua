@@ -203,6 +203,33 @@ local last_nfss = nil
 S.current = nil
 local head_tokens, tail_tokens  -- built in init once the \luafunction slots are known
 
+-- Leak check: the meanings of the control sequences a unit's source mentions, before and
+-- after its compile. A unit that defines or \lets one of them (\newcommand inside a
+-- paragraph, \global\let\emph\relax) changes the server for every later compile; the result
+-- reports the names and the session demotes the unit and restarts the engine.
+local function cs_names(source)
+  local seen, names = {}, {}
+  for name in source:gmatch("\\(%a+)") do
+    if not seen[name] and #names < 64 then seen[name] = true; names[#names + 1] = name end
+  end
+  return names
+end
+local function meaning_of(name)
+  local ok, t = pcall(create, name)
+  if not ok or not t then return "?" end
+  local cmd = t.cmdname
+  if cmd == "call" or cmd == "long_call" or cmd == "outer_call" or cmd == "long_outer_call" then
+    local ok2, body = pcall(token.get_macro, name)
+    return cmd .. ":" .. (ok2 and tostring(body) or "?")
+  end
+  return cmd .. ":" .. tostring(t.mode)
+end
+local function meanings_of(names)
+  local m = {}
+  for i = 1, #names do m[i] = meaning_of(names[i]) end
+  return m
+end
+
 function S.begin_compile(req_id, ctx_id, source)
   local ctx = S.contexts[ctx_id]
   if not ctx then
@@ -223,7 +250,8 @@ function S.begin_compile(req_id, ctx_id, source)
   for line in (source .. "\n"):gmatch("(.-)\n") do n = n + 1; lines[n] = line end
   if n > 0 and lines[n] == "" then lines[n] = nil end
   S.current = { req = req_id, ctx_id = ctx_id, ctx = ctx, font_changed = font_changed, t0 = 0,
-                t_read = S.t_read, t_decoded = S.t_decoded }
+                t_read = S.t_read, t_decoded = S.t_decoded, names = cs_names(source) }
+  S.current.meanings = meanings_of(S.current.names)
   S.images_used = false
   -- our own tokens use @ as a letter (kernel switches, float emulation); the source keeps the
   -- document's catcodes
@@ -279,6 +307,17 @@ function S.finish()
     end
   end
   cur.advanced = advanced
+  -- control sequences of the source whose meaning changed: a definition leaked
+  local leaks = nil
+  if cur.names then
+    for i = 1, #cur.names do
+      if meaning_of(cur.names[i]) ~= cur.meanings[i] then
+        leaks = leaks or {}
+        leaks[#leaks + 1] = cur.names[i]
+      end
+    end
+  end
+  cur.leaks = leaks
   local fp1 = S.fingerprint(fp_scratch)
   local t1b = gettime()
   if font.current() ~= S.font_outer or not S.fp_equal(fp1, S.fp_base) then
@@ -297,13 +336,14 @@ function S.finish()
   local t_tex = floor((t1 - cur.t0) * 1e6 + 0.5)
   local t_trav = floor((t2 - t1b) * 1e6 + 0.5)
   if #S.errors > 0 then
-    send_result({ op = "result", req = cur.req, ctx = cur.ctx_id, status = st, errors = S.errors, counters = cur.advanced,
+    send_result({ op = "result", req = cur.req, ctx = cur.ctx_id, status = st, errors = S.errors, counters = cur.advanced, leaks = cur.leaks,
       lines = nlines, glyphs = nglyphs, width = bw, height = bh, depth = bd,
       t_tex_us = t_tex, t_traverse_us = t_trav, t_pack_us = 0, font_changed = cur.font_changed, dl_bytes = #bytes }, bytes)
   else
     local images = ""
     if S.images_used and next(S.images) then images = '"images":' .. json.encode(S.images) .. ',' end
     if cur.advanced then images = images .. '"counters":' .. json.encode(cur.advanced) .. ',' end
+    if cur.leaks then images = images .. '"leaks":' .. json.encode(cur.leaks) .. ',' end
     send_result_json(format(HEADER_FMT, cur.req, cur.ctx_id, st, nlines, nglyphs, images, bw, bh, bd, t_tex, t_trav,
       cur.font_changed and "true" or "false", #bytes,
       floor(((cur.t_decoded or 0) - (cur.t_read or 0)) * 1e6 + 0.5), floor(((cur.t_printed or 0) - (cur.t_decoded or 0)) * 1e6 + 0.5),

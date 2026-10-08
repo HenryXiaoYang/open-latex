@@ -57,6 +57,16 @@ background path and arrives with the next `LayoutUpdate` (seconds, not milliseco
 continues after a block environment inside the same span, and headings sharing a span with text,
 are background-only (the capture closes the unit at the environment's end).
 
+**Eligibility.** The table above lists what the allow-list knows. In the default *probe* mode
+(docs/ELIGIBILITY.md) the allow-list is only the fast lane: any structurally sound unit is
+eligible, and one whose vocabulary is not allow-listed is first proven by compiling its text as
+the last pass typeset it and comparing the rows with the pass. What cannot be proven stays on
+the background path for that layout (`unverified:` reasons on `BackgroundScheduled` and
+`apply_edit`); a unit that leaks a global definition is demoted until the preamble changes.
+The probe's blind spot is an edit that introduces a dependence the snapshot did not have
+(typing `\thepage` into a verified paragraph on page 2): wrong until the next layout, which
+re-probes.
+
 **Documents.** The session tracks the main file and, transitively, every file it `\input`s,
 `\include`s or `\subfile`s (loaded from disk at open and when a new `\input` line appears;
 hosts hand over unsaved buffers with `set_document`). Paragraphs in those files are fast-path
