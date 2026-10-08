@@ -4,7 +4,7 @@
 //!   layer 3: every page rasterized from the display list vs PyMuPDF's raster of the PDF
 
 use anyhow::{Context, Result};
-use rtex_core::capture::run_capture_with;
+use rtex_core::background::{run_pass_with, BibTool};
 use rtex_core::eligibility::{check_engine_unit, classify_source, Policy, UnitShape};
 use rtex_core::layout::LayoutStore;
 use rtex_core::engine::FastServer;
@@ -164,25 +164,17 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
         Policy::from_preamble(preamble, &[], &[])
     };
     let unit_envs = policy.unit_envs_env();
-    let cap = run_capture_with(&tl, &project, &opts.main, &opts.build.join("capture"), true, &unit_envs)?;
-    let bcf = opts.build.join("capture").join(format!("{}.bcf", cap.jobname));
-    let cap = if bcf.exists() {
-        let _ = std::process::Command::new("biber").current_dir(opts.build.join("capture")).arg(&cap.jobname).output();
-        run_capture_with(&tl, &project, &opts.main, &opts.build.join("capture"), true, &unit_envs)?;
-        run_capture_with(&tl, &project, &opts.main, &opts.build.join("capture"), true, &unit_envs)?
-    } else {
-        cap
-    };
-    let clean = run_capture_with(&tl, &project, &opts.main, &opts.build.join("clean"), false, "")?;
-    let clean_bcf = opts.build.join("clean").join(format!("{}.bcf", clean.jobname));
-    let clean = if clean_bcf.exists() {
-        let _ = std::process::Command::new("biber").current_dir(opts.build.join("clean")).arg(&clean.jobname).output();
-        run_capture_with(&tl, &project, &opts.main, &opts.build.join("clean"), false, "")?;
-        run_capture_with(&tl, &project, &opts.main, &opts.build.join("clean"), false, "")?
-    } else {
-        clean
-    };
-    println!("capture: {} paragraphs, {} pages ({:.1}s); clean build {:.1}s", cap.json.paragraphs.len(), cap.json.pages, cap.wall.as_secs_f64(), clean.wall.as_secs_f64());
+    // Both builds run to aux convergence (labels, TOC, bibliography) exactly like the
+    // background compiler does: a single first pass would leave every \ref as "??" while
+    // the fast server resolves the labels from the aux that pass writes.
+    const MAX_PASSES: u32 = 5;
+    let cap_pass = run_pass_with(&tl, &project, &opts.main, &opts.build.join("capture"), MAX_PASSES, BibTool::Auto, true, &unit_envs)?;
+    let clean_pass = run_pass_with(&tl, &project, &opts.main, &opts.build.join("clean"), MAX_PASSES, BibTool::Auto, false, "")?;
+    if !cap_pass.aux_stable || !clean_pass.aux_stable {
+        println!("warning: aux family not stable after {MAX_PASSES} passes (capture {}, clean {})", cap_pass.aux_stable, clean_pass.aux_stable);
+    }
+    let (cap, clean) = (cap_pass.capture, clean_pass.capture);
+    println!("capture: {} paragraphs, {} pages ({:.1}s, {} passes); clean build {:.1}s ({} passes)", cap.json.paragraphs.len(), cap.json.pages, cap.wall.as_secs_f64(), cap_pass.passes, clean.wall.as_secs_f64(), clean_pass.passes);
     let mut report = Report { paragraphs_total: cap.json.paragraphs.len(), ..Default::default() };
     // T3: the capture package must not change the output
     let t3 = rtex_verify::pdfcompare::compare(&cap.pdf, &clean.pdf)?;
