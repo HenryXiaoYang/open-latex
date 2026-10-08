@@ -33,7 +33,8 @@ jobs:
         run: scripts/install-texlive.sh
       - name: Write env
         run: scripts/install-texlive.sh > /dev/null && cat build/texlive.env >> "$GITHUB_ENV" && echo "$PWD/build/texlive/bin/x86_64-linux" >> "$GITHUB_PATH"
-      - run: pip install --break-system-packages pymupdf
+      - name: Install PyMuPDF for the interpreter the verifier runs
+        run: python3 -m pip install --user --break-system-packages pymupdf && python3 -c "import pymupdf; print(pymupdf.__doc__)"
       - run: texlua tex/tests/run.lua
       - run: cargo test --workspace --release
       - name: Fidelity (pure fixture, all three layers)
