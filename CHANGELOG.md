@@ -49,6 +49,11 @@
 - Capture: paragraphs that start inside a group (`{\em …}`, `{\bfseries …}`) and bare
   `tabularx` tables had no rows (the unit attribute was restored with the group) and the wrong
   base font; both fixed, and `tabularx` is on the fast path.
+- Fix: the project copy for background passes never created subfolders, so any project with a
+  subfolder (`images/`, …) failed every full compile with "No such file or directory". A pass
+  that cannot run now reports `LayoutUpdate` with `compile: Failed` instead of only a
+  diagnostic. Fixtures keep their image in `images/` so the integration tests cover nested
+  projects.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

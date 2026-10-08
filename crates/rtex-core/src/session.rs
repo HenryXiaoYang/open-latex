@@ -1103,8 +1103,19 @@ fn run_background_pass(s: &Shared) {
     let t0 = Instant::now();
     let (texts, spans, rev) = snapshot(s);
     let snap_dir = snapshot_dir(&s.cfg.build_dir);
+    // a pass that cannot run is still a layout result: hosts see compile = Failed instead of a
+    // pass that never ends
+    let failed = |msg: String| {
+        s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: msg.clone(), context: None }] }).ok();
+        *s.convergence.lock() = Some(Convergence::PassLimitReached { passes: 0, reasons: vec![msg.clone()] });
+        s.events.send(Event::LayoutUpdate {
+            versions: Versions { source_revision: rev, ..Default::default() }, compile: CompileStatus::Failed,
+            convergence: Convergence::PassLimitReached { passes: 0, reasons: vec![msg] }, passes: 0, pages_changed: vec![], pages_total: 0,
+            placements: vec![], eligible_paragraphs: vec![], pdf_fallback: None, wall_ms: t0.elapsed().as_millis() as u64,
+        }).ok();
+    };
     if let Err(e) = write_snapshot(&s.cfg.project_root, &texts, &snap_dir) {
-        s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: format!("snapshot: {e}"), context: None }] }).ok();
+        failed(format!("snapshot: {e}"));
         return;
     }
     let out_dir = s.cfg.build_dir.join("bg");
@@ -1148,8 +1159,7 @@ fn run_background_pass(s: &Shared) {
     let outcome = match result {
         Ok(o) => o,
         Err(e) => {
-            s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: e.to_string(), context: None }] }).ok();
-            *s.convergence.lock() = Some(Convergence::PassLimitReached { passes: 0, reasons: vec![e.to_string()] });
+            failed(format!("background pass: {e:#}"));
             return;
         }
     };

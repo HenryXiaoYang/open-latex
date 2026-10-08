@@ -58,7 +58,9 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
         }
         let path = entry.path();
         if path.is_dir() {
-            copy_tree(&path, &dst.join(&name), depth + 1)?;
+            let sub = dst.join(&name);
+            std::fs::create_dir_all(&sub)?;
+            copy_tree(&path, &sub, depth + 1)?;
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if matches!(ext, "pdf" | "aux" | "log" | "synctex.gz" | "fls" | "fdb_latexmk" | "out" | "toc" | "lof" | "lot" | "bbl" | "bcf" | "blg" | "run.xml") {
@@ -352,6 +354,25 @@ impl Drop for WarmEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_copies_nested_folders() {
+        let dir = std::env::temp_dir().join(format!("rtex-snap-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let project = dir.join("project");
+        std::fs::create_dir_all(project.join("a/b")).unwrap();
+        std::fs::write(project.join("main.tex"), "x").unwrap();
+        std::fs::write(project.join("a/b/file.txt"), "nested").unwrap();
+        std::fs::write(project.join("a/top.bib"), "bib").unwrap();
+        let mut files = BTreeMap::new();
+        files.insert("main.tex".to_string(), "edited".to_string());
+        write_snapshot(&project, &files, &dir.join("snap")).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("snap/a/b/file.txt")).unwrap(), "nested");
+        assert_eq!(std::fs::read_to_string(dir.join("snap/a/top.bib")).unwrap(), "bib");
+        assert_eq!(std::fs::read_to_string(dir.join("snap/main.tex")).unwrap(), "edited");
+        // a second snapshot (files already present) is fine too
+        write_snapshot(&project, &files, &dir.join("snap")).unwrap();
+    }
 
     #[test]
     fn body_snapshot_keeps_line_numbers() {

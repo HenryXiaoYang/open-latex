@@ -291,7 +291,7 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
                 if fig % 2 == 0 {
                     let _ = writeln!(
                         body,
-                        "\\begin{{figure}}[tbp]\\centering\\includegraphics[width=0.5\\textwidth]{{figure.png}}\\caption{{Figure {} (image).}}\\label{{fig:{}}}\\end{{figure}}\n",
+                        "\\begin{{figure}}[tbp]\\centering\\includegraphics[width=0.5\\textwidth]{{images/figure.png}}\\caption{{Figure {} (image).}}\\label{{fig:{}}}\\end{{figure}}\n",
                         fig, fig
                     );
                 } else {
@@ -320,7 +320,8 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
     main.push_str("\\end{document}\n");
     std::fs::write(out.join("main.tex"), main)?;
     if mixed {
-        std::fs::write(out.join("figure.png"), png_placeholder())?;
+        std::fs::create_dir_all(out.join("images"))?;
+    std::fs::write(out.join("images").join("figure.png"), png_placeholder())?;
         std::fs::write(
             out.join("refs.bib"),
             "@article{knuth1981,\n  author = {Donald E. Knuth and Michael F. Plass},\n  title = {Breaking paragraphs into lines},\n  journal = {Software: Practice and Experience},\n  year = {1981},\n  volume = {11},\n  number = {11},\n  pages = {1119--1184}\n}\n",
@@ -403,7 +404,7 @@ fn generate_units(pages: u32, fonts: FontSet, seed: u64, out: &Path, rng: &mut R
             }
             7 => {
                 fig += 1;
-                let _ = writeln!(body, "\\begin{{figure}}[tbp]\n\\centering\n\\includegraphics[width=0.4\\textwidth]{{figure.png}}\n\\caption{{Figure {} shows the placeholder image with a caption long enough to wrap onto a second line of the caption block.}}\\label{{fig:{}}}\n\\end{{figure}}\n", fig, fig);
+                let _ = writeln!(body, "\\begin{{figure}}[tbp]\n\\centering\n\\includegraphics[width=0.4\\textwidth]{{images/figure.png}}\n\\caption{{Figure {} shows the placeholder image with a caption long enough to wrap onto a second line of the caption block.}}\\label{{fig:{}}}\n\\end{{figure}}\n", fig, fig);
                 words += 110;
             }
             8 => {
@@ -430,7 +431,8 @@ fn generate_units(pages: u32, fonts: FontSet, seed: u64, out: &Path, rng: &mut R
     main.push_str("\\bibliographystyle{plain}\n\\bibliography{refs}\n");
     main.push_str("\\end{document}\n");
     std::fs::write(out.join("main.tex"), main)?;
-    std::fs::write(out.join("figure.png"), png_placeholder())?;
+    std::fs::create_dir_all(out.join("images"))?;
+    std::fs::write(out.join("images").join("figure.png"), png_placeholder())?;
     std::fs::write(
         out.join("refs.bib"),
         "@article{knuth1981,\n  author = {Donald E. Knuth and Michael F. Plass},\n  title = {Breaking paragraphs into lines},\n  journal = {Software: Practice and Experience},\n  year = {1981},\n  volume = {11},\n  number = {11},\n  pages = {1119--1184}\n}\n",
