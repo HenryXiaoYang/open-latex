@@ -73,6 +73,8 @@ pub const BLOCK_ENVS: &[&str] = &[
     "Verbatim",
     "alltt",
     "spacing",
+    // manual bibliography: its \section* heading and \bibitem list are one unit
+    "thebibliography",
 ];
 const HEADING_CMDS: &[&str] = &[
     "\\chapter",

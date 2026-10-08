@@ -85,6 +85,11 @@
   begin/end code is allow-listed are fast-path material; one that opens a block environment
   becomes a unit environment (captured like a theorem), the others are typeset inside the
   paragraph that uses them. `\ ` (control space) is allowed.
+- Citations with biblatex are live: the server loads the last pass's `.bbl` next to its aux,
+  and biblatex's citation commands are allowed with the package. Manual bibliographies
+  (`thebibliography`, `\bibitem`, `\newblock`) are block units. A macro several packages
+  provide (`\citeauthor`, `\mathbb` via amsfonts/unicode-math) is allowed when any of them is
+  loaded.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

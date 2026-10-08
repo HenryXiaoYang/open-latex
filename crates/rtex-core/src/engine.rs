@@ -155,6 +155,17 @@ impl FastServer {
                 std::fs::copy(a, &own_aux)
                     .with_context(|| format!("copying {} for the server", a.display()))?;
             }
+            // the bibliography data of that pass (biblatex reads \jobname.bbl at
+            // \begin{document}; bibtex's .bbl is \input by \bibliography, in the body)
+            for ext in ["bbl"] {
+                let src = a.with_extension(ext);
+                let dst = work_dir.join(format!("rtex-serve-g{generation}.{ext}"));
+                let _ = std::fs::remove_file(&dst);
+                if src.exists() {
+                    std::fs::copy(&src, &dst)
+                        .with_context(|| format!("copying {} for the server", src.display()))?;
+                }
+            }
         }
         // one driver/log per generation so a crashed server's log survives the restart
         let driver = work_dir.join(format!("rtex-serve-g{generation}.tex"));

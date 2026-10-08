@@ -270,6 +270,9 @@ const TEXT_MACROS: &[&str] = &[
     "ref",
     "pageref",
     "label",
+    // manual bibliographies (thebibliography is a block environment)
+    "bibitem",
+    "newblock",
     "footnote",
     "footnotemark",
     "footnotetext",
@@ -645,6 +648,28 @@ const PKG_MACROS: &[(&str, &[&str])] = &[
     ),
     ("caption", &["captionof", "captionof*"]),
     (
+        "biblatex",
+        &[
+            "parencite",
+            "textcite",
+            "autocite",
+            "footcite",
+            "citeauthor",
+            "citetitle",
+            "citeyear",
+            "citedate",
+            "Parencite",
+            "Textcite",
+            "Autocite",
+            "Citeauthor",
+            "smartcite",
+            "supercite",
+            "fullcite",
+            "footfullcite",
+            "nocite",
+        ],
+    ),
+    (
         "natbib",
         &[
             "citep",
@@ -704,6 +729,21 @@ const PKG_MACROS: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+
+/// Is `name` a package macro? `Some(Ok(()))` when one of the packages providing it is loaded,
+/// `Some(Err(first provider))` when none is, `None` for macros no package list names.
+fn package_macro(name: &str, policy: &Policy) -> Option<Result<(), &'static str>> {
+    let mut first: Option<&'static str> = None;
+    for (pkg, ms) in PKG_MACROS {
+        if ms.contains(&name) {
+            if policy.has_package(pkg) {
+                return Some(Ok(()));
+            }
+            first.get_or_insert(pkg);
+        }
+    }
+    first.map(Err)
+}
 
 /// Macros whose argument(s) are opaque (URLs, units, verbatim): skipped, not classified.
 /// (name, brace arguments to skip; 0 = delimited like \verb|…|).
@@ -889,6 +929,10 @@ impl Policy {
                 if n == "mathtools" {
                     packages.insert("amsmath".into());
                 }
+                // \mathbb and the AMS symbols also come with amsfonts and unicode-math
+                if n == "amsfonts" || n == "unicode-math" {
+                    packages.insert("amssymb".into());
+                }
             }
         }
         let mut policy = Policy {
@@ -898,7 +942,7 @@ impl Policy {
             graphicx: has_pkg("graphicx") || has_pkg("graphics"),
             booktabs: has_pkg("booktabs"),
             tabularx: has_pkg("tabularx"),
-            cite_ok: !has_pkg("biblatex"),
+            cite_ok: true,
             packages,
             trusted_math: BTreeSet::new(),
             user_inner_envs: BTreeSet::new(),
@@ -1633,13 +1677,8 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
             }
             // opaque arguments (URLs, units, verbatim): skip them, check the package
             if let Some((_, nargs)) = OPAQUE_ARGS.iter().find(|(n, _)| *n == name.as_str()) {
-                if let Some((pkg, _)) = PKG_MACROS
-                    .iter()
-                    .find(|(_, ms)| ms.contains(&name.as_str()))
-                {
-                    if !policy.has_package(pkg) {
-                        push(&mut reasons, Reason::NeedsPackage((*pkg).into()));
-                    }
+                if let Some(Err(pkg)) = package_macro(&name, policy) {
+                    push(&mut reasons, Reason::NeedsPackage(pkg.into()));
                 }
                 if *nargs == 0 {
                     // \verb|...| / \lstinline|...| / \lstinline{...}
@@ -1691,12 +1730,9 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
                 continue;
             }
             // macros
-            let allowed = if let Some((pkg, _)) = PKG_MACROS
-                .iter()
-                .find(|(_, ms)| ms.contains(&name.as_str()))
-            {
-                if !policy.has_package(pkg) {
-                    push(&mut reasons, Reason::NeedsPackage((*pkg).into()));
+            let allowed = if let Some(provided) = package_macro(&name, policy) {
+                if let Err(pkg) = provided {
+                    push(&mut reasons, Reason::NeedsPackage(pkg.into()));
                 }
                 if in_math && matches!(name.as_str(), "text" | "mbox") {
                     text_group_pending = true;
@@ -2063,7 +2099,11 @@ mod tests {
             .1
             .contains(&Reason::NeedsPackage("ulem".into())));
         // natbib citations, boxes, counters, setters
-        assert!(reasons("as \\citep{a} and \\citet[p.~3]{b} say \\citeauthor{a}").is_empty());
+        assert!(
+            reasons("as \\citep{a} and \\citet[p.~3]{b} say \\citeauthor{a}").is_empty(),
+            "{:?}",
+            reasons("as \\citep{a} and \\citet[p.~3]{b} say \\citeauthor{a}")
+        );
         assert!(reasons(
             "\\fbox{\\parbox{3cm}{x}} \\colorbox{yellow}{y} \\underline{z} \\rule{1cm}{1pt}"
         )
@@ -2209,7 +2249,7 @@ mod tests {
     #[test]
     fn preamble_policy() {
         let p = Policy::from_preamble("\\documentclass{book}\n\\usepackage{amsmath,graphicx}\n\\usepackage[backend=biber]{biblatex}\n\\newtheorem{theorem}{Theorem}\n% \\usepackage{booktabs}\n", &[], &[]);
-        assert!(p.amsmath && p.graphicx && !p.booktabs && !p.cite_ok);
+        assert!(p.amsmath && p.graphicx && !p.booktabs && p.cite_ok);
         // user macros: trusted when their bodies are allow-listed, in the mode they classify in
         let p2 = Policy::from_preamble("\\usepackage{amsmath,amssymb}\n\\usepackage[table]{xcolor}\n\\newcommand{\\R}{\\mathbb{R}}\n\\newcommand{\\abs}[1]{\\left\\lvert #1 \\right\\rvert}\n\\newcommand{\\code}[1]{\\texttt{#1}}\n\\newcommand{\\bad}{\\tikz{x}}\n\\DeclareMathOperator*{\\argmax}{arg\\,max}\n\\newcommand{\\absR}[1]{\\abs{#1}\\in\\R}\n", &[], &[]);
         assert!(

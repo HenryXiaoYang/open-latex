@@ -22,7 +22,7 @@ C.INT_PARAMS, C.DIM_PARAMS, C.GLUE_PARAMS = INT_PARAMS, DIM_PARAMS, GLUE_PARAMS
 -- environments) come from $RTEX_UNIT_ENVS.
 C.BLOCK_ENVS = { "itemize", "enumerate", "description", "quote", "quotation", "verse", "center",
   "flushleft", "flushright", "figure", "figure*", "table", "table*", "abstract", "tabbing",
-  "proof", "verbatim", "verbatim*", "lstlisting", "Verbatim", "alltt", "spacing" }
+  "proof", "verbatim", "verbatim*", "lstlisting", "Verbatim", "alltt", "spacing", "thebibliography" }
 C.HEADINGS = { "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph" }
 local TWO_PAR_HEADINGS = { part = true, chapter = true }
 local UNSET = -0x7FFFFFFF
@@ -196,7 +196,11 @@ end
 
 -- cmd/<heading>/before hook.
 function C.heading(name)
-  if C.cur then unit_close() end
+  local cur = C.cur
+  -- a heading an environment produces (thebibliography's \section*{\refname}) is part of
+  -- that unit
+  if cur and cur.kind == "env" and C.env_depth > 0 then return end
+  if cur then unit_close() end
   unit_open("heading", name, true)
 end
 
