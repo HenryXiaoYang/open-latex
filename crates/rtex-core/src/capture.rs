@@ -86,6 +86,9 @@ pub struct CapturedUnit {
     /// An empty Lua table arrives as `[]`, hence the loose type.
     #[serde(default)]
     pub counters: serde_json::Value,
+    /// Counters the unit advanced: name → value at the unit's end (absent when none).
+    #[serde(default)]
+    pub advanced: Option<BTreeMap<String, i64>>,
     #[serde(default)]
     pub everypar: String,
     #[serde(default)]

@@ -262,11 +262,23 @@ function S.finish()
   S.current = nil
   if not cur then return end
   local t1 = gettime()
-  -- counters the unit advanced globally (\refstepcounter) go back to the idle values
+  -- counters the unit advanced globally (\refstepcounter, \stepcounter …) are reported
+  -- (value at the end, when it differs from the replayed start value) and go back to the idle
+  -- values
   local cb = S.counter_base
+  local start = cur.ctx and cur.ctx.counters or {}
+  local advanced = nil
   for name, v in pairs(cb) do
-    if getcount("c@" .. name) ~= v then tex.setcount("global", "c@" .. name, v) end
+    local now = getcount("c@" .. name)
+    if now ~= v then
+      tex.setcount("global", "c@" .. name, v)
+      if name ~= "page" and now ~= (start[name] or v) then
+        advanced = advanced or {}
+        advanced[name] = now
+      end
+    end
   end
+  cur.advanced = advanced
   local fp1 = S.fingerprint(fp_scratch)
   local t1b = gettime()
   if font.current() ~= S.font_outer or not S.fp_equal(fp1, S.fp_base) then
@@ -285,12 +297,13 @@ function S.finish()
   local t_tex = floor((t1 - cur.t0) * 1e6 + 0.5)
   local t_trav = floor((t2 - t1b) * 1e6 + 0.5)
   if #S.errors > 0 then
-    send_result({ op = "result", req = cur.req, ctx = cur.ctx_id, status = st, errors = S.errors,
+    send_result({ op = "result", req = cur.req, ctx = cur.ctx_id, status = st, errors = S.errors, counters = cur.advanced,
       lines = nlines, glyphs = nglyphs, width = bw, height = bh, depth = bd,
       t_tex_us = t_tex, t_traverse_us = t_trav, t_pack_us = 0, font_changed = cur.font_changed, dl_bytes = #bytes }, bytes)
   else
     local images = ""
     if S.images_used and next(S.images) then images = '"images":' .. json.encode(S.images) .. ',' end
+    if cur.advanced then images = images .. '"counters":' .. json.encode(cur.advanced) .. ',' end
     send_result_json(format(HEADER_FMT, cur.req, cur.ctx_id, st, nlines, nglyphs, images, bw, bh, bd, t_tex, t_trav,
       cur.font_changed and "true" or "false", #bytes,
       floor(((cur.t_decoded or 0) - (cur.t_read or 0)) * 1e6 + 0.5), floor(((cur.t_printed or 0) - (cur.t_decoded or 0)) * 1e6 + 0.5),

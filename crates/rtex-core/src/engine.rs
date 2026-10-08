@@ -48,6 +48,9 @@ pub struct CompileResult {
     /// Image resources used by the display list (index → file), from the server's graphicx hook.
     #[serde(default)]
     pub images: std::collections::BTreeMap<String, rtex_dl::ImageInfo>,
+    /// Counters the compile advanced: name → value at the end (see rtex-serve.lua finish()).
+    #[serde(default)]
+    pub counters: std::collections::BTreeMap<String, i64>,
     /// Host-side stage times (µs): send, wait, read, parse.
     #[serde(skip)]
     pub host_us: [u64; 4],

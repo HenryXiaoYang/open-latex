@@ -260,6 +260,9 @@ struct Shared {
     overlays: Mutex<HashMap<ParaId, Revision>>,
     /// Spans typeset with a borrowed context: span → (parent span, rows follow the parent).
     derived: Mutex<HashMap<ParaId, (ParaId, bool)>>,
+    /// Counters the last fast compile of a span advanced (what the layout saw until then): a
+    /// change renumbers what follows and needs a pass.
+    counters_seen: Mutex<HashMap<ParaId, BTreeMap<String, i64>>>,
     /// Row count of the latest fast result per span (anchors paragraphs placed after it).
     live_rows: Mutex<HashMap<ParaId, i64>>,
     /// Standby background engine (preamble loaded, waiting for the body).
@@ -344,6 +347,7 @@ impl Session {
             convergence: Mutex::new(None),
             overlays: Mutex::new(HashMap::new()),
             derived: Mutex::new(HashMap::new()),
+            counters_seen: Mutex::new(HashMap::new()),
             live_rows: Mutex::new(HashMap::new()),
             standby: Mutex::new(None),
         });
@@ -1472,7 +1476,21 @@ fn handle_result(
         // footnote/margin text is placed by the page builder: refreshed by the next layout
         reasons.push("inserts".into());
     }
-    if stale || !reasons.is_empty() {
+    // counters: a unit that now advances other counters, or to other values, than the layout
+    // saw (an added equation, item, footnote or \stepcounter) renumbers what follows: pass
+    let counters_changed = {
+        let expected = s
+            .layout
+            .lock()
+            .unit(req.par_id)
+            .map(|u| u.advanced())
+            .unwrap_or_default();
+        let mut seen = s.counters_seen.lock();
+        let prev = seen.get(&req.par_id).cloned().unwrap_or(expected);
+        seen.insert(req.par_id, cr.counters.clone());
+        prev != cr.counters
+    };
+    if stale || counters_changed || !reasons.is_empty() {
         s.bg_signal.0.send(BgCmd::Pass).ok();
     }
     let total_us = timing.total_us;
@@ -1983,6 +2001,7 @@ fn run_background_pass(s: &Shared) {
     s.overlays.lock().retain(|_, r| *r > rev);
     s.derived.lock().clear();
     s.live_rows.lock().clear();
+    s.counters_seen.lock().clear();
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !outcome.aux_stable {

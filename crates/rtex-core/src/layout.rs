@@ -55,6 +55,10 @@ impl EngineUnit {
     pub fn kind(&self) -> &str {
         &self.captured.kind
     }
+    /// Counters the unit advanced in the last pass (name → value at its end).
+    pub fn advanced(&self) -> BTreeMap<String, i64> {
+        self.captured.advanced.clone().unwrap_or_default()
+    }
     pub fn name(&self) -> Option<&str> {
         self.captured.name.as_deref()
     }
@@ -232,8 +236,12 @@ impl LayoutStore {
             let mut flags: BTreeMap<String, i64> = BTreeMap::new();
             let mut end_line = None;
             let mut uids = Vec::new();
+            let mut advanced: BTreeMap<String, i64> = BTreeMap::new();
             for i in rest {
                 let u = &self.units[*i];
+                if let Some(a) = &u.captured.advanced {
+                    advanced.extend(a.iter().map(|(k, v)| (k.clone(), *v)));
+                }
                 placements.extend(u.captured.placements.iter().cloned());
                 seqs.extend(u.captured.seqs.iter().cloned());
                 members.extend(u.members.iter().cloned());
@@ -257,6 +265,11 @@ impl LayoutStore {
             }
             if end_line.is_some() {
                 f.captured.end_line = end_line;
+            }
+            if !advanced.is_empty() {
+                let mut all = f.captured.advanced.take().unwrap_or_default();
+                all.extend(advanced);
+                f.captured.advanced = Some(all);
             }
             f.uids.extend(uids);
             per_span_count.insert(*id, 1);

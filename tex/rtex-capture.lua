@@ -122,6 +122,12 @@ local function unit_close()
   local u = C.cur
   if not u then return end
   u.end_line = tex.inputlineno
+  -- counters the unit advanced (values at its end that differ from its start): the session
+  -- compares them with what a fast compile of the unit advances
+  local now = read_counters()
+  local adv = {}
+  for k, v in pairs(now) do if prev_counters[k] ~= v and k ~= "page" then adv[k] = v end end
+  if next(adv) then u.advanced = adv end
   tex.setattribute("global", C.attr_unit, UNSET)
   C.cur = nil
   if C.outer and tex.currentgrouplevel == C.outer.level then C.outer = snapshot_outer() end

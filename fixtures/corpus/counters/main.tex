@@ -1,0 +1,45 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{hyperref}
+\begin{document}
+
+\section{Numbering by hand}
+Lists sometimes continue a numbering that was interrupted by a paragraph of prose. The counter commands below are ordinary body text on the fast path: the server restores the counters after every compile and reports what the unit advanced, so the layout pass that renumbers what follows is only scheduled when that changes.
+
+\begin{enumerate}
+  \item The first item of the list.
+  \item The second item of the list.
+\end{enumerate}
+
+An interrupting paragraph of prose between the two parts of the list, long enough to wrap onto a second line so that its own line breaking is exercised as well.
+
+\begin{enumerate}
+  \setcounter{enumi}{2}
+  \item The third item, numbered by \verb|\setcounter|.
+  \item The fourth item follows naturally.
+  \addtocounter{enumi}{5}
+  \item The tenth item, after \verb|\addtocounter|.
+\end{enumerate}
+
+\section{\texorpdfstring{Headings with math $x^2$}{Headings with math}}
+The heading above carries a \verb|\texorpdfstring| so the bookmark gets a plain string while the typeset heading keeps the math. The paragraph after it continues as usual.
+
+\stepcounter{equation}
+Equations can be skipped with \verb|\stepcounter|; the next numbered equation accounts for it:
+\begin{equation}
+  e^{i\pi} + 1 = 0 \label{eq:euler}
+\end{equation}
+and Equation~\eqref{eq:euler} refers to it.
+
+\begin{center}
+  \includegraphics[width=0.3\textwidth]{figure.png}
+  \captionof{figure}{A figure caption outside a float, with the caption package.}\label{fig:inline}
+\end{center}
+
+Figure~\ref{fig:inline} is not a float: its caption is set where it appears, and the figure counter it advances is reported like any other. A number can also be taken inside a paragraph\refstepcounter{equation}\label{eq:taken}: this sentence owns Equation~\eqref{eq:taken}.
+
+\end{document}

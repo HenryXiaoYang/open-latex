@@ -742,3 +742,77 @@ fn input_files_are_tracked() {
     }
     s.close();
 }
+
+/// A fast edit that changes what a unit advances a counter to (an equation added) renumbers
+/// what follows: the session schedules a layout pass; a later edit that keeps the counters
+/// does not.
+#[test]
+fn counter_changes_schedule_a_pass() {
+    let Some((s, _p)) = open("counters") else {
+        return;
+    };
+    let Event::LayoutUpdate {
+        eligible_paragraphs,
+        versions: v1,
+        ..
+    } = wait_layout(&s)
+    else {
+        unreachable!()
+    };
+    let doc = s.document_text("main.tex").unwrap();
+    let spans = s.spans("main.tex");
+    let body = spans
+        .iter()
+        .find(|sp| eligible_paragraphs.contains(&sp.id))
+        .unwrap();
+    let pos = body.range.start + doc[body.range.clone()].find(' ').unwrap();
+    step("edit that advances a counter");
+    let r = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " \\stepcounter{equation}".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let Some(Event::ParagraphUpdate { status, .. }) = ev else {
+        panic!("no paragraph update")
+    };
+    assert_eq!(status, "ok");
+    // a pass follows because the unit now advances `equation`
+    let v2 = loop {
+        let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else {
+            unreachable!()
+        };
+        if versions.source_revision >= r.source_revision {
+            break versions;
+        }
+    };
+    assert!(v2.layout_version > v1.layout_version);
+    step("edit that keeps the counters");
+    let r2 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " more".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r2.routed, "fast", "{:?}", r2.reasons);
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
+    assert!(matches!(ev, Some(Event::ParagraphUpdate { .. })));
+    // no pass for it: the layout already knows the advanced counter
+    let (ev, _) = wait(
+        &s,
+        4,
+        |e| matches!(e, Event::LayoutUpdate { versions, .. } if versions.source_revision >= r2.source_revision),
+    );
+    assert!(ev.is_none(), "unexpected pass: {ev:?}");
+    s.close();
+}

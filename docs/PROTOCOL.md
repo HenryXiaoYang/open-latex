@@ -105,7 +105,11 @@ JSON header:
 fused traversal + serialization (`t_pack_us` is kept at 0 for 0.0.1 compatibility). `stages_us` is a
 diagnostic breakdown of the server's own overhead around the box build. When the unit used
 images the header carries `"images": {index: {file, page, pages}}` (the server hooks graphicx's
-`\Gin@setfile` like the capture package does).
+`\Gin@setfile` like the capture package does). When the compile advanced LaTeX counters
+(`\refstepcounter` in an equation, items, `\stepcounter`) it carries `"counters": {name: value
+at the end}` for every counter whose final value differs from the replayed start value; the
+server then restores its idle values, and the session compares the map with what the layout saw
+the unit advance, scheduling a pass when it differs.
 followed by `dl_bytes` of binary display list (paragraph framing; empty when `status` is `error`
 and no box was produced).
 Error `line` numbers count from the first printed line; line 1 is the replay head, so source line

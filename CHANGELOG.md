@@ -75,6 +75,12 @@
   preamble has those files inlined, `\include` works with the output directory (its
   subdirectories are mirrored) and partial `.aux` files count towards convergence. Corpus
   fixture `multi` (14/14 live).
+- Counters on the fast path: `\setcounter`/`\addtocounter`/`\stepcounter`/`\refstepcounter`
+  inside a unit are allowed; the capture records the counters each unit advances, the server
+  reports what a compile advanced (`counters` in the result), and the session schedules a layout
+  pass only when that changes (an equation or item added, a counter set), so what follows is
+  renumbered. hyperref `\texorpdfstring` and caption `\captionof` are allowed with their
+  packages. Corpus fixture `counters` (9/10 live).
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

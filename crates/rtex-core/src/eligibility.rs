@@ -28,6 +28,9 @@ pub enum Reason {
     MacroOutsideContext(String),
     /// A package the construct needs is not loaded (amsmath, graphicx, booktabs).
     NeedsPackage(String),
+    /// A counter command before the unit's first text runs in vertical mode, before the point
+    /// where the unit's counters are captured; replaying it would count twice.
+    LeadingCounter(String),
     SizeDeclarationOutsideGroup(String),
     EngineFlag(String),
     NoContext,
@@ -63,6 +66,10 @@ impl std::fmt::Display for Reason {
                 "\\{m} outside a brace group would leak past the paragraph"
             ),
             Reason::EngineFlag(s) => write!(f, "engine saw {s} in this unit"),
+            Reason::LeadingCounter(m) => write!(
+                f,
+                "\\{m} before the unit's text runs before its counters are captured; put it inside the paragraph or environment, or on its own line"
+            ),
             Reason::OverBudget(ms) => write!(f, "last fast compile took {ms} ms, over the budget"),
             other => write!(f, "{other:?}"),
         }
@@ -149,6 +156,12 @@ const TEXT_MACROS: &[&str] = &[
     "rule",
     "hrulefill",
     "dotfill",
+    // counters: the server restores the idle values after each compile and reports what the
+    // unit advanced; the session schedules a pass when that changes (what follows renumbers)
+    "setcounter",
+    "addtocounter",
+    "stepcounter",
+    "refstepcounter",
     // counter formats (enumitem label specs, \alph{counter} …)
     "alph",
     "Alph",
@@ -626,8 +639,10 @@ const PKG_MACROS: &[(&str, &[&str])] = &[
             "nameref",
             "hyperref",
             "phantomsection",
+            "texorpdfstring",
         ],
     ),
+    ("caption", &["captionof", "captionof*"]),
     (
         "natbib",
         &[
@@ -1240,6 +1255,20 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
                     Some(p) => idx = end + p,
                     None => break,
                 }
+            }
+        }
+    }
+    {
+        let t = text.trim_start();
+        for m in [
+            "setcounter",
+            "addtocounter",
+            "stepcounter",
+            "refstepcounter",
+        ] {
+            if t.starts_with(&format!("\\{m}{{")) && !t.trim_end().ends_with('}') {
+                push(&mut reasons, Reason::LeadingCounter(m.into()));
+                break;
             }
         }
     }
@@ -1988,6 +2017,34 @@ mod tests {
         assert_eq!(shape, UnitShape::Heading("section".into()));
         assert!(r.is_empty(), "{r:?}");
         assert!(reasons("Text \\section{x}").contains(&Reason::DisallowedMacro("section".into())));
+    }
+    #[test]
+    fn counters_and_package_macros() {
+        let p = pol();
+        assert!(check_source(
+            "Text \\stepcounter{foo} and \\setcounter{enumi}{3} \\addtocounter{x}{-1}.",
+            &p
+        )
+        .is_empty());
+        // before the first text the command runs before the unit's counters are captured
+        assert!(check_source("\\stepcounter{equation}\nText with $x$.", &p)
+            .contains(&Reason::LeadingCounter("stepcounter".into())));
+        // a lone counter line is a unit of its own (no rows): fine
+        assert!(check_source("\\setcounter{section}{3}", &p).is_empty());
+        // pol() has hyperref loaded but not caption
+        assert!(reasons("\\captionof{figure}{A caption}")
+            .contains(&Reason::NeedsPackage("caption".into())));
+        assert!(classify_source("\\section{\\texorpdfstring{$x$}{x}}", &p)
+            .1
+            .is_empty());
+        let p0 = Policy::from_preamble("\\documentclass{article}\n", &[], &[]);
+        assert!(check_source("\\section{\\texorpdfstring{$x$}{x}}", &p0)
+            .contains(&Reason::NeedsPackage("hyperref".into())));
+        let p2 = Policy::from_preamble("\\usepackage{caption}\\usepackage{hyperref}\n", &[], &[]);
+        assert!(check_source("\\captionof{figure}{A caption}", &p2).is_empty());
+        assert!(classify_source("\\section{\\texorpdfstring{$x$}{x}}", &p2)
+            .1
+            .is_empty());
     }
     #[test]
     fn trusted() {
