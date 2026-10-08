@@ -2075,11 +2075,7 @@ fn run_background_pass_inner(s: &Shared) {
     let manifest = out_dir.join("pic-manifest.json");
     let _ = std::fs::create_dir_all(&out_dir);
     let pics: Vec<crate::piccache::PictureRef> = if s.cfg.picture_cache {
-        let pre_hash = texts
-            .get(&s.cfg.main_file)
-            .and_then(|t| crate::split_preamble(t))
-            .map(|(p, _)| crate::document::hash_str(&crate::document::expand_inputs(p, &texts)))
-            .unwrap_or(0);
+        let pre_hash = crate::piccache::preamble_hash(&texts, &s.cfg.main_file);
         crate::piccache::scan_pictures(&texts, &s.cfg.main_file, pre_hash)
     } else {
         Vec::new()
@@ -2099,11 +2095,12 @@ fn run_background_pass_inner(s: &Shared) {
         if pics.is_empty() {
             return;
         }
-        if let Err(e) = pic_cache
-            .lock()
-            .unwrap()
-            .absorb(&pics, &cap.json.recorded_pics(), &cap.pdf)
-        {
+        if let Err(e) = pic_cache.lock().unwrap().absorb(
+            &pics,
+            &cap.json.recorded_pics(),
+            &cap.json.pic_mismatch,
+            &cap.pdf,
+        ) {
             log::warn!("picture cache: {e:#}");
         }
     };

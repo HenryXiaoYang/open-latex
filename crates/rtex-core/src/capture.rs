@@ -191,6 +191,10 @@ pub struct CaptureJson {
     /// picture cache. An empty Lua table arrives as `[]`, hence the loose type.
     #[serde(default)]
     pub pics: serde_json::Value,
+    /// Keys of cached pictures whose skipped body did not end on the line the source scan
+    /// predicted (the cache forgets them; see `piccache::PicCache::absorb`).
+    #[serde(default)]
+    pub pic_mismatch: Vec<String>,
 }
 
 impl CaptureJson {

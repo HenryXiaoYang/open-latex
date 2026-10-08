@@ -49,8 +49,7 @@ pub struct FileBuf {
 
 /// Block environments after whose `\end` a span ends (the capture closes the unit there); the
 /// session adds theorem-like environments from the preamble through `FileBuf::extra_block_envs`.
-/// Picture environments: blocks when they start a line, inline boxes after text on it.
-pub const PICTURE_ENVS: &[&str] = &["tikzpicture", "circuitikz", "pgfpicture"];
+pub use crate::piccache::PICTURE_ENVS;
 
 pub const BLOCK_ENVS: &[&str] = &[
     "itemize",
@@ -119,7 +118,7 @@ pub fn hash_str(s: &str) -> u64 {
 /// `\input{…}`, `\include{…}` and `\subfile{…}` commands in `text` (outside comments), as
 /// (byte range of the command, project-relative target with a `.tex` extension). Absolute
 /// paths, `..`, and names built from macros are skipped.
-fn find_inputs(text: &str) -> Vec<(Range<usize>, String, &'static str)> {
+pub(crate) fn find_inputs(text: &str) -> Vec<(Range<usize>, String, &'static str)> {
     let b = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -454,18 +453,26 @@ fn segment_body(
             Vec::new()
         };
         let heading = HEADING_CMDS.iter().any(|h| stripped.starts_with(h));
-        // a picture environment after text on its line is an inline box of the paragraph
-        // (the capture keeps one paragraph unit), not a block of its own
-        let inline_picture = begins.iter().any(|b| PICTURE_ENVS.contains(&b.as_str()))
-            && PICTURE_ENVS.iter().any(|e| {
-                stripped
-                    .find(&format!("\\begin{{{e}}}"))
-                    .map(|k| {
-                        let before = stripped[..k].trim();
-                        !before.is_empty() && !before.contains("\\begin{")
-                    })
-                    .unwrap_or(false)
-            });
+        // a picture environment opened while a paragraph is open (text before it in this span
+        // or on its line) is an inline box of that paragraph, as the capture sees it (no unit
+        // of its own); the same rule as eligibility.rs (content_start before the \begin)
+        let inline_picture = begins.iter().any(|b| PICTURE_ENVS.contains(&b.as_str())) && {
+            let k = PICTURE_ENVS
+                .iter()
+                .filter_map(|e| stripped.find(&format!("\\begin{{{e}}}")))
+                .min()
+                .unwrap_or(0);
+            let paragraph_open = env_stack.is_empty()
+                && !split_pending
+                && cur_kind == SpanKind::Body
+                && cur_start.is_some();
+            let mut before = String::new();
+            if paragraph_open {
+                before.push_str(&body[cur_start.unwrap()..*lstart]);
+            }
+            before.push_str(&stripped[..k]);
+            crate::eligibility::has_content(&before)
+        };
         if env_stack.is_empty() {
             if is_blank && trimmed.is_empty() {
                 if let Some(s) = cur_start.take() {
@@ -531,7 +538,8 @@ fn segment_body(
     env_stack.is_empty()
 }
 
-fn strip_comment(line: &str) -> &str {
+/// Strip an unescaped `%` comment from a source line.
+pub fn strip_comment(line: &str) -> &str {
     let b = line.as_bytes();
     let mut i = 0;
     while i < b.len() {

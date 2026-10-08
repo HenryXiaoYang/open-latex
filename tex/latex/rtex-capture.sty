@@ -49,14 +49,16 @@
   \fi}
 \def\rtex@gobblesetup#1{%
   \def\rtex@gobbleenv{#1}%
-  \def\rtex@gobbledone{\rtex@picreplace\expandafter\let\csname end#1\endcsname\relax\end{#1}}%
+  \def\rtex@gobbledone{\directlua{rtex_capture.pic_end()}\rtex@picreplace
+    \expandafter\let\csname end#1\endcsname\relax\end{#1}}%
   \rtex@gobbleto}
 \def\rtex@wrappic#1{%
   \ifcsname #1\endcsname
     \expandafter\let\csname rtex@orig@#1\expandafter\endcsname\csname #1\endcsname
     \expandafter\def\csname #1\endcsname{\directlua{rtex_capture.pic_begin("#1")}}%
   \fi}
-\AddToHook{begindocument/end}{\rtex@wrappic{tikzpicture}\rtex@wrappic{circuitikz}}
+\directlua{token.set_macro("rtex@picenvs", table.concat(rtex_capture.PICTURE_ENVS, ","))}
+\AddToHook{begindocument/end}{\@for\rtex@n:=\rtex@picenvs\do{\expandafter\rtex@wrappic\expandafter{\rtex@n}}}
 % Map image resource indices to files so IMAGE display-list items can name their source.
 \AddToHook{package/graphicx/after}{%
   \AddToHook{cmd/Gin@setfile/after}{%

@@ -1036,9 +1036,9 @@ fn package_macro(name: &str, policy: &Policy) -> Option<Result<(), &'static str>
     first.map(Err)
 }
 
-/// Picture environments: block units (a top-level picture is a unit of its own, blank lines
-/// inside it never split it) whose vocabulary the allow-list does not cover.
-const PICTURE_ENVS: &[&str] = &["tikzpicture", "circuitikz", "pgfpicture"];
+/// Picture environments (`piccache::PICTURE_ENVS`): block units when they start the unit,
+/// inline boxes after text, in either case with vocabulary the allow-list does not cover.
+use crate::piccache::PICTURE_ENVS;
 
 /// Macros whose argument(s) are opaque (URLs, units, verbatim): skipped, not classified.
 /// (name, brace arguments to skip; 0 = delimited like \verb|…|).
@@ -1707,51 +1707,14 @@ pub fn classify_source_with(
     // absorbs), a heading, or a paragraph
     let trimmed = text[setup_prefix(&text).0..].trim();
     let mut shape = UnitShape::Par;
-    let env_start = {
-        let mut k = 0;
-        loop {
-            let rest = trimmed[k..].trim_start();
-            let off = trimmed.len() - rest.len();
-            let mut matched = None;
-            for v in [
-                "\\vspace*",
-                "\\vspace",
-                "\\noindent",
-                "\\newpage",
-                "\\clearpage",
-                "\\pagebreak",
-                "\\smallskip",
-                "\\medskip",
-                "\\bigskip",
-                "\\vfill",
-                "\\centering",
-            ] {
-                if rest.starts_with(v)
-                    && !rest[v.len()..].starts_with(|c: char| c.is_ascii_alphabetic())
-                {
-                    let mut e = v.len();
-                    if rest[e..].starts_with('{') {
-                        if let Some(c) = rest[e..].find('}') {
-                            e += c + 1;
-                        }
-                    }
-                    matched = Some(off + e);
-                    break;
-                }
-            }
-            match matched {
-                Some(e) => k = e,
-                None => break off,
-            }
-        }
-    };
+    let env_start = vertical_prefix_len(trimmed);
     if let Some((name, _)) = env_name(trimmed, env_start, "\\begin") {
         let end = format!("\\end{{{name}}}");
         if trimmed.ends_with(&end) && policy.is_block_env(&name) {
             shape = UnitShape::Env(name);
         }
     } else if trimmed[env_start..].starts_with('\\') {
-        let b = trimmed[env_start..].as_bytes();
+        let b = &trimmed.as_bytes()[env_start..];
         let mut j = 1;
         while j < b.len() && is_letter(b[j]) {
             j += 1;
@@ -1969,7 +1932,9 @@ pub fn classify_source_with(
                         // after it (the capture keeps one unit)
                         if env_depth == 0
                             && shape == UnitShape::Par
-                            && !text[..begin_pos].trim().is_empty()
+                            && !text[content_start(&text).min(begin_pos)..begin_pos]
+                                .trim()
+                                .is_empty()
                         {
                             inline_picture = true;
                         }
@@ -2321,6 +2286,64 @@ pub fn classify_source_with(
         reasons.retain(|r| !is_vocabulary_reason(r));
     }
     (shape, reasons)
+}
+
+/// Length of the vertical material at the start of `s` (`\vspace`, `\noindent`, `\centering`,
+/// page breaks …), which a unit's box absorbs without typesetting anything.
+pub fn vertical_prefix_len(trimmed: &str) -> usize {
+    let mut k = 0;
+    loop {
+        let rest = trimmed[k..].trim_start();
+        let off = trimmed.len() - rest.len();
+        let mut matched = None;
+        for v in [
+            "\\vspace*",
+            "\\vspace",
+            "\\noindent",
+            "\\newpage",
+            "\\clearpage",
+            "\\pagebreak",
+            "\\smallskip",
+            "\\medskip",
+            "\\bigskip",
+            "\\vfill",
+            "\\centering",
+        ] {
+            if rest.starts_with(v)
+                && !rest[v.len()..].starts_with(|c: char| c.is_ascii_alphabetic())
+            {
+                let mut e = v.len();
+                if rest[e..].starts_with('{') {
+                    if let Some(c) = rest[e..].find('}') {
+                        e += c + 1;
+                    }
+                }
+                matched = Some(off + e);
+                break;
+            }
+        }
+        match matched {
+            Some(e) => k = e,
+            None => break off,
+        }
+    }
+}
+
+/// Offset of the first substantive content of a unit's (comment-stripped) text: after setup
+/// statements and vertical material. A block environment starting there is the unit; one
+/// starting after other content is an inline box of a paragraph.
+pub fn content_start(text: &str) -> usize {
+    let (k, _) = setup_prefix(text);
+    let rest = &text[k..];
+    let ws = rest.len() - rest.trim_start().len();
+    k + ws + vertical_prefix_len(rest.trim_start())
+}
+
+/// Does `src` (comments allowed) contain substantive content, i.e. anything a paragraph would
+/// be open for, beyond setup statements and vertical material?
+pub fn has_content(src: &str) -> bool {
+    let text = strip_comments(src);
+    content_start(&text) < text.trim_end().len()
 }
 
 /// Lexical check of a unit's source. Returns the (possibly empty) list of reasons.

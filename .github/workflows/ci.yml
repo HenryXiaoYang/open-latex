@@ -54,7 +54,7 @@ jobs:
             cargo run --release -p rtex-cli -- verify --project fixtures/corpus/${d%%:*} --build build/corpus/${d%%:*} --min-eligible ${d##*:}
           done
       - name: Picture cache (pictures reused across passes must leave units, placements and rendered pages unchanged)
-        run: cargo run --release -p rtex-cli -- verify --project fixtures/corpus/pictures --build build/corpus/pictures --min-eligible 9 --pic-cache --raster
+        run: cargo run --release -p rtex-cli -- verify --project fixtures/corpus/pictures --build build/corpus/pictures --min-eligible 9 --pic-cache --min-cached 9 --raster
       - name: Probe mode (allow-list off, every difference must be caught by the row comparison)
         run: |
           cargo run --release -p rtex-cli -- verify --project fixtures/research/permissive --build build/research/permissive --permissive --min-eligible 28 --expect-differing 2

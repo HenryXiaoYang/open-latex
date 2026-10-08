@@ -42,6 +42,8 @@ pub struct VerifyOpts {
     /// first pass's PDF; units and placements must be identical, and (with `raster`) the two
     /// PDFs must render alike.
     pub pic_cache: bool,
+    /// With `pic_cache`: fail unless at least this many pictures were recorded and reused.
+    pub min_cached: Option<usize>,
 }
 
 #[derive(Serialize, Default)]
@@ -106,6 +108,8 @@ pub struct PicCacheReport {
     pub hits: usize,
     /// Cached picture images the second pass's pages contain.
     pub cached_images: usize,
+    /// Cached pictures whose skipped body did not end where the source scan said.
+    pub mismatched: usize,
     pub units_equal: bool,
     pub placements_equal: bool,
     /// Worst unmatched ink fraction between the two passes' rendered pages (with `raster`).
@@ -664,6 +668,34 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     Ok(report)
 }
 
+/// Copy the aux family (`.aux .toc .lof .lot .out .bbl .bcf`) of a pass directory into another,
+/// subdirectories included (`\include`d chapters write `chapters/one.aux`).
+fn copy_aux_family(root: &Path, dir: &Path, out: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) != Some("pic-cache") {
+                copy_aux_family(root, &path, out)?;
+            }
+            continue;
+        }
+        let keep = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e, "aux" | "toc" | "lof" | "lot" | "out" | "bbl" | "bcf"))
+            .unwrap_or(false);
+        if keep {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let dst = out.join(rel);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&path, dst)?;
+        }
+    }
+    Ok(())
+}
+
 /// Picture cache check: build a cache from the converged capture (`cap`), run one more capture
 /// pass with its manifest, and compare units, placements and (optionally) rendered pages.
 fn pic_cache_check(
@@ -676,12 +708,11 @@ fn pic_cache_check(
     use rtex_core::piccache::{scan_pictures, PicCache};
     let mut rep = PicCacheReport::default();
     let files = rtex_core::document::load_project_files(project, &opts.main)?;
-    let pre_hash = files
-        .get(&opts.main)
-        .and_then(|t| rtex_core::split_preamble(t))
-        .map(|(p, _)| rtex_core::document::hash_str(&rtex_core::document::expand_inputs(p, &files)))
-        .unwrap_or(0);
-    let pics = scan_pictures(&files, &opts.main, pre_hash);
+    let pics = scan_pictures(
+        &files,
+        &opts.main,
+        rtex_core::piccache::preamble_hash(&files, &opts.main),
+    );
     rep.pictures = pics.len();
     rep.cacheable = pics.iter().filter(|p| p.cacheable).count();
     let recorded = cap.json.recorded_pics();
@@ -701,23 +732,14 @@ fn pic_cache_check(
     let out = opts.build.join("piccache");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out)?;
-    for entry in std::fs::read_dir(&cap.out_dir)? {
-        let path = entry?.path();
-        let keep = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| matches!(e, "aux" | "toc" | "lof" | "lot" | "out" | "bbl" | "bcf"))
-            .unwrap_or(false);
-        if keep {
-            std::fs::copy(&path, out.join(path.file_name().unwrap()))?;
-        }
-    }
+    copy_aux_family(&cap.out_dir, &cap.out_dir, &out)?;
     let mut cache = PicCache::open(&out.join("pic-cache"));
-    cache.absorb(&pics, &recorded, &cap.pdf)?;
+    cache.absorb(&pics, &recorded, &[], &cap.pdf)?;
     rep.hits = cache.write_manifest(&pics, &out.join("pic-manifest.json"))?;
     let cached =
         rtex_core::capture::run_capture_with(tl, project, &opts.main, &out, true, unit_envs)?;
     rep.wall_cached_ms = cached.wall.as_millis() as u64;
+    rep.mismatched = cached.json.pic_mismatch.len();
     // units and placements
     let (a, b) = (&cap.json.units, &cached.json.units);
     rep.units_equal = a.len() == b.len()
@@ -774,19 +796,25 @@ fn pic_cache_check(
         }
         rep.raster_unmatched_fraction = Some(worst);
     }
+    // the check is meaningless when nothing was cached: a cacheable document must record
+    // and reuse pictures (at least `min_cached` of them when the caller says how many)
+    let enough = rep.recorded > 0 && rep.recorded >= opts.min_cached.unwrap_or(1);
     rep.pass = rep.units_equal
         && rep.placements_equal
         && cap.json.pages == cached.json.pages
+        && enough
         && rep.hits == rep.recorded
         && rep.cached_images == rep.hits
+        && cached.json.pic_mismatch.is_empty()
         && rep.raster_unmatched_fraction.unwrap_or(0.0) <= 0.001;
     println!(
-        "picture cache: {} pictures, {} cacheable, {} recorded by the first pass, {} taken from it by the second ({} cached images on its pages); units equal {}, placements equal {}{}; pass {:.1}s -> {:.1}s; pass={}",
+        "picture cache: {} pictures, {} cacheable, {} recorded by the first pass, {} taken from it by the second ({} cached images on its pages, {} mismatched); units equal {}, placements equal {}{}; pass {:.1}s -> {:.1}s; pass={}",
         rep.pictures,
         rep.cacheable,
         rep.recorded,
         rep.hits,
         rep.cached_images,
+        rep.mismatched,
         rep.units_equal,
         rep.placements_equal,
         match rep.raster_unmatched_fraction {

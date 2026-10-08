@@ -79,6 +79,9 @@ enum Cmd {
         /// PDF; units, placements (and with --raster the rendered pages) must be identical.
         #[arg(long)]
         pic_cache: bool,
+        /// With --pic-cache: fail unless at least this many pictures were recorded and reused.
+        #[arg(long)]
+        min_cached: Option<usize>,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -217,6 +220,7 @@ fn main() -> anyhow::Result<()> {
             max_differing,
             expect_differing,
             pic_cache,
+            min_cached,
         } => {
             let r = verify::run(verify::VerifyOpts {
                 project,
@@ -233,6 +237,7 @@ fn main() -> anyhow::Result<()> {
                 max_differing,
                 expect_differing,
                 pic_cache,
+                min_cached,
             })?;
             if !(r.layer1_pass
                 && r.layer2_pass

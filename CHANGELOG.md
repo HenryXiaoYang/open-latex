@@ -4,7 +4,10 @@
 
 - **Picture cache**: background passes reuse unchanged `tikzpicture`/`circuitikz` drawings from
   an earlier pass's PDF (`SessionConfig.picture_cache`, default on; `rtex verify --pic-cache`;
-  `fixtures/corpus/pictures`). A 111-page document with 120 pictures: 45 s → 24 s per pass.
+  `fixtures/corpus/pictures`). Pictures are keyed by `file:line` with a start- and end-line check,
+  hashed with the definitions before them in `\input` order (whole statements), compared against
+  the font, color and width in force, and taken from per-page extracts of the pass PDF. A 111-page
+  document with 120 pictures: 45 s → 18 s per pass.
   Inline pictures stay in their paragraph (segmenter and eligibility); setup statements before a
   block environment no longer hide the environment's shape; the verification rasterizer rounds
   page sizes like MuPDF.

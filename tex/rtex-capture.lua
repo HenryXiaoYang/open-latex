@@ -249,8 +249,11 @@ end
 
 -- env/<block>/begin and /after hooks (inside and after the environment group).
 local DEBUG_ENV = os.getenv("RTEX_DEBUG_ENV")
-local pic_close -- defined with the picture cache below
-local PICTURE_ENVS = { tikzpicture = true, circuitikz = true }
+-- Picture environments (the same list as piccache::PICTURE_ENVS; rtex-capture.sty wraps
+-- their begin macros from it).
+C.PICTURE_ENVS = { "tikzpicture", "circuitikz", "pgfpicture" }
+local PICTURE_ENVS = {}
+for _, e in ipairs(C.PICTURE_ENVS) do PICTURE_ENVS[e] = true end
 function C.envbegin(name)
   local cur = C.cur
   -- the picture wrapper (pic_begin) acts only for \begin{<env>}, not for a direct call of
@@ -265,7 +268,6 @@ function C.envbegin(name)
 end
 function C.envafter(name)
   if DEBUG_ENV then texio.write_nl("RTEXENV after " .. name .. " line " .. tex.inputlineno .. " depth " .. C.env_depth .. " nest " .. tex.nest.ptr .. " cur " .. tostring(C.cur and C.cur.uid)) end
-  pic_close(name)
   C.env_depth = C.env_depth - 1
   if C.env_depth < 0 then C.env_depth = 0 end
   local cur = C.cur
@@ -393,20 +395,28 @@ local function is_insert(seq, unit)
 end
 
 -- Picture cache ---------------------------------------------------------------------------------
--- A pass records where every picture environment (tikzpicture, circuitikz) landed on its page.
--- The next pass gets a manifest ($RTEX_CAPTURE_DIR/pic-manifest.json, written by the session:
--- "file:line" -> {pdf, page, bbox, w, h, d}) for pictures whose source and surroundings are
--- unchanged, and replaces each of them with that region of the earlier pass's PDF: an image of
--- exactly the picture's size, lowered by its depth. Everything else on the page is typeset as
--- usual, so placements are identical and the pass skips the picture's TikZ work.
+-- A pass records where every picture environment (tikzpicture, circuitikz, pgfpicture) landed
+-- on its page. The next pass gets a manifest ($RTEX_CAPTURE_DIR/pic-manifest.json, written by
+-- the session: "file:line" -> {pdf, page, bbox, w, h, d, state, end_line}) for pictures whose
+-- source and surroundings are unchanged, and replaces each of them with that region of the
+-- earlier pass's PDF: an image of exactly the picture's size, lowered by its depth. Everything
+-- else on the page is typeset as usual, so placements are identical and the pass skips the
+-- picture's TikZ work.
+--
+-- A drawn picture is tagged through attribute inheritance: the attribute is set while the
+-- environment runs, so every node it makes (its box, pgfplots' extra boxes) carries it, and
+-- nothing made before it (an \item label the paragraph's \everypar places) does; rtex-dl.lua
+-- records the union of the outermost tagged boxes.
 C.attr_pic = luatexbase.new_attribute("rtex_pic")
 C.pic_id = 0
-C.pic_keys = {}       -- id -> { key, env }
-C.pics = {}           -- key -> { page, x, y, w, h, d, page_height } (drawn this pass)
+C.pic_keys = {}       -- id -> { key, env, state }
+C.pics = {}           -- key -> { page, x, y, w, h, d, page_height, state } (drawn this pass)
 C.pic_bad = {}        -- keys whose output spans lines or pages
+C.pic_mismatch = {}   -- keys whose skipped body did not end on the predicted line
 C.cache_images = {}   -- image resource index -> true (cached pictures)
 C.manifest = nil
 C.manifest_used = {}
+C.src_lines = {}      -- file name -> its lines (for the key check)
 local function pic_key()
   local f = status.filename or ""
   f = f:gsub("^%./", "")
@@ -437,6 +447,30 @@ local function load_manifest()
   if ok and type(m) == "table" then C.manifest = m end
   return C.manifest
 end
+-- The source line the begin macro executes on must start with \begin{env}: that is the line
+-- the session keyed the picture by. A picture inside a macro argument executes on the
+-- argument's last line, whose text says so (and it is drawn).
+local function line_begins_env(env)
+  local f = status.filename
+  if not f then return false end
+  local lines = C.src_lines[f]
+  if lines == nil then
+    lines = false
+    local fh = io.open(f, "r")
+    if fh then
+      lines = {}
+      for l in fh:lines() do lines[#lines + 1] = l end
+      fh:close()
+    end
+    C.src_lines[f] = lines
+  end
+  if not lines then return false end
+  local l = lines[tex.inputlineno]
+  if not l then return false end
+  l = l:gsub("^%s+", "")
+  local marker = "\\begin{" .. env .. "}"
+  return l:sub(1, #marker) == marker
+end
 -- Called by the wrapper of the environment's begin macro (rtex-capture.sty), inside the
 -- environment's group. Prints either the original begin macro (picture tagged for recording)
 -- or the gobbling macro that replaces the body with the cached image.
@@ -450,13 +484,12 @@ function C.pic_begin(env)
   C.pic_id = C.pic_id + 1
   local id = C.pic_id
   local key = pic_key()
-  local level = tex.currentgrouplevel
   local state = pic_state()
   C.pic_keys[id] = { key = key, env = env, state = state }
   local m = load_manifest()
   local e = m and m[key]
   if DEBUG_ENV then texio.write_nl("RTEXPIC begin " .. key .. " state " .. state .. " manifest " .. tostring(e and e.state)) end
-  if e and not C.manifest_used[key] and e.env == env and (e.state or "") == state then
+  if e and not C.manifest_used[key] and e.env == env and (e.state or "") == state and line_begins_env(env) then
     local ok, im = pcall(function()
       local im = img.new{ filename = e.pdf, page = e.page, bbox = { e.bbox[1], e.bbox[2], e.bbox[3], e.bbox[4] } }
       return img.scan(im)
@@ -464,54 +497,27 @@ function C.pic_begin(env)
     if ok and im then
       C.manifest_used[key] = true
       C.pending_pic = { img = im, entry = e }
-      C.pic_open[#C.pic_open + 1] = { id = id, key = key, env = env, level = level, cached = true }
+      C.pic_hit = { key = key, end_line = e.end_line }
       token.set_macro("rtex@picdepth", tostring(e.d) .. "sp")
       tex.sprint(C.cct, "\\rtex@gobblesetup{" .. env .. "}")
       return
     end
   end
-  -- drawn: remember where the environment's output will be appended, so envafter can tag it
-  -- (pgfplots appends the axis as a box of its own next to the picture's: the environment's
-  -- output is every node it added, not one box)
-  local ptr = tex.nest.ptr
-  C.pic_open[#C.pic_open + 1] = { id = id, key = key, env = env, level = level, nest = ptr, tail = tex.nest[ptr].tail }
+  -- drawn: every node the environment makes carries the picture's id (restored with the
+  -- environment's group)
+  tex.setattribute(C.attr_pic, id)
   tex.sprint(C.cct, "\\csname rtex@orig@" .. env .. "\\endcsname")
 end
-C.pic_open = {}
-local HLIST_INDENT = 3
--- Tag the top-level boxes the picture environment appended (called from envafter).
-pic_close = function(name)
-  -- env/<env>/after runs one group level below the one pic_begin saw. Entries above that
-  -- level belong to pictures that ended without their environment's end (pgfplots' inner
-  -- picture, ended by \endtikzpicture inside the axis): they are part of this picture.
-  local level = tex.currentgrouplevel + 1
-  local top = C.pic_open[#C.pic_open]
-  while top and top.level > level do
-    C.pic_open[#C.pic_open] = nil
-    top = C.pic_open[#C.pic_open]
-  end
-  if not top or top.env ~= name or top.level ~= level then return end
-  C.pic_open[#C.pic_open] = nil
-  if top.cached then return end
-  local ptr = tex.nest.ptr
-  local first
-  if ptr == top.nest then
-    first = top.tail and node.next(top.tail) or nil
-    if not first and not top.tail then first = node.next(tex.nest[ptr].head) end
-  elseif ptr > top.nest then
-    -- the picture started a paragraph: everything in it (the local_par node and the indent
-    -- box come first and are skipped below)
-    first = node.next(tex.nest[ptr].head)
-  end
-  local n = first
-  local HLIST = node.id("hlist")
-  while n do
-    local id = n.id
-    if DEBUG_ENV then texio.write_nl("RTEXPIC " .. top.key .. " node " .. node.type(id) .. " sub " .. tostring(n.subtype) .. " wd " .. tostring(n.width)) end
-    if (id == HLIST and n.subtype ~= HLIST_INDENT) or id == node.id("vlist") or id == node.id("rule") then
-      node.set_attribute(n, C.attr_pic, top.id)
-    end
-    n = node.next(n)
+-- After the body of a cached picture was skipped (rtex-capture.sty): it must have ended on
+-- the line the session's scan found its \end on; otherwise the skipped text was not the
+-- picture the cache holds, and the session forgets the entry (the next pass draws it).
+function C.pic_end()
+  local h = C.pic_hit
+  C.pic_hit = nil
+  if h and h.end_line and tex.inputlineno ~= h.end_line then
+    C.pic_mismatch[#C.pic_mismatch + 1] = h.key
+    texio.write_nl("rtex-capture: cached picture " .. h.key .. " ended on line " .. tex.inputlineno ..
+                   ", expected " .. tostring(h.end_line) .. " (forgotten)")
   end
 end
 -- Writes the cached picture's image node (inside \hbox{...} of \rtex@picreplace).
@@ -580,6 +586,7 @@ function C.finish()
   end
   local out = {
     version = 2, jobname = C.jobname, pages = C.page, images = C.images, pics = C.pics,
+    pic_mismatch = C.pic_mismatch,
     engine = status.banner, luatex_version = status.luatex_version,
     counters = counter_names,
     paragraphs = paras, units = C.units,

@@ -19,6 +19,7 @@ log.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 regex.workspace = true
+lopdf.workspace = true
 sha2.workspace = true
 hex.workspace = true
 nix.workspace = true

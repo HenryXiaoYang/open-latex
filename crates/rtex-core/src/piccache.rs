@@ -6,17 +6,21 @@
 //!
 //! What identifies a picture: its environment's text, plus everything that can change its
 //! rendering without changing its text: the preamble, and the definitions and settings made in
-//! the document body before it (`\def`, `\newcommand`, `\tikzset`, `\definecolor` …).
-//! Pictures that depend on more than that (labels, references, counters, external files,
-//! `remember picture`/`overlay`, nested pictures) are never cached.
+//! the document body before it (`\def`, `\newcommand`, `\tikzset`, `\definecolor` …), in the
+//! order TeX reads them (`\input` chains followed). The font, color and width in force at the
+//! picture are recorded by the capture and compared at use (`RecordedPic::state`). Pictures
+//! that depend on more than that (labels, references, counters, external files, data files,
+//! `remember picture`/`overlay`, group-escaping assignments) are never cached.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Picture environments the cache handles (each has its own `\end{…}` delimiter).
-pub const PICTURE_ENVS: &[&str] = &["tikzpicture", "circuitikz"];
+/// Picture environments: units of their own when they start a line, inline boxes after text;
+/// the cache handles each (every one has its own `\end{…}` delimiter). The capture's list
+/// (`rtex_capture.PICTURE_ENVS`) names the same environments.
+pub const PICTURE_ENVS: &[&str] = &["tikzpicture", "circuitikz", "pgfpicture"];
 
 /// A picture environment found in the document sources.
 #[derive(Debug, Clone)]
@@ -26,6 +30,8 @@ pub struct PictureRef {
     pub env: String,
     pub hash: u64,
     pub cacheable: bool,
+    /// 1-based line of its `\end{…}` (the capture checks it after skipping the body).
+    pub end_line: usize,
 }
 
 /// Where a pass drew a picture (`pics` in the capture JSON).
@@ -121,6 +127,7 @@ impl PicCache {
                     serde_json::json!({
                         "env": e.env,
                         "state": e.state,
+                        "end_line": p.end_line,
                         "pdf": self.dir.join(&e.pdf).to_string_lossy(),
                         "page": e.page, "bbox": e.bbox, "w": e.w, "h": e.h, "d": e.d,
                     }),
@@ -137,70 +144,96 @@ impl PicCache {
         Ok(m.len())
     }
 
-    /// After a pass: remember every current picture the pass drew (its region of `pass_pdf`,
-    /// copied into the cache), evict what no picture wanted for a while, drop PDFs nothing
-    /// references. Returns the number of new entries.
+    /// After a pass: remember every current picture the pass drew (its page of `pass_pdf`,
+    /// extracted into the cache), forget the pictures the pass reported as mismatched
+    /// (`stale_keys`: a cached body that did not end where the source scan said), evict what
+    /// no picture wanted for a while, drop PDFs nothing references. Returns the number of new
+    /// entries.
     pub fn absorb(
         &mut self,
         pics: &[PictureRef],
         recorded: &BTreeMap<String, RecordedPic>,
+        stale_keys: &[String],
         pass_pdf: &Path,
     ) -> Result<usize> {
         let serial = self.index.serial;
-        let mut copied: Option<String> = None;
-        let mut added = 0;
+        for k in stale_keys {
+            if let Some(p) = pics.iter().find(|p| &p.key == k) {
+                self.index.entries.remove(&p.hash.to_string());
+            }
+        }
+        let mut new: Vec<(&PictureRef, &RecordedPic)> = Vec::new();
         for p in pics.iter().filter(|p| p.cacheable) {
-            let hk = p.hash.to_string();
             let Some(r) = recorded.get(&p.key) else {
                 continue;
             };
+            if r.env != p.env || r.w <= 0 || r.h + r.d <= 0 {
+                continue;
+            }
             // an entry drawn under another state (font, color, width) is replaced
             if self
                 .index
                 .entries
-                .get(&hk)
+                .get(&p.hash.to_string())
                 .map(|e| e.state == r.state)
                 .unwrap_or(false)
             {
                 continue;
             }
-            if r.env != p.env || r.w <= 0 || r.h + r.d <= 0 {
-                continue;
+            new.push((p, r));
+        }
+        let added = new.len();
+        if !new.is_empty() {
+            std::fs::create_dir_all(&self.dir)?;
+            let name = format!("p{serial}.pdf");
+            // only the pages that carry new pictures (a 100-page PDF per edited picture
+            // would fill the disk); page numbers are remapped onto the extract
+            let pages: Vec<i64> = new
+                .iter()
+                .map(|(_, r)| r.page)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let remap: BTreeMap<i64, i64> =
+                match extract_pages(pass_pdf, &pages, &self.dir.join(&name)) {
+                    Ok(()) => pages
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| (*p, i as i64 + 1))
+                        .collect(),
+                    Err(e) => {
+                        log::debug!(
+                            "picture cache: page extraction failed ({e:#}), copying the pass PDF"
+                        );
+                        std::fs::copy(pass_pdf, self.dir.join(&name)).with_context(|| {
+                            format!("copying {} into the picture cache", pass_pdf.display())
+                        })?;
+                        pages.iter().map(|p| (*p, *p)).collect()
+                    }
+                };
+            for (p, r) in new {
+                // PDF user space: x unchanged (sp of a bp == sp), y measured from the page bottom
+                let bbox = [
+                    r.x,
+                    r.page_height - (r.y + r.d),
+                    r.x + r.w,
+                    r.page_height - (r.y - r.h),
+                ];
+                self.index.entries.insert(
+                    p.hash.to_string(),
+                    CacheEntry {
+                        env: p.env.clone(),
+                        state: r.state.clone(),
+                        pdf: name.clone(),
+                        page: remap[&r.page],
+                        bbox,
+                        w: r.w,
+                        h: r.h,
+                        d: r.d,
+                        last_used: serial,
+                    },
+                );
             }
-            let pdf = match &copied {
-                Some(name) => name.clone(),
-                None => {
-                    std::fs::create_dir_all(&self.dir)?;
-                    let name = format!("p{serial}.pdf");
-                    std::fs::copy(pass_pdf, self.dir.join(&name)).with_context(|| {
-                        format!("copying {} into the picture cache", pass_pdf.display())
-                    })?;
-                    copied = Some(name.clone());
-                    name
-                }
-            };
-            // PDF user space: x unchanged (sp of a bp == sp), y measured from the page bottom
-            let bbox = [
-                r.x,
-                r.page_height - (r.y + r.d),
-                r.x + r.w,
-                r.page_height - (r.y - r.h),
-            ];
-            self.index.entries.insert(
-                hk,
-                CacheEntry {
-                    env: p.env.clone(),
-                    state: r.state.clone(),
-                    pdf,
-                    page: r.page,
-                    bbox,
-                    w: r.w,
-                    h: r.h,
-                    d: r.d,
-                    last_used: serial,
-                },
-            );
-            added += 1;
         }
         // eviction: entries no current picture wants for KEEP_PASSES passes
         self.index
@@ -229,74 +262,175 @@ impl PicCache {
     }
 }
 
-/// Text that makes a picture depend on more than its own source and the definitions before it.
-const UNCACHEABLE: &[&str] = &[
-    "\\label",
-    "\\ref",
-    "\\pageref",
-    "\\eqref",
-    "\\cite",
-    "remember picture",
-    "overlay",
-    "\\verb",
-    "\\input",
-    "\\include",
-    "\\includegraphics",
-    "\\pgfplotstableread",
-    "table {",
-    "table{",
-    "\\the",
-    "\\value",
-    "\\arabic",
-    "\\roman",
-    "\\alph",
-    "\\today",
-    "\\footnote",
-    "\\pgfmathrandom",
-    "\\random",
-    "\\pgfmathsetseed",
-    "\\pdfsavepos",
-    "\\savepos",
-    "\\write",
-    "\\newcounter",
-    "\\stepcounter",
-    "\\refstepcounter",
-    "\\addtocounter",
-    "\\setcounter",
-    "\\index",
-    "\\marginpar",
+/// Write the given pages (1-based, ascending) of `src` as `dst`, in that order.
+fn extract_pages(src: &Path, pages: &[i64], dst: &Path) -> Result<()> {
+    let mut doc = lopdf::Document::load(src).context("loading the pass PDF")?;
+    let all: Vec<u32> = doc.get_pages().keys().copied().collect();
+    let keep: BTreeSet<u32> = pages.iter().map(|p| *p as u32).collect();
+    if !keep.iter().all(|p| all.contains(p)) {
+        anyhow::bail!("page out of range");
+    }
+    let delete: Vec<u32> = all.into_iter().filter(|p| !keep.contains(p)).collect();
+    doc.delete_pages(&delete);
+    doc.prune_objects();
+    doc.renumber_objects();
+    doc.save(dst).context("writing the page extract")?;
+    Ok(())
+}
+
+/// Control words that make a picture depend on more than its own source and the definitions
+/// before it (matched as whole words: `\ref`, not `\reflectbox`).
+const UNCACHEABLE_WORDS: &[&str] = &[
+    // the aux file
+    "label",
+    "ref",
+    "pageref",
+    "eqref",
+    "autoref",
+    "cref",
+    "Cref",
+    "vref",
+    "nameref",
+    // counters, dates
+    "the",
+    "value",
+    "arabic",
+    "roman",
+    "Roman",
+    "alph",
+    "Alph",
+    "fnsymbol",
+    "today",
+    "newcounter",
+    "stepcounter",
+    "refstepcounter",
+    "addtocounter",
+    "setcounter",
+    // other files, verbatim, notes
+    "verb",
+    "input",
+    "include",
+    "footnote",
+    "index",
+    "marginpar",
+    "write",
+    "immediate",
+    // randomness, positions
+    "pgfmathrandom",
+    "random",
+    "pgfmathsetseed",
+    "pdfsavepos",
+    "savepos",
+    // assignments and boxes that escape the picture's group: a skipped body must have no
+    // effect on what follows it
+    "global",
+    "xdef",
+    "gdef",
+    "savebox",
+    "sbox",
+    "newsavebox",
+    "usebox",
+    "setbox",
 ];
 
+/// Control-word prefixes (`\citep`, `\includegraphics*`, `\pgfplotstableread` …).
+const UNCACHEABLE_PREFIXES: &[&str] = &["cite", "includegraphics", "pgfplotstable", "footcite"];
+
+/// Plain text.
+const UNCACHEABLE_TEXT: &[&str] = &["remember picture", "overlay"];
+
 /// Body-level statements whose effect a later picture may depend on (hashed into every
-/// picture after them).
+/// picture after them, the whole statement when it spans lines).
 const PRELUDE_HEADS: &[&str] = &[
-    "\\def",
-    "\\edef",
-    "\\gdef",
-    "\\let",
-    "\\newcommand",
-    "\\renewcommand",
-    "\\providecommand",
-    "\\newenvironment",
-    "\\renewenvironment",
-    "\\tikzset",
-    "\\tikzstyle",
-    "\\pgfplotsset",
-    "\\pgfkeys",
-    "\\definecolor",
-    "\\colorlet",
-    "\\setlength",
-    "\\newlength",
-    "\\pgfmathsetmacro",
-    "\\pgfmathsetlengthmacro",
-    "\\pgfdeclare",
-    "\\ctikzset",
-    "\\usetikzlibrary",
-    "\\usepgfplotslibrary",
-    "\\newcolumntype",
-    "\\linespread",
-    "\\selectfont",
+    "def",
+    "edef",
+    "gdef",
+    "xdef",
+    "let",
+    "newcommand",
+    "renewcommand",
+    "providecommand",
+    "newenvironment",
+    "renewenvironment",
+    "tikzset",
+    "tikzstyle",
+    "pgfplotsset",
+    "pgfkeys",
+    "definecolor",
+    "colorlet",
+    "setlength",
+    "newlength",
+    "pgfmathsetmacro",
+    "pgfmathsetlengthmacro",
+    "pgfdeclare",
+    "ctikzset",
+    "usetikzlibrary",
+    "usepgfplotslibrary",
+    "newcolumntype",
+    "linespread",
+    "selectfont",
+    "pgfdeclarelayer",
+    "pgfsetlayers",
 ];
+
+fn is_letter(b: u8) -> bool {
+    b.is_ascii_alphabetic()
+}
+
+/// Does `text` contain the control word `\name` (not as a prefix of a longer word)?
+fn has_cs(text: &str, name: &str) -> bool {
+    let b = text.as_bytes();
+    let mut from = 0;
+    while let Some(k) = text[from..].find('\\') {
+        let start = from + k + 1;
+        let end = start + name.len();
+        if text[start..].starts_with(name) && (end >= b.len() || !is_letter(b[end])) {
+            return true;
+        }
+        from = start;
+    }
+    false
+}
+
+/// Does `text` contain a control word starting with `\name`?
+fn has_cs_prefix(text: &str, name: &str) -> bool {
+    text.contains(&format!("\\{name}"))
+}
+
+/// Does the word `word` (letters around it excluded) appear followed by `[` or `{`, like the
+/// pgfplots data sources `\addplot table[x=a] {f.dat}` and `\addplot file {f.dat}`?
+fn word_before_arg(text: &str, word: &str) -> bool {
+    let b = text.as_bytes();
+    let mut from = 0;
+    while let Some(k) = text[from..].find(word) {
+        let start = from + k;
+        let end = start + word.len();
+        let left_ok = start == 0 || !is_letter(b[start - 1]);
+        let mut j = end;
+        while j < b.len() && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n') {
+            j += 1;
+        }
+        if left_ok
+            && j < b.len()
+            && (b[j] == b'[' || b[j] == b'{')
+            && (end == b.len() || !is_letter(b[end]))
+        {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Does a picture with this (comment-stripped) text depend on more than its source and the
+/// definitions before it?
+pub fn uncacheable(text: &str) -> bool {
+    UNCACHEABLE_WORDS.iter().any(|w| has_cs(text, w))
+        || UNCACHEABLE_PREFIXES.iter().any(|w| has_cs_prefix(text, w))
+        || UNCACHEABLE_TEXT.iter().any(|t| text.contains(t))
+        || word_before_arg(text, "table")
+        || word_before_arg(text, "file")
+}
 
 fn hash_bytes(h: &mut std::collections::hash_map::DefaultHasher, s: &str) {
     use std::hash::Hasher;
@@ -304,21 +438,37 @@ fn hash_bytes(h: &mut std::collections::hash_map::DefaultHasher, s: &str) {
     h.write_u8(0);
 }
 
-/// Strip an unescaped `%` comment from a source line.
-fn uncomment(line: &str) -> &str {
-    let b = line.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'\\' {
-            i += 2;
-            continue;
+/// Hash of the preamble (with its `\input`s expanded) for the picture hashes: every picture
+/// depends on it.
+pub fn preamble_hash(texts: &BTreeMap<String, String>, main: &str) -> u64 {
+    texts
+        .get(main)
+        .and_then(|t| crate::split_preamble(t))
+        .map(|(p, _)| crate::document::hash_str(&crate::document::expand_inputs(p, texts)))
+        .unwrap_or(0)
+}
+
+/// Number of lines, from `lines[0]`, a statement spans: until its braces balance (a `\tikzset{`
+/// block over several lines). At least 1, at most 64.
+fn statement_lines(lines: &[&str]) -> usize {
+    let mut depth = 0i32;
+    for (n, line) in lines.iter().enumerate().take(64) {
+        let b = line.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 1,
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
         }
-        if b[i] == b'%' {
-            return &line[..i];
+        if depth <= 0 {
+            return n + 1;
         }
-        i += 1;
     }
-    line
+    lines.len().clamp(1, 64)
 }
 
 /// Every picture environment in the project's body text, with its hash (preamble hash, the
@@ -328,100 +478,139 @@ pub fn scan_pictures(
     main: &str,
     preamble_hash: u64,
 ) -> Vec<PictureRef> {
+    use crate::document::strip_comment;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
-    let mut out = Vec::new();
-    let has_remember = texts.values().any(|t| t.contains("remember picture"));
-    // definitions in document order: the main file's body, then the other files
-    let mut order: Vec<(&String, &String)> = Vec::new();
-    if let Some((k, t)) = texts.get_key_value(main) {
-        order.push((k, t));
+    let body_start = |name: &str| -> usize {
+        if name != main {
+            return 0;
+        }
+        texts[name]
+            .lines()
+            .position(|l| l.contains("\\begin{document}"))
+            .map(|k| k + 1)
+            .unwrap_or(0)
+    };
+    // `remember picture` anywhere in the body (comments aside) disables the cache: such
+    // pictures place material relative to others
+    let has_remember = texts.iter().any(|(name, text)| {
+        text.lines()
+            .skip(body_start(name))
+            .any(|l| strip_comment(l).contains("remember picture"))
+    });
+    struct Walker<'a> {
+        texts: &'a BTreeMap<String, String>,
+        prelude: DefaultHasher,
+        out: Vec<PictureRef>,
+        has_remember: bool,
+        stack: Vec<String>,
     }
-    for (n, t) in texts {
-        if n != main {
-            order.push((n, t));
+    impl Walker<'_> {
+        fn walk(&mut self, name: &str, start: usize) {
+            if self.stack.len() > 8 || self.stack.iter().any(|s| s == name) {
+                return;
+            }
+            self.stack.push(name.to_string());
+            let text = &self.texts[name];
+            let lines: Vec<&str> = text.lines().collect();
+            let mut i = start;
+            while i < lines.len() {
+                let line = strip_comment(lines[i]);
+                let trimmed = line.trim_start();
+                let opened = PICTURE_ENVS
+                    .iter()
+                    .find(|e| trimmed.contains(&format!("\\begin{{{e}}}")));
+                if let Some(env) = opened {
+                    let begin_marker = format!("\\begin{{{env}}}");
+                    let end_marker = format!("\\end{{{env}}}");
+                    let start = i;
+                    let mut depth = 0i32;
+                    let mut end = None;
+                    let mut j = i;
+                    while j < lines.len() {
+                        let l = strip_comment(lines[j]);
+                        depth += l.matches(&begin_marker).count() as i32;
+                        depth -= l.matches(&end_marker).count() as i32;
+                        if depth <= 0 {
+                            end = Some(j);
+                            break;
+                        }
+                        j += 1;
+                    }
+                    let Some(end) = end else { break };
+                    let body: Vec<&str> = lines[start..=end]
+                        .iter()
+                        .map(|l| strip_comment(l))
+                        .collect();
+                    let text_all = body.join("\n");
+                    // the capture keys a picture by the line its \begin executes on, which is
+                    // this line only when nothing precedes the \begin on it (a macro argument
+                    // closing here would execute its pictures with this line number)
+                    let cacheable = !self.has_remember
+                        && trimmed.starts_with(&begin_marker)
+                        && text_all.matches(&begin_marker).count() == 1
+                        && !line.contains("\\end{")
+                        && !uncacheable(&text_all);
+                    let mut h = self.prelude.clone();
+                    hash_bytes(&mut h, &text_all);
+                    self.out.push(PictureRef {
+                        key: format!("{}:{}", name.trim_start_matches("./"), start + 1),
+                        env: env.to_string(),
+                        hash: h.finish(),
+                        cacheable,
+                        end_line: end + 1,
+                    });
+                    i = end + 1;
+                    continue;
+                }
+                // files read here come before everything after this line
+                for (_, target, _) in crate::document::find_inputs(line) {
+                    if self.texts.contains_key(&target) {
+                        self.walk(&target, 0);
+                    }
+                }
+                if PRELUDE_HEADS.iter().any(|h| has_cs(line, h)) {
+                    let n = statement_lines(&lines[i..]);
+                    for l in &lines[i..i + n] {
+                        hash_bytes(&mut self.prelude, strip_comment(l).trim());
+                    }
+                    i += n;
+                    continue;
+                }
+                i += 1;
+            }
+            self.stack.pop();
         }
     }
     let mut prelude = DefaultHasher::new();
     prelude.write_u64(preamble_hash);
-    for (name, text) in order {
-        let lines: Vec<&str> = text.lines().collect();
-        let mut i = 0;
-        // skip the preamble of the main file
-        if name == main {
-            if let Some(k) = lines.iter().position(|l| l.contains("\\begin{document}")) {
-                i = k + 1;
-            }
-        }
-        while i < lines.len() {
-            let line = uncomment(lines[i]);
-            let trimmed = line.trim_start();
-            let mut opened: Option<&str> = None;
-            for env in PICTURE_ENVS {
-                if trimmed.contains(&format!("\\begin{{{env}}}")) {
-                    opened = Some(env);
-                    break;
-                }
-            }
-            if let Some(env) = opened {
-                let begin_marker = format!("\\begin{{{env}}}");
-                let end_marker = format!("\\end{{{env}}}");
-                let start = i;
-                let mut depth = 0i32;
-                let mut end = None;
-                let mut j = i;
-                while j < lines.len() {
-                    let l = uncomment(lines[j]);
-                    depth += l.matches(&begin_marker).count() as i32;
-                    depth -= l.matches(&end_marker).count() as i32;
-                    if depth <= 0 {
-                        end = Some(j);
-                        break;
-                    }
-                    j += 1;
-                }
-                let Some(end) = end else { break };
-                let body: Vec<&str> = lines[start..=end].iter().map(|l| uncomment(l)).collect();
-                let text_all = body.join("\n");
-                let mut cacheable = !has_remember
-                    && text_all.matches(&begin_marker).count() == 1
-                    && !UNCACHEABLE.iter().any(|u| text_all.contains(u))
-                    && !lines[start].contains("\\end{"); // begin and end on one line with text around: keep simple
-                                                         // another picture starting on the same line: keys would collide
-                if uncomment(lines[start]).matches("\\begin{").count() > 1 {
-                    cacheable = false;
-                }
-                let mut h = prelude.clone();
-                hash_bytes(&mut h, &text_all);
-                let key = format!("{}:{}", name.trim_start_matches("./"), start + 1);
-                out.push(PictureRef {
-                    key,
-                    env: env.to_string(),
-                    hash: h.finish(),
-                    cacheable,
-                });
-                i = end + 1;
-                continue;
-            }
-            if PRELUDE_HEADS.iter().any(|h| trimmed.starts_with(h)) {
-                hash_bytes(&mut prelude, trimmed);
-            }
-            i += 1;
-        }
+    let mut w = Walker {
+        texts,
+        prelude,
+        out: Vec::new(),
+        has_remember,
+        stack: Vec::new(),
+    };
+    if texts.contains_key(main) {
+        w.walk(main, body_start(main));
     }
-    out
+    w.out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn texts_of(main: &str) -> BTreeMap<String, String> {
+        let mut t = BTreeMap::new();
+        t.insert("main.tex".to_string(), main.to_string());
+        t
+    }
+
     #[test]
     fn scan_and_hash() {
-        let mut texts = BTreeMap::new();
-        texts.insert(
-            "main.tex".to_string(),
-            "\\documentclass{article}\n\\begin{document}\n\\def\\H{4}\nText.\n\\begin{tikzpicture}\n  \\draw (0,0) -- (\\H,1);\n\\end{tikzpicture}\n\n\\begin{tikzpicture}[remember picture]\n\\end{tikzpicture}\n\\begin{tikzpicture}\n\\node {\\ref{x}};\n\\end{tikzpicture}\n\\end{document}\n".to_string(),
+        let mut texts = texts_of(
+            "\\documentclass{article}\n\\begin{document}\n\\def\\H{4}\nText.\n\\begin{tikzpicture}\n  \\draw (0,0) -- (\\H,1);\n\\end{tikzpicture}\n\n\\begin{tikzpicture}[remember picture]\n\\end{tikzpicture}\n\\begin{tikzpicture}\n\\node {\\ref{x}};\n\\end{tikzpicture}\n\\end{document}\n",
         );
         let pics = scan_pictures(&texts, "main.tex", 1);
         assert_eq!(pics.len(), 3);
@@ -433,6 +622,7 @@ mod tests {
         *t = t.replace("[remember picture]", "");
         let pics = scan_pictures(&texts, "main.tex", 1);
         assert_eq!(pics[0].key, "main.tex:5");
+        assert_eq!(pics[0].end_line, 7);
         assert!(pics[0].cacheable && pics[1].cacheable && !pics[2].cacheable);
         let h0 = pics[0].hash;
         // a definition before the picture changes its hash; text after it does not
@@ -444,8 +634,75 @@ mod tests {
         *t = t.replace("Text.", "Other text.");
         let pics3 = scan_pictures(&texts, "main.tex", 1);
         assert_eq!(pics3[0].hash, pics2[0].hash);
-        // preamble hash participates
-        assert_ne!(scan_pictures(&texts, "main.tex", 2)[0].hash, pics3[0].hash);
+        // the preamble is part of every hash
+        let pics4 = scan_pictures(&texts, "main.tex", 2);
+        assert_ne!(pics4[0].hash, pics3[0].hash);
+        // a comment mentioning remember picture does not disable the cache
+        let t = texts.get_mut("main.tex").unwrap();
+        *t = t.replace("Other text.", "Other text. % use remember picture one day");
+        assert!(scan_pictures(&texts, "main.tex", 1)[0].cacheable);
+    }
+
+    #[test]
+    fn prelude_order_and_multiline_statements() {
+        // a multi-line \tikzset: a change on its second line reaches the pictures after it
+        let mut texts = texts_of(
+            "\\begin{document}\n\\tikzset{%\n  every node/.style={draw,red},\n}\n\\begin{tikzpicture}\n\\node {a};\n\\end{tikzpicture}\n\\input{styles}\n\\begin{tikzpicture}[mystyle]\n\\node {b};\n\\end{tikzpicture}\n\\end{document}\n",
+        );
+        texts.insert(
+            "styles.tex".to_string(),
+            "\\centering\\tikzset{mystyle/.style={thick}}\n".to_string(),
+        );
+        let p1 = scan_pictures(&texts, "main.tex", 1);
+        assert_eq!(p1.len(), 2);
+        let changed = texts["main.tex"].replace("draw,red", "draw,blue");
+        texts.insert("main.tex".to_string(), changed);
+        let p2 = scan_pictures(&texts, "main.tex", 1);
+        assert_ne!(p1[0].hash, p2[0].hash, "second line of the \\tikzset block");
+        // a definition in an \input file (not at the start of its line) reaches the pictures
+        // after the \input, not the ones before it
+        texts.insert(
+            "styles.tex".to_string(),
+            "\\centering\\tikzset{mystyle/.style={dashed}}\n".to_string(),
+        );
+        let p3 = scan_pictures(&texts, "main.tex", 1);
+        assert_eq!(p2[0].hash, p3[0].hash);
+        assert_ne!(p2[1].hash, p3[1].hash);
+    }
+
+    #[test]
+    fn cacheability_rules() {
+        assert!(!uncacheable(
+            "\\node {$\\alpha$}; \\draw (0,0) -- (\\theta:1);"
+        ));
+        assert!(!uncacheable(
+            "\\reflectbox{x} \\romannumeral 4 \\indexspace"
+        ));
+        assert!(uncacheable("\\node {\\ref{x}};"));
+        assert!(uncacheable("\\node {\\alph{page}};"));
+        assert!(uncacheable("\\citep{k}"));
+        assert!(uncacheable("\\addplot table[x=t,y=v] {results.dat};"));
+        assert!(uncacheable("\\addplot table [col sep=comma] {f.csv};"));
+        assert!(uncacheable("\\addplot file {f.dat};"));
+        assert!(!uncacheable("\\node {a table of files};"));
+        assert!(uncacheable("\\pgfmathsetmacro\\w{3} \\xdef\\figwidth{\\w}"));
+        assert!(uncacheable("\\global\\advance\\c by 1"));
+        assert!(uncacheable("\\includegraphics*[width=1cm]{f}"));
+        // a picture after text on its line, or with text before its \begin, is not keyed by
+        // the line its \begin is on
+        let texts = texts_of(
+            "\\begin{document}\n\\foo{\n\\begin{tikzpicture} a\n\\end{tikzpicture}}\\begin{tikzpicture}\nb\n\\end{tikzpicture}\n\\end{document}\n",
+        );
+        // the scan sees one picture (two \begins before the last \end): not cacheable
+        let pics = scan_pictures(&texts, "main.tex", 1);
+        assert_eq!(pics.len(), 1);
+        assert!(!pics[0].cacheable);
+        let texts = texts_of(
+            "\\begin{document}\n\\foo{x}\\begin{tikzpicture}\nb\n\\end{tikzpicture}\n\\end{document}\n",
+        );
+        let pics = scan_pictures(&texts, "main.tex", 1);
+        assert_eq!(pics.len(), 1);
+        assert!(!pics[0].cacheable, "text before the \\begin on its line");
     }
 
     #[test]
@@ -460,6 +717,7 @@ mod tests {
             env: "tikzpicture".into(),
             hash: 42,
             cacheable: true,
+            end_line: 9,
         }];
         let mut cache = PicCache::open(&dir.join("cache"));
         let manifest = dir.join("pic-manifest.json");
@@ -480,12 +738,15 @@ mod tests {
                 state: "font/0 g 0 G".into(),
             },
         );
-        assert_eq!(cache.absorb(&pics, &rec, &pdf).unwrap(), 1);
+        // not a real PDF: the whole file is copied and page numbers stay
+        assert_eq!(cache.absorb(&pics, &rec, &[], &pdf).unwrap(), 1);
+        assert_eq!(cache.entries(), 1);
         assert_eq!(cache.write_manifest(&pics, &manifest).unwrap(), 1);
         let m: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
         let e = &m["main.tex:5"];
         assert_eq!(e["page"], 2);
+        assert_eq!(e["end_line"], 9);
         assert_eq!(
             e["bbox"],
             serde_json::json!([100, 5000 - 1050, 400, 5000 - 800])
@@ -496,13 +757,22 @@ mod tests {
         let mut rec2 = rec.clone();
         rec2.get_mut("main.tex:5").unwrap().state = "other font/0 g 0 G".into();
         rec2.get_mut("main.tex:5").unwrap().h = 400;
-        assert_eq!(cache.absorb(&pics, &rec2, &pdf).unwrap(), 1);
+        assert_eq!(cache.absorb(&pics, &rec2, &[], &pdf).unwrap(), 1);
         assert_eq!(cache.entries(), 1);
         cache.write_manifest(&pics, &manifest).unwrap();
         let m: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
         assert_eq!(m["main.tex:5"]["state"], "other font/0 g 0 G");
         assert_eq!(m["main.tex:5"]["h"], 400);
+        // a pass that reports the picture as mismatched forgets it
+        assert_eq!(
+            cache
+                .absorb(&pics, &BTreeMap::new(), &["main.tex:5".into()], &pdf)
+                .unwrap(),
+            0
+        );
+        assert_eq!(cache.entries(), 0);
+        assert_eq!(cache.absorb(&pics, &rec, &[], &pdf).unwrap(), 1);
         // a changed picture: no hit; after KEEP_PASSES unwanted passes the entry and its PDF go
         let changed = vec![PictureRef {
             hash: 43,
@@ -510,7 +780,7 @@ mod tests {
         }];
         for _ in 0..(KEEP_PASSES + 1) {
             assert_eq!(cache.write_manifest(&changed, &manifest).unwrap(), 0);
-            cache.absorb(&changed, &BTreeMap::new(), &pdf).unwrap();
+            cache.absorb(&changed, &BTreeMap::new(), &[], &pdf).unwrap();
         }
         assert_eq!(cache.entries(), 0);
         assert!(std::fs::read_dir(dir.join("cache"))

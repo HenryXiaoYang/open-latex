@@ -153,16 +153,21 @@ local function new_state(opts)
     -- picture cache: boxes tagged with attr_pic are reported with their page position
     -- (outermost box per id); images in pic_images are cached pictures (page degraded for
     -- hosts, which then use the PDF)
-    attr_pic = opts and opts.attr_pic, pic_images = opts and opts.pic_images, pics = {}, pic_seen = {},
+    attr_pic = opts and opts.attr_pic, pic_images = opts and opts.pic_images, pics = {}, pic_seen = {}, pic_in = 0,
     glyphs = 0, images = 0, inserts = 0,
   }, State)
 end
 -- Record a box carrying the picture attribute: the picture's output is the union of its
--- top-level boxes (page coordinates; one baseline, else `multi`).
+-- outermost tagged boxes (page coordinates; one baseline, else `multi`). Every node made
+-- inside the picture carries the attribute (set while the environment runs), so boxes inside
+-- a recorded box are skipped (`st.pic_in`), as is the paragraph indent box the picture's
+-- \leavevmode made. Returns true when the caller is entering a recorded box.
+local HLIST_INDENT = 3
 local function note_pic(st, n, x, baseline, w, h, d)
-  if not st.attr_pic then return end
+  if not st.attr_pic or st.pic_in > 0 then return false end
   local id = getattribute(n, st.attr_pic)
-  if not id or id < 0 then return end
+  if not id or id < 0 then return false end
+  if getid(n) == hlist_id and getsubtype(n) == HLIST_INDENT then return false end
   local r = st.pic_seen[id]
   if not r then
     r = { id = id, x = x, y = baseline, right = x + w, top = baseline - h, bottom = baseline + d, multi = false }
@@ -178,6 +183,7 @@ local function note_pic(st, n, x, baseline, w, h, d)
   r.w = r.right - r.x
   r.h = r.y - r.top
   r.d = r.bottom - r.y
+  return true
 end
 
 local function bstr(s)
@@ -444,7 +450,8 @@ hlist_out = function(st, box, left, base_v)
         local line = par and st.attr_line and getattribute(n, st.attr_line)
         sync_out()
         -- a raised/lowered box (TikZ `baseline`): extents relative to the line's baseline
-        note_pic(st, n, cur_h, base_v, w, h - sh, d + sh)
+        local pic = note_pic(st, n, cur_h, base_v, w, h - sh, d + sh)
+        if pic then st.pic_in = st.pic_in + 1 end
         if par and par >= 0 and id == hlist_id and not st.cur then
           st:begin_line(n, par, line, cur_h, base_v + sh, w, h, d)
           hlist_out(st, n, cur_h, base_v + sh)
@@ -454,6 +461,7 @@ hlist_out = function(st, box, left, base_v)
         else
           vlist_out(st, n, cur_h, base_v + sh - h)
         end
+        if pic then st.pic_in = st.pic_in - 1 end
         sync_in()
         cur_h = cur_h + w
       elseif id == rule_id then
@@ -546,8 +554,9 @@ vlist_out = function(st, box, left, top)
       cur_v = cur_v + h
       local par = st.attr_par and getattribute(n, st.attr_par)
       local line = par and st.attr_line and getattribute(n, st.attr_line)
+      local pic = note_pic(st, n, left + s, cur_v, w, h, d)
+      if pic then st.pic_in = st.pic_in + 1 end
       if id == hlist_id then
-        note_pic(st, n, left + s, cur_v, w, h, d)
         -- Rows: hlists reached from the traversal root through vlists only. Paragraph mode
         -- (fast path) takes every such hlist; page mode takes those tagged with a paragraph
         -- or a unit attribute, except lines of insert material (footnote text).
@@ -576,9 +585,9 @@ vlist_out = function(st, box, left, top)
           hlist_out(st, n, left + s, cur_v)
         end
       else
-        note_pic(st, n, left + s, cur_v, w, h, d)
         vlist_out(st, n, left + s, cur_v - h)
       end
+      if pic then st.pic_in = st.pic_in - 1 end
       cur_v = cur_v + d
     elseif id == rule_id then
       local w, h, d = getwhd(n)

@@ -1014,6 +1014,7 @@ dependencies = [
  "hex",
  "libc",
  "log",
+ "lopdf",
  "nix",
  "parking_lot",
  "regex",
