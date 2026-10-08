@@ -72,6 +72,48 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
             println!("  profile(us): {}", us);
         }
     }
+    // one unit of every other kind (env:name / heading:name): same direct round trips
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (u, span_id) in store.mapped_units() {
+        let c = &u.captured;
+        if c.kind == "par" || c.placements.is_empty() {
+            continue;
+        }
+        let key = format!("{}:{}", c.kind, c.name.clone().unwrap_or_default());
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let src = fb.span_text(span_id).unwrap_or("").trim_end_matches('\n').to_string();
+        let (_shape, reasons) = rtex_core::eligibility::classify_source(&src, &policy);
+        if !reasons.is_empty() {
+            continue;
+        }
+        server.set_context(u.uid, &u.context_json())?;
+        for _ in 0..5 {
+            server.compile(u.uid, &src)?;
+        }
+        // the alternate source differs in bytes but not in layout (a doubled inter-word space)
+        let alt = src.replacen(' ', "  ", 1);
+        let (mut tot, mut tex, mut trav) = (Vec::new(), Vec::new(), Vec::new());
+        let mut last = None;
+        for i in 0..n {
+            let s = if i % 2 == 1 { &alt } else { &src };
+            let (r, rt) = server.compile(u.uid, s)?;
+            if r.status != "ok" {
+                bail!("{key}: status {} {:?}", r.status, r.errors);
+            }
+            tot.push(rt.total.as_secs_f64() * 1e3);
+            tex.push(rt.t_tex.as_secs_f64() * 1e3);
+            trav.push(rt.t_traverse.as_secs_f64() * 1e3);
+            last = Some(r);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let (t, a, b) = (med(&mut tot), med(&mut tex), med(&mut trav));
+        println!("direct {key:16} (unit {} rows {} dl_bytes {}): total {:.3} ms (P95 {:.3}) tex {:.3} traverse {:.3} ipc+parse {:.3}", u.uid, u.rows(), last.as_ref().map(|r| r.dl_bytes).unwrap_or(0), t, p95(&mut tot), a, b, t - a - b);
+        if let Some(r) = last {
+            println!("  engine stages(us): {}", r.stages_us);
+        }
+    }
     server.shutdown()?;
 
     // session-level: the same edits through apply_edit/poll
