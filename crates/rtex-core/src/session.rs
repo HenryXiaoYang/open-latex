@@ -1,6 +1,6 @@
 //! The public session API: documents, edits, fast-path compiles, background layouts, events.
 
-use crate::background::{run_pass_with, snapshot_dir, write_snapshot, BibTool};
+use crate::background::{run_pass_with, run_pass_with_runner, snapshot_dir, write_snapshot, BibTool, WarmEngine};
 use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, Span, SpanKind};
 use crate::eligibility::{check_engine_unit, classify_source, everypar_allowed, Policy, Reason, UnitShape};
 use crate::engine::{FastServer, Response};
@@ -34,6 +34,9 @@ pub struct SessionConfig {
     /// Extra block environments (theorem-like) treated as units, besides those found by scanning
     /// the preamble for `\newtheorem`.
     pub unit_envs: Vec<String>,
+    /// Keep a standby lualatex with the preamble loaded for background passes (default true):
+    /// a pass then only typesets the body, 3–4× faster for short documents.
+    pub warm_background: bool,
 }
 
 impl SessionConfig {
@@ -51,6 +54,7 @@ impl SessionConfig {
             compile_timeout: Duration::from_secs(5),
             fast_budget: Duration::from_millis(5),
             unit_envs: Vec::new(),
+            warm_background: true,
         }
     }
 }
@@ -233,6 +237,8 @@ struct Shared {
     derived: Mutex<HashMap<ParaId, (ParaId, bool)>>,
     /// Row count of the latest fast result per span (anchors paragraphs placed after it).
     live_rows: Mutex<HashMap<ParaId, i64>>,
+    /// Standby background engine (preamble loaded, waiting for the body).
+    standby: Mutex<Option<WarmEngine>>,
 }
 
 enum BgCmd {
@@ -289,6 +295,7 @@ impl Session {
             overlays: Mutex::new(HashMap::new()),
             derived: Mutex::new(HashMap::new()),
             live_rows: Mutex::new(HashMap::new()),
+            standby: Mutex::new(None),
         });
         let mut threads = Vec::new();
         {
@@ -368,7 +375,10 @@ impl Session {
                 }
             }
             self.shared.bg_change.lock().entry(rel_path.to_string()).or_default().push((rev, 0));
-            // restart the engine with the new preamble, drop overlays, schedule a pass
+            // restart the engine with the new preamble, drop overlays and the standby, schedule a pass
+            if let Some(w) = self.shared.standby.lock().take() {
+                w.kill();
+            }
             self.shared.overlays.lock().clear();
             self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
             self.shared.pending.lock().clear();
@@ -1001,13 +1011,14 @@ fn handle_result(s: &Shared, req: FastRequest, cr: crate::engine::CompileResult,
 // Background thread: debounced full passes with capture, layout installation, exports.
 // ---------------------------------------------------------------------------------------------
 fn background_thread(s: Arc<Shared>) {
+    prepare_standby(&s);
     loop {
         let cmd = match s.bg_signal.1.recv() {
             Ok(c) => c,
-            Err(_) => return,
+            Err(_) => break,
         };
         match cmd {
-            BgCmd::Quit => return,
+            BgCmd::Quit => break,
             BgCmd::Export(job, out) => run_export(&s, job, out),
             BgCmd::Pass => {
                 if s.bg_paused.load(Ordering::SeqCst) {
@@ -1028,10 +1039,45 @@ fn background_thread(s: Arc<Shared>) {
                     }
                 }
                 if s.shutdown.load(Ordering::SeqCst) {
-                    return;
+                    break;
                 }
                 run_background_pass(&s);
+                prepare_standby(&s);
             }
+        }
+    }
+    if let Some(w) = s.standby.lock().take() {
+        w.kill();
+    }
+}
+
+fn standby_dir(s: &Shared, n: usize) -> PathBuf {
+    s.cfg.build_dir.join(format!("src-body-{n}"))
+}
+
+/// Start a standby engine for the next background pass (while the user types, it loads the
+/// current preamble). Replaces a standby whose preamble is outdated; keeps a matching one.
+fn prepare_standby(s: &Shared) {
+    if !s.cfg.warm_background || s.shutdown.load(Ordering::SeqCst) {
+        return;
+    }
+    let (texts, _, _) = snapshot(s);
+    let pre_hash = texts.get(&s.cfg.main_file).and_then(|t| crate::split_preamble(t)).map(|(p, _)| crate::document::hash_str(p));
+    let Some(pre_hash) = pre_hash else { return };
+    let mut slot = s.standby.lock();
+    if let Some(w) = slot.as_mut() {
+        if w.preamble_hash == pre_hash && w.is_alive() {
+            return;
+        }
+    }
+    if let Some(w) = slot.take() {
+        w.kill();
+    }
+    let unit_envs = s.policy.lock().unit_envs_env();
+    match WarmEngine::spawn(&s.tl, &s.cfg.project_root, &texts, &s.cfg.main_file, &standby_dir(s, 0), &s.cfg.build_dir.join("bg"), true, &unit_envs) {
+        Ok(w) => *slot = Some(w),
+        Err(e) => {
+            s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "warning".into(), file: None, line: None, message: format!("standby engine: {e}"), context: None }] }).ok();
         }
     }
 }
@@ -1063,7 +1109,43 @@ fn run_background_pass(s: &Shared) {
     }
     let out_dir = s.cfg.build_dir.join("bg");
     let unit_envs = s.policy.lock().unit_envs_env();
-    let outcome = match run_pass_with(&s.tl, &snap_dir, &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, true, &unit_envs) {
+    let result = if s.cfg.warm_background {
+        // Every pass of the loop runs in a standby engine: the one prepared while the user
+        // typed, then the one started when the previous pass was released (its preamble loads
+        // while the body is typeset). Two snapshot directories alternate so a loading standby
+        // never rewrites the files a running one reads.
+        let pre_hash = texts.get(&s.cfg.main_file).and_then(|t| crate::split_preamble(t)).map(|(p, _)| crate::document::hash_str(p));
+        let mut runner = |_pass: u32| -> Result<crate::capture::CaptureResult> {
+            let ready = {
+                let mut slot = s.standby.lock();
+                match slot.take() {
+                    Some(mut w) => {
+                        if Some(w.preamble_hash) == pre_hash && w.is_alive() {
+                            Some(w)
+                        } else {
+                            w.kill();
+                            None
+                        }
+                    }
+                    None => None,
+                }
+            };
+            let w = match ready {
+                Some(w) => w,
+                None => WarmEngine::spawn(&s.tl, &s.cfg.project_root, &texts, &s.cfg.main_file, &standby_dir(s, 0), &out_dir, true, &unit_envs)?,
+            };
+            // the next standby starts now, in the other directory
+            let other = if w.src_dir.ends_with("src-body-0") { 1 } else { 0 };
+            if let Ok(next) = WarmEngine::spawn(&s.tl, &s.cfg.project_root, &texts, &s.cfg.main_file, &standby_dir(s, other), &out_dir, true, &unit_envs) {
+                *s.standby.lock() = Some(next);
+            }
+            w.run(&s.cfg.project_root, &texts, &s.cfg.main_file)
+        };
+        run_pass_with_runner(&s.tl, &standby_dir(s, 0), &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, &mut runner)
+    } else {
+        run_pass_with(&s.tl, &snap_dir, &s.cfg.main_file, &out_dir, s.cfg.max_passes, s.cfg.bib_tool, true, &unit_envs)
+    };
+    let outcome = match result {
         Ok(o) => o,
         Err(e) => {
             s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: e.to_string(), context: None }] }).ok();
@@ -1071,7 +1153,13 @@ fn run_background_pass(s: &Shared) {
             return;
         }
     };
-    let diagnostics = parse_log(&outcome.capture.log);
+    let mut diagnostics = parse_log(&outcome.capture.log);
+    for d in &mut diagnostics {
+        // the standby reads the preamble from rtex-preamble.tex (same line numbers)
+        if d.file.as_deref().map(|f| f.ends_with("rtex-preamble.tex")).unwrap_or(false) {
+            d.file = Some(s.cfg.main_file.clone());
+        }
+    }
     let errors = diagnostics.iter().filter(|d| d.severity == "error").count();
     let compile = if outcome.capture.json.pages == 0 { CompileStatus::Failed } else if errors > 0 { CompileStatus::CompiledWithErrors { count: errors } } else { CompileStatus::Ok };
     if compile == CompileStatus::Failed {

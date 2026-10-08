@@ -99,7 +99,7 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
         for i in 0..n {
             let s = if i % 2 == 1 { &alt } else { &src };
             let (r, rt) = server.compile(u.uid, s)?;
-            if r.status != "ok" {
+            if r.status != "ok" && r.status != "ok_degraded" {
                 bail!("{key}: status {} {:?}", r.status, r.errors);
             }
             tot.push(rt.total.as_secs_f64() * 1e3);
@@ -121,7 +121,13 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     cfg.build_dir = build.join("session");
     let session = Session::open(cfg)?;
     let (first, _) = session.wait_for(Duration::from_secs(600), |e| matches!(e, Event::LayoutUpdate { .. }));
-    let Some(Event::LayoutUpdate { eligible_paragraphs, placements, .. }) = first else { bail!("no layout") };
+    let Some(Event::LayoutUpdate { eligible_paragraphs, placements, wall_ms: first_ms, passes: first_passes, .. }) = first else { bail!("no layout") };
+    // a second layout: the standby engine (preamble loaded while idle) only typesets the body
+    std::thread::sleep(Duration::from_millis(1500));
+    session.request_layout();
+    let (second, _) = session.wait_for(Duration::from_secs(600), |e| matches!(e, Event::LayoutUpdate { .. }));
+    let Some(Event::LayoutUpdate { wall_ms: second_ms, passes: second_passes, .. }) = second else { bail!("no second layout") };
+    println!("layout: first {first_ms} ms ({first_passes} passes), second with standby engine {second_ms} ms ({second_passes} passes)");
     session.pause_background(true);
     std::thread::sleep(Duration::from_millis(1500));
     let spans = session.spans(&main);

@@ -1,7 +1,7 @@
 //! One background pass: snapshot the buffers, run the instrumented full compile (with
 //! biber/bibtex when the document asks for it), and return the capture.
 
-use crate::capture::CaptureResult;
+use crate::capture::{capture_command, collect_capture, CaptureResult};
 use crate::texlive::TexLive;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -97,6 +97,13 @@ pub fn run_pass(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Path, m
 /// `run_pass` with extra unit environments for the capture (see `run_capture_with`).
 #[allow(clippy::too_many_arguments)]
 pub fn run_pass_with(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Path, max_passes: u32, bib: BibTool, instrumented: bool, unit_envs: &str) -> Result<PassOutcome> {
+    let mut runner = |_pass: u32| crate::capture::run_capture_with(tl, snapshot_dir, main, out_dir, instrumented, unit_envs);
+    run_pass_with_runner(tl, snapshot_dir, main, out_dir, max_passes, bib, &mut runner)
+}
+
+/// `run_pass_with` with the single pass supplied by `runner` (a fresh lualatex, or a standby
+/// `WarmEngine` that already holds the preamble).
+pub fn run_pass_with_runner(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Path, max_passes: u32, bib: BibTool, runner: &mut dyn FnMut(u32) -> Result<CaptureResult>) -> Result<PassOutcome> {
     std::fs::create_dir_all(out_dir)?;
     let jobname = Path::new(main).file_stem().and_then(|s| s.to_str()).unwrap_or("main").to_string();
     let mut sig_before = aux_signature(out_dir, &jobname);
@@ -106,7 +113,7 @@ pub fn run_pass_with(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Pa
     let mut stable = false;
     while passes < max_passes {
         passes += 1;
-        let cap = crate::capture::run_capture_with(tl, snapshot_dir, main, out_dir, instrumented, unit_envs)?;
+        let cap = runner(passes)?;
         let bcf = out_dir.join(format!("{jobname}.bcf"));
         let aux = out_dir.join(format!("{jobname}.aux"));
         let wants_bib = match bib {
@@ -131,7 +138,9 @@ pub fn run_pass_with(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Pa
             bib_ran = true;
         }
         let sig_after = aux_signature(out_dir, &jobname);
-        let rerun = log_requests_rerun(&cap.log) || sig_after != sig_before || (wants_bib && bib_ran && passes == 1);
+        // a bibliography run that changed nothing (same .bbl) needs no extra pass: the .bbl is
+        // part of the signature
+        let rerun = log_requests_rerun(&cap.log) || sig_after != sig_before;
         sig_before = sig_after;
         last = Some(cap);
         if !rerun {
@@ -243,5 +252,126 @@ mod aux_tests {
             ("r@sec:b".to_string(), "{3}{7}".to_string()),
             ("r@fig:x".to_string(), "{1}{2}{Caption}{figure.1}{}".to_string()),
         ]);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Standby background engine: a lualatex that has loaded the preamble and waits for the body.
+// Engine start, format and preamble (packages, fonts) are ~75 % of a pass over a short
+// document (docs/BENCHMARKS.md), so a pass that only typesets the body is 3–4× faster.
+// ---------------------------------------------------------------------------------------------
+
+/// Snapshot layout for a standby pass: the project copied as for `write_snapshot`, the preamble
+/// (text before `\begin{document}`) in `rtex-preamble.tex`, and `main` replaced by the body
+/// preceded by as many empty lines as the preamble had, so every line number and `status.filename`
+/// the capture records are those of the original file. Returns the preamble's hash.
+pub fn write_body_snapshot(project: &Path, files: &BTreeMap<String, String>, main: &str, dir: &Path) -> Result<u64> {
+    let main_text = files.get(main).ok_or_else(|| anyhow::anyhow!("main file {main} not in snapshot"))?;
+    let (pre, body) = crate::split_preamble(main_text).ok_or_else(|| anyhow::anyhow!("no \\begin{{document}} in {main}"))?;
+    let mut padded = String::with_capacity(main_text.len());
+    for _ in 0..pre.matches('\n').count() {
+        padded.push('\n');
+    }
+    padded.push_str(body);
+    let mut files2 = files.clone();
+    files2.insert(main.to_string(), padded);
+    files2.insert("rtex-preamble.tex".to_string(), pre.to_string());
+    write_snapshot(project, &files2, dir)?;
+    Ok(crate::document::hash_str(pre))
+}
+
+pub struct WarmEngine {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    pub preamble_hash: u64,
+    pub src_dir: PathBuf,
+    out_dir: PathBuf,
+    jobname: String,
+    instrumented: bool,
+    pub spawned: std::time::Instant,
+}
+
+impl WarmEngine {
+    /// Start a standby: writes the body snapshot into `src_dir` and runs lualatex up to the end
+    /// of the preamble, where it blocks on stdin (tex/rtex-bg.lua).
+    pub fn spawn(tl: &TexLive, project: &Path, files: &BTreeMap<String, String>, main: &str, src_dir: &Path, out_dir: &Path, instrumented: bool, unit_envs: &str) -> Result<WarmEngine> {
+        let preamble_hash = write_body_snapshot(project, files, main, src_dir)?;
+        let (mut cmd, jobname, out_dir) = capture_command(tl, src_dir, main, &out_dir.to_path_buf(), instrumented, unit_envs)?;
+        let pkg = if instrumented { "\\RequirePackage{rtex-capture}" } else { "" };
+        cmd.arg(format!("{pkg}\\input{{rtex-preamble.tex}}\\directlua{{dofile(kpse.find_file(\"rtex-bg.lua\",\"lua\") or \"rtex-bg.lua\")}}\\input{{{main}}}"));
+        cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().context("spawning standby lualatex")?;
+        let stdin = child.stdin.take();
+        Ok(WarmEngine { child, stdin, preamble_hash, src_dir: src_dir.to_path_buf(), out_dir, jobname, instrumented, spawned: std::time::Instant::now() })
+    }
+
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Typeset the body: refresh the snapshot texts (same preamble), release the engine and
+    /// collect the pass like a fresh run.
+    pub fn run(mut self, project: &Path, files: &BTreeMap<String, String>, main: &str) -> Result<CaptureResult> {
+        let t0 = std::time::Instant::now();
+        let h = write_body_snapshot(project, files, main, &self.src_dir)?;
+        if h != self.preamble_hash {
+            anyhow::bail!("standby preamble differs from the snapshot");
+        }
+        {
+            use std::io::Write;
+            let mut stdin = self.stdin.take().ok_or_else(|| anyhow::anyhow!("standby stdin already closed"))?;
+            stdin.write_all(b"GO\n").context("releasing standby")?;
+            stdin.flush().ok();
+            drop(stdin);
+        }
+        // drain stdout before waiting (a full pipe would block the engine), then reap
+        let mut stdout = Vec::new();
+        if let Some(mut so) = self.child.stdout.take() {
+            use std::io::Read;
+            let _ = so.read_to_end(&mut stdout);
+        }
+        let status = self.child.wait().context("waiting for standby pass")?;
+        collect_capture(&self.out_dir, &self.jobname, self.instrumented, status.success(), status.code(), &stdout, t0.elapsed())
+    }
+
+    pub fn kill(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for WarmEngine {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_snapshot_keeps_line_numbers() {
+        let dir = std::env::temp_dir().join(format!("rtex-body-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let main = "\\documentclass{article}\n\\usepackage{xcolor}\n% two\n\\begin{document}\nFirst line of the body.\n\n\\end{document}\n";
+        std::fs::write(project.join("main.tex"), main).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert("main.tex".to_string(), main.to_string());
+        let h = write_body_snapshot(&project, &files, "main.tex", &dir.join("snap")).unwrap();
+        let pre = std::fs::read_to_string(dir.join("snap/rtex-preamble.tex")).unwrap();
+        let body = std::fs::read_to_string(dir.join("snap/main.tex")).unwrap();
+        assert_eq!(pre, "\\documentclass{article}\n\\usepackage{xcolor}\n% two\n");
+        assert_eq!(h, crate::document::hash_str(&pre));
+        // \begin{document} is on line 4 in both the original and the padded body file
+        assert_eq!(main.lines().position(|l| l.starts_with("\\begin{document}")), Some(3));
+        assert_eq!(body.lines().position(|l| l.starts_with("\\begin{document}")), Some(3));
+        assert_eq!(body.lines().count(), main.lines().count());
+        assert_eq!(body.lines().nth(4), Some("First line of the body."));
     }
 }

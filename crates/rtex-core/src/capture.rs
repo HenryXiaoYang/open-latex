@@ -6,6 +6,7 @@ use rtex_dl::{DisplayList, Sp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -224,24 +225,32 @@ pub fn run_capture(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path, ins
 /// `run_capture` with extra unit environments (comma separated, `$RTEX_UNIT_ENVS`): theorem-like
 /// environments the capture should treat as units.
 pub fn run_capture_with(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path, instrumented: bool, unit_envs: &str) -> Result<CaptureResult> {
+    let (mut cmd, jobname, out_dir) = capture_command(tl, src_dir, main, out_dir, instrumented, unit_envs)?;
+    cmd.arg(if instrumented { format!("\\RequirePackage{{rtex-capture}}\\input{{{main}}}") } else { format!("\\input{{{main}}}") });
+    let t0 = Instant::now();
+    let out = cmd.output().context("spawning lualatex")?;
+    collect_capture(&out_dir, &jobname, instrumented, out.status.success(), out.status.code(), &out.stdout, t0.elapsed())
+}
+
+/// The lualatex command for a pass over `src_dir`, without its final `\input` argument.
+/// Returns (command, jobname, canonical out_dir).
+pub fn capture_command(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path, instrumented: bool, unit_envs: &str) -> Result<(Command, String, std::path::PathBuf)> {
     std::fs::create_dir_all(out_dir)?;
-    let out_dir = &out_dir.canonicalize()?;
+    let out_dir = out_dir.canonicalize()?;
     let jobname = Path::new(main).file_stem().and_then(|s| s.to_str()).unwrap_or("main").to_string();
     let mut cmd = tl.lualatex_cmd(src_dir);
     cmd.arg("-interaction=nonstopmode")
         .arg("-file-line-error")
         .arg(format!("--jobname={jobname}"))
         .arg(format!("--output-directory={}", out_dir.display()))
-        .env("RTEX_CAPTURE_DIR", out_dir)
+        .env("RTEX_CAPTURE_DIR", &out_dir)
         .env("RTEX_UNIT_ENVS", unit_envs);
-    if instrumented {
-        cmd.arg(format!("\\RequirePackage{{rtex-capture}}\\input{{{main}}}"));
-    } else {
-        cmd.arg(format!("\\input{{{main}}}"));
-    }
-    let t0 = Instant::now();
-    let out = cmd.output().context("spawning lualatex")?;
-    let wall = t0.elapsed();
+    let _ = instrumented;
+    Ok((cmd, jobname, out_dir))
+}
+
+/// Read the outputs of a finished pass (log, PDF, capture JSON when instrumented).
+pub fn collect_capture(out_dir: &Path, jobname: &str, instrumented: bool, exit_ok: bool, exit_code: Option<i32>, stdout: &[u8], wall: std::time::Duration) -> Result<CaptureResult> {
     let log = out_dir.join(format!("{jobname}.log"));
     let pdf = out_dir.join(format!("{jobname}.pdf"));
     let json = if instrumented {
@@ -250,8 +259,8 @@ pub fn run_capture_with(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path
             bail!(
                 "capture run produced no {}; lualatex exit {:?}\n{}",
                 jp.display(),
-                out.status.code(),
-                String::from_utf8_lossy(&out.stdout).chars().rev().take(2000).collect::<String>().chars().rev().collect::<String>()
+                exit_code,
+                String::from_utf8_lossy(stdout).chars().rev().take(2000).collect::<String>().chars().rev().collect::<String>()
             );
         }
         {
@@ -260,7 +269,7 @@ pub fn run_capture_with(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path
             j
         }
     } else {
-        CaptureJson { jobname: jobname.clone(), ..Default::default() }
+        CaptureJson { jobname: jobname.to_string(), ..Default::default() }
     };
-    Ok(CaptureResult { out_dir: out_dir.to_path_buf(), jobname, json, pdf, log, wall, exit_ok: out.status.success() })
+    Ok(CaptureResult { out_dir: out_dir.to_path_buf(), jobname: jobname.to_string(), json, pdf, log, wall, exit_ok })
 }
