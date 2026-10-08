@@ -130,7 +130,7 @@ pub const FLOAT_ENVS: &[&str] = &["figure", "figure*", "table", "table*"];
 pub const DISPLAY_ENVS: &[&str] = &["equation", "equation*", "displaymath", "eqnarray", "eqnarray*"];
 pub const AMSMATH_DISPLAY_ENVS: &[&str] = &["align", "align*", "gather", "gather*", "multline", "multline*", "flalign", "flalign*", "alignat", "alignat*"];
 /// Environments allowed inside units (not units themselves).
-const INNER_ENVS: &[&str] = &["tabular", "tabular*", "minipage", "math", "em", "small", "footnotesize", "scriptsize", "large", "Large", "bfseries", "itshape", "sloppypar"];
+const INNER_ENVS: &[&str] = &["tabular", "tabular*", "tabularx", "minipage", "math", "em", "small", "footnotesize", "scriptsize", "large", "Large", "bfseries", "itshape", "sloppypar"];
 const AMSMATH_INNER_ENVS: &[&str] = &["split", "aligned", "gathered", "cases", "pmatrix", "bmatrix", "vmatrix", "Vmatrix", "matrix", "smallmatrix", "array", "subarray"];
 const LIST_ENVS: &[&str] = &["itemize", "enumerate", "description"];
 const TABULAR_MACROS: &[&str] = &["hline", "cline", "multicolumn", "multirow"];
@@ -147,6 +147,7 @@ pub struct Policy {
     pub amsmath: bool,
     pub graphicx: bool,
     pub booktabs: bool,
+    pub tabularx: bool,
     /// `\cite` is replayable from the aux (plain `\bibcite`); false with biblatex/natbib.
     pub cite_ok: bool,
 }
@@ -195,6 +196,7 @@ impl Policy {
             amsmath: has_pkg("amsmath") || has_pkg("mathtools"),
             graphicx: has_pkg("graphicx") || has_pkg("graphics"),
             booktabs: has_pkg("booktabs"),
+            tabularx: has_pkg("tabularx"),
             cite_ok: !(has_pkg("biblatex") || has_pkg("natbib")),
         }
     }
@@ -419,6 +421,9 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
                 } else if INNER_ENVS.contains(&env.as_str()) || is_amsmath_inner {
                     if is_amsmath_inner && !policy.amsmath {
                         push(&mut reasons, Reason::NeedsPackage("amsmath".into()));
+                    }
+                    if env == "tabularx" && !policy.tabularx {
+                        push(&mut reasons, Reason::NeedsPackage("tabularx".into()));
                     }
                     let mode = if is_amsmath_inner || env == "math" { Mode::Math } else { Mode::Text };
                     if env == "math" && in_math {
@@ -654,7 +659,7 @@ pub fn check_engine(groupcode: &str, nest: i64, everypar: &str, has_begin: bool,
 mod tests {
     use super::*;
     fn pol() -> Policy {
-        Policy { amsmath: true, graphicx: true, booktabs: true, cite_ok: true, ..Default::default() }
+        Policy { amsmath: true, graphicx: true, booktabs: true, tabularx: true, cite_ok: true, ..Default::default() }
     }
     fn ok(s: &str) -> bool {
         check_source(s, &pol()).is_empty()

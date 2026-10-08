@@ -12,6 +12,7 @@
 \AddToHook{para/after}{\directlua{rtex_capture.parafter()}}
 \AddToHook{shipout/before}{\directlua{rtex_capture.shipout(\number\ShipoutBox)}}
 \AddToHook{cmd/@outputpage/before}{\directlua{rtex_capture.output_begin()}}
+\AddToHook{cmd/@outputpage/after}{\directlua{rtex_capture.output_end()}}
 \AddToHook{cmd/@afterheading/before}{\directlua{rtex_capture.afterheading()}}
 \AddToHook{enddocument/afterlastpage}{\directlua{rtex_capture.finish()}}
 % Unit boundaries: block environments and sectioning commands. Extra block environments

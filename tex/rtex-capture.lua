@@ -81,11 +81,21 @@ function C.setup(opts)
   for name in extra:gmatch("[^,%s]+") do C.BLOCK_ENVS[#C.BLOCK_ENVS + 1] = name end
 end
 
+-- Font and color state between top-level units. A paragraph that starts inside a group
+-- ({\em word} ..., {\bfseries ...}) fires para/begin with that group's font selected; the
+-- state the fast server must replay is the one outside the group, i.e. the state left behind by
+-- the previous unit (or \begin{document}).
+local function snapshot_outer()
+  return { level = tex.currentgrouplevel, nfss = nfss(), color = macro("current@color"), font = font.current() }
+end
+C.outer = nil
+
 -- Called at \begin{document} (counters are all defined by then).
 function C.begin_document()
   local ck = macro("cl@@ckpt") or ""
   for n in ck:gmatch("\\@elt%s*{([^}]*)}") do counter_names[#counter_names + 1] = n end
   prev_counters = {}
+  C.outer = snapshot_outer()
 end
 
 -- Units ------------------------------------------------------------------------------------------
@@ -101,16 +111,19 @@ local function unit_open(kind, name, set_attr)
               attr_set = set_attr }
   C.units[#C.units + 1] = u
   C.cur = u
-  if set_attr then tex.setattribute(C.attr_unit, C.uid) end
+  -- Global: a paragraph often starts inside a group ({\em word} ..., \begingroup, tabularx's
+  -- final typesetting) that closes before its lines are built; a local assignment would be
+  -- restored by then and the lines would carry no unit. unit_close resets it.
+  if set_attr then tex.setattribute("global", C.attr_unit, C.uid) end
   return u
 end
 local function unit_close()
   local u = C.cur
   if not u then return end
   u.end_line = tex.inputlineno
-  -- the attribute set in an environment group is reset by the group itself
-  if u.attr_set then tex.setattribute(C.attr_unit, UNSET) end
+  tex.setattribute("global", C.attr_unit, UNSET)
   C.cur = nil
+  if C.outer and tex.currentgrouplevel == C.outer.level then C.outer = snapshot_outer() end
 end
 
 -- para/begin hook: start of a paragraph (horizontal mode just entered).
@@ -118,17 +131,22 @@ function C.parbegin()
   local nest = tex.nest.ptr
   local ep = tex.gettoks("everypar")
   local cur = C.cur
+  -- a top-level paragraph starting inside a group: font and color from outside the group
+  local outer = (nest == 1 and C.outer and tex.currentgrouplevel > C.outer.level) and C.outer or nil
   if nest == 1 then
-    if not cur then cur = unit_open("par", nil, true) end
+    if not cur then
+      cur = unit_open("par", nil, true)
+      if outer then cur.nfss = outer.nfss; cur.color = outer.color end
+    end
   end
   local b = C.begins
   -- drop stale entries from deeper nesting levels that never reached a line break
   while #b > 0 and b[#b].nest > nest do b[#b] = nil end
   b[#b + 1] = {
     line = tex.inputlineno, nest = nest, file = status.filename,
-    font = font.current(),
-    nfss = nfss(),
-    color = macro("current@color"),
+    font = outer and outer.font or font.current(),
+    nfss = outer and outer.nfss or nfss(),
+    color = outer and outer.color or macro("current@color"),
     mathversion = macro("math@version"),
     nobreak = iftrue("if@nobreak"),
     unit = cur and cur.uid or nil,
@@ -147,9 +165,7 @@ function C.envbegin(name)
   local cur = C.cur
   if cur and cur.kind == "heading" and tex.nest.ptr == 0 then unit_close(); cur = nil end
   if not cur and tex.nest.ptr == 0 then
-    -- opened inside the environment group: the attribute ends with the group
-    unit_open("env", name, false)
-    tex.setattribute(C.attr_unit, C.uid)
+    unit_open("env", name, true)
   end
   C.env_depth = C.env_depth + 1
 end
@@ -163,7 +179,12 @@ end
 -- cmd/@outputpage/before hook: header and footer boxes are built inside the output routine's
 -- group while a unit may still be open; without the unit attribute they are not unit rows.
 function C.output_begin()
-  tex.setattribute(C.attr_unit, UNSET)
+  tex.setattribute("global", C.attr_unit, UNSET)
+end
+-- cmd/@outputpage/after hook: back to the open unit (the attribute is global).
+function C.output_end()
+  local cur = C.cur
+  tex.setattribute("global", C.attr_unit, cur and cur.uid or UNSET)
 end
 
 -- cmd/<heading>/before hook.
@@ -229,11 +250,14 @@ function C.post_linebreak(head, groupcode)
   local p = C.paras[seq]
   local i = 0
   local hl = node.id("hlist")
+  local unit = p and p.unit
   for n in node.traverse(head) do
     if n.id == hl then
       i = i + 1
       node.set_attribute(n, C.attr_par, seq)
       node.set_attribute(n, C.attr_line, i)
+      -- the line boxes are built here, possibly after the group the paragraph started in
+      if unit then node.set_attribute(n, C.attr_unit, unit) end
     end
   end
   if p then p.lines = i end
