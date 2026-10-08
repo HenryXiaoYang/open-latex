@@ -7,7 +7,8 @@ alone and its display list replaces it on screen immediately. Everything else is
 background full compile, which takes as long as a LuaLaTeX run of the whole document (≈ 2 s for
 10 pages, ≈ 5–15 s for 300 pages here, 2–3 passes when references change) and then arrives as a
 `LayoutUpdate`. The host shows the edited source immediately in its editor pane either way; the
-question is when the *typeset* view catches up.
+question is when the *typeset* view catches up. A layout after the first costs a body-only pass
+in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 
 | Content being edited | Typeset update | Why |
 |---|---|---|
@@ -20,7 +21,7 @@ question is when the *typeset* view catches up.
 | Headings (`\chapter`, `\section`, …) | **real time**; TOC and running heads after the next pass | heading unit |
 | A unit that changes its row count (grows/shrinks) | unit in real time (rows placed with its own geometry); following material after the next pass | page breaks are global; `pagination_stale` says so |
 | Splitting a paragraph (Enter + blank line), merging two, typing a new paragraph | **real time**: the known half keeps its context, the new paragraph borrows its neighbour's (counters may lag by one until the next pass) and is placed right after it | borrowed contexts are `context_stale`, placements `approximate` |
-| `tabularx` | background | the environment's trial typesetting leaves the unit without rows in the capture; not allow-listed yet |
+| `tabularx` (with the package loaded) | **real time** | inner environment like `tabular` |
 | TikZ/PGF diagrams, `\pdfliteral` drawing | background, and the page renders through the **PDF fallback** | not representable in the display list |
 | `minipage`/`parbox` blocks, `\marginpar`, `\verb`, verbatim | background | not allow-listed |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |

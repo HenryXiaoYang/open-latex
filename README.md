@@ -26,6 +26,9 @@ document-size independent: 10 vs 100 pages within the ±20 % jitter of a shared 
 |---|---|---|---|---|---|
 | 1.16 ms | 1.45 ms | 1.32 ms | 1.57 ms | 1.32 ms | 0.67 ms |
 
+A layout (full background pass) after the first takes 0.42 s on the 10-page book: the standby
+engine has the preamble loaded and only typesets the body.
+
 Paper-like font setup (TFM Latin Modern + microtype); OpenType fonts in luaotfload base mode
 are equally fast, fontspec's default node mode pays Lua shaping in the TeX stage. Output equals
 LuaTeX's own positions to the scaled point (`docs/FIDELITY.md`); exported PDFs are byte-equal to

@@ -89,7 +89,17 @@ these patches, which is the evidence that they do not change typesetting (FIDELI
 
 ## Background path
 
-Debounced passes on a snapshot copy; `rtex-capture` records per unit the context and the rows,
+Debounced passes on a snapshot copy, each run in a **standby engine**: a lualatex started while
+the user types that has already processed `\RequirePackage{rtex-capture}` and the preamble (from
+`rtex-preamble.tex`, the text before `\begin{document}`) and blocks in `tex/rtex-bg.lua` until the
+session writes `GO`; it then inputs the body, written as `main.tex` with one empty line per
+preamble line so every line number and file name the capture records is the original. Engine
+start, format and preamble are ~75 % of a pass over a short document, so a body-only pass is
+3–4× faster (10-page fixture: 1.9 s first layout, 0.42 s thereafter). When a layout needs more
+passes, the next standby starts as the previous one is released (two snapshot directories
+alternate), so its preamble loads while the body is typeset. A preamble edit drops the standby;
+`SessionConfig.warm_background = false` restores plain runs. `rtex-capture` records per unit the
+context and the rows,
 tags line boxes, and at shipout writes placements and page display lists. The layout store maps
 units to spans by snapshot line ranges, diffs page hashes, extracts the aux labels for the
 server's `\ref`/`\cite`, and emits `LayoutUpdate` with the convergence state (CONVERGENCE.md).

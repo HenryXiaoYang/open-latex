@@ -42,6 +42,13 @@
   are unchanged (typing at the top of the first paragraph no longer counts as a preamble change).
   A burst of preamble keystrokes restarts the engine once, after the debounce, instead of once
   per keystroke.
+- Background passes run in a standby engine that has already loaded the preamble (body-only
+  passes, 3–4× faster: 10-page fixture 1.9 s → 0.42 s per layout, a fontspec/tikz/hyperref
+  document 2.3 s → 0.74 s); a bibliography run that changed nothing no longer forces a second
+  pass. `warm_background` config key.
+- Capture: paragraphs that start inside a group (`{\em …}`, `{\bfseries …}`) and bare
+  `tabularx` tables had no rows (the unit attribute was restored with the group) and the wrong
+  base font; both fixed, and `tabularx` is on the fast path.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

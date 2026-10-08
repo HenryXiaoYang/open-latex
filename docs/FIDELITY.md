@@ -44,6 +44,15 @@ shares a span with (documented in LIMITATIONS.md). `--units` restricts the run a
 server-only shortcuts of `tex/latex/rtex-serve-patches.tex` (ARCHITECTURE.md), the reference
 side without them, so the comparison also covers those.
 
+Two capture facts fixed in 0.0.2 after real documents hit them: the unit attribute is now set
+globally and the line boxes are tagged explicitly at `post_linebreak`, because a paragraph that
+starts inside a group (`{\em word} …`, `{\bfseries …}`, a bare `tabularx`, whose final table is
+typeset inside its own group) had its lines built after TeX restored the attribute, leaving the
+unit without rows; and the font and color of such a paragraph are taken from outside the group
+(the state between units), not from `para/begin` inside it (`tests/capture_groups.rs`).
+`tests/standby.rs` checks that the standby background engine produces the same units, rows,
+placements, labels and page glyphs as a fresh run.
+
 ## Layer 2 — PDF content stream (independent parser, quantified tolerance)
 
 `crates/rtex-verify/src/pdftext.rs` replays the PDF text state machine (`Tm Td TD T* TL Tc Tw Tz
