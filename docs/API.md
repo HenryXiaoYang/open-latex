@@ -5,6 +5,7 @@ use rtex_core::{Session, SessionConfig, Edit, Event};
 
 let mut cfg = SessionConfig::new("/path/to/project", "main.tex");
 cfg.debounce = std::time::Duration::from_millis(300);
+cfg.fast_budget = std::time::Duration::from_millis(5);   // per-unit fast budget (C ABI: "fast_budget_ms", CLI: --fast-budget-ms)
 cfg.trusted_macros = vec!["mymacro".into()];       // host-vouched pure macros (optional)
 let session = Session::open(cfg)?;                 // loads main.tex and the files it \inputs, spawns the server, first pass
 

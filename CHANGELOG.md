@@ -101,6 +101,12 @@
   and settings (`\newcommand`, `\def`, `\setlength`, `\renewcommand{\arraystretch}`,
   `\pagestyle`, `\lstset`, … `eligibility::SETUP_MACROS`) is loaded with the server's preamble,
   macros it defines are trusted, and editing it is a preamble change.
+- `fast_budget_ms` is exposed everywhere the session is configured (C ABI JSON, `rtex serve
+  --fast-budget-ms`, `SessionConfig::fast_budget`); default unchanged (5 ms).
+- Research (docs/ELIGIBILITY.md): a universal `\globaldefs=-1` leak barrier breaks LaTeX
+  internals (rejected); `rtex verify --permissive` ignores the allow-list and lets the row
+  comparison judge every unit — 26 of 28 constructs the allow-list rejects are exact, and the
+  comparison catches the two that are not. Research fixture `fixtures/research/permissive`.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

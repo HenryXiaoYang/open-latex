@@ -36,7 +36,7 @@ in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 | `\marginpar`, `wrapfigure`, `\setlength`/`\renewcommand` at a unit's top level | background | would change the state the following units are typeset in (inside a group or environment they are fine) |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
 | Macros you defined yourself whose bodies are not allow-listed (`\def` with parameters, TikZ, `\global` …) | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
-| Any unit whose fast compiles exceed `fast_budget` (5 ms by default) three times in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
+| Any unit whose fast compiles exceed `fast_budget` (`fast_budget_ms`, default 5) three times in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
 | A unit whose live compile hung (watchdog, 5 s) or crashed the engine | background until the preamble changes (`EngineFailed`) | retrying would kill the server on every keystroke; `rtex verify` on the project shows the engine error for that unit |
 
 The fast server differs from a document run in two observable ways, both outside the unit box:

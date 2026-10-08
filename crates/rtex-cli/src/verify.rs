@@ -29,6 +29,9 @@ pub struct VerifyOpts {
     pub dump_rows: bool,
     /// Fail unless at least this many units are eligible (regression gate).
     pub min_eligible: Option<usize>,
+    /// Research: ignore the allow-list (unknown macros/environments are eligible) and let the
+    /// row comparison judge every unit.
+    pub permissive: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -239,7 +242,8 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     println!("== verify {} ({})", project.display(), opts.main);
     // bibliography support for mixed fixtures: run biber when a .bcf shows up after the first pass
     let preamble = rtex_core::project_preamble(&project, &opts.main)?;
-    let policy = Policy::from_preamble(&preamble, &[], &[]);
+    let mut policy = Policy::from_preamble(&preamble, &[], &[]);
+    policy.permissive = opts.permissive;
     let unit_envs = policy.unit_envs_env();
     // Both builds run to aux convergence (labels, TOC, bibliography) exactly like the
     // background compiler does: a single first pass would leave every \ref as "??" while

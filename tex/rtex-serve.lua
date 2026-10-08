@@ -489,6 +489,10 @@ function S.init(boxnum, countnum, cctnum)
     if ok then S.counter_names[#S.counter_names + 1] = name; S.counter_base[name] = v end
   end
   local nobreak_idle = ifmode("if@nobreak") == IFTRUE_MODE
+  -- Not \globaldefs=-1 inside the box (tried as a universal leak barrier): LaTeX's own
+  -- internals rely on \begingroup…\global…\endgroup to publish results (NFSS font definitions,
+  -- enumitem's keyval, hyperref, array), so making every assignment local breaks fonts and
+  -- tables. Leaks are caught by the state fingerprint and the counter restore instead.
   head_tokens = "\\luafunction" .. S.fn_mark .. " \\begingroup\\global\\setbox\\rtexbox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " "
   -- the title block's kernel macros (rtex-serve-patches.tex, 5) come back after every compile
   local restore_title = token.is_defined("rtex@restoretitle") and "\\rtex@restoretitle " or ""

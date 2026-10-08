@@ -64,7 +64,7 @@ in order, the first one provides the context, and the fast path typesets the spa
    cached row placements (page positions anchored at each page's first row, the fast box's own
    geometry within the page) and a `ParagraphUpdate` is emitted. Row-count changes mark
    `pagination_stale`; inserts (footnote text) and degraded content are listed in `reasons`;
-   both schedule a background pass. A unit whose compiles exceed `fast_budget` (5 ms) three times in
+   both schedule a background pass. A unit whose compiles exceed `fast_budget` (`fast_budget_ms`, default 5) three times in
    a row leaves the fast path until the next layout (`OverBudget`; the first slow compiles are
    forgiven because they may be loading fonts).
 

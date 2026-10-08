@@ -1068,6 +1068,10 @@ pub struct Policy {
     pub packages: BTreeSet<String>,
     /// Math-mode macros defined in the preamble whose bodies are allow-listed (`\newcommand{\R}{\mathbb{R}}`).
     pub trusted_math: BTreeSet<String>,
+    /// Research mode: unknown macros, environments and missing packages do not make a unit
+    /// ineligible (structural reasons still do); the fast result is validated against the layout
+    /// instead (`rtex verify --permissive`).
+    pub permissive: bool,
     /// Environments defined in the preamble (`\newenvironment`) whose begin/end code is
     /// allow-listed text (font switches, `\noindent`, a label): typeset inside the paragraph
     /// they wrap. Ones whose code opens a block environment are in `theorem_envs` instead.
@@ -1144,6 +1148,7 @@ impl Policy {
             cite_ok: true,
             packages,
             trusted_math: BTreeSet::new(),
+            permissive: false,
             user_inner_envs: BTreeSet::new(),
         };
         // Macros defined in the preamble whose bodies are themselves allow-listed are trusted:
@@ -2138,6 +2143,21 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
     if shape == UnitShape::Par && text.contains("\\maketitle") {
         shape = UnitShape::Env("center".into());
     }
+    if policy.permissive {
+        reasons.retain(|r| {
+            !matches!(
+                r,
+                Reason::DisallowedMacro(_)
+                    | Reason::DisallowedMathMacro(_)
+                    | Reason::DisallowedEnvironment(_)
+                    | Reason::NeedsPackage(_)
+                    | Reason::MacroOutsideContext(_)
+                    | Reason::SizeDeclarationOutsideGroup(_)
+                    | Reason::LeadingCounter(_)
+                    | Reason::Verbatim
+            )
+        });
+    }
     (shape, reasons)
 }
 
@@ -2236,6 +2256,7 @@ mod tests {
             booktabs: true,
             tabularx: true,
             cite_ok: true,
+            permissive: false,
             packages: [
                 "hyperref", "url", "natbib", "siunitx", "ulem", "listings", "multirow", "colortbl",
                 "cancel", "bm", "amssymb",

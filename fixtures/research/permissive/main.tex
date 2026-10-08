@@ -1,0 +1,95 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{lipsum}
+\usepackage{multicol}
+\usepackage{framed}
+\usepackage{hyperref}
+\begin{document}
+
+\section{Constructs outside the allow-list}
+P01 Inline TikZ: a diagram \tikz[baseline]{\draw[blue] (0,0) -- (1ex,1ex) circle (1pt);} inside a sentence, followed by enough words for the paragraph to wrap onto a second line of text.
+
+P02 Boxes from graphicx: \scalebox{1.5}{bigger} and \rotatebox{10}{tilted} and \resizebox{3cm}{!}{resized text} inside running text that continues for a while so that it wraps.
+
+P03 Case changes: \MakeUppercase{shouting} and \MakeLowercase{QUIET} and \uppercase{primitive} in a paragraph of ordinary text that wraps onto the next line.
+
+P04 Primitives: a \kern2pt kern, a \hskip 5pt plus 1pt hskip, \llap{x}overlap, \rlap{y}, \smash{smashed}, \hbox{boxed}, \lower2pt\hbox{lowered}, \raise2pt\hbox{raised} and \penalty0 a penalty.
+
+P05 A paragraph with \lipsum[1][1-2] generated text in the middle, then its own words.
+
+P06 Symbols: \textbullet{} \textperiodcentered{} \textasteriskcentered{} \textordfeminine{} \textordmasculine{} \textexclamdown{} \textquestiondown{} \textsterling{} \textcelsius{} \textmu{} \textonehalf{} \textrightarrow{} \textleftarrow.
+
+P07 Page-dependent: this is page \thepage{} of the document, and the counter value is \arabic{page}, in a paragraph long enough to wrap onto another line of text.
+
+P08 A margin note\marginpar{\small in the margin} inside a paragraph of running text that continues long enough to wrap onto a second line.
+
+P09 A definition inside the paragraph: \newcommand{\local}{locally defined} then \local{} used right away, and \def\pl{plain def} \pl{} as well, in running text.
+
+P10 \pagecolor{yellow!10}A global page colour set inside a paragraph (a state leak if it survives), with text after it.
+
+P11 Hyperref targets: \hypertarget{tgt}{a target} and \hyperlink{tgt}{a link to it} and \href{https://example.org}{a URL} in a paragraph that wraps onto the next line of text.
+
+P12 Math outside the list: $\boxed{E = mc^2}$, $\pmb{v}$, $\mathit{word}$, $\smash{\sqrt{x}}$, $\overset{a}{b}$, $\underset{c}{d}$, $\xrightarrow{f}$, $\mathring{a}$, $\breve{a}$, $\check{a}$, $\acute{a}$, $\grave{a}$.
+
+P13 Math with mathchoice and style: $\displaystyle\sum_{i=1}^n i$ and $\textstyle\sum_i$ and $\scriptstyle x$ and $\mathchoice{D}{T}{S}{SS}$ in text that wraps to a second line of the paragraph.
+
+\begin{center}
+\begin{tikzpicture}
+  \draw[->] (0,0) -- (4,0) node[right] {$x$};
+  \draw[->] (0,0) -- (0,2) node[above] {$y$};
+  \draw[thick, red] (0,0.5) .. controls (1,2) and (3,0) .. (4,1.5);
+\end{tikzpicture}
+\end{center}
+
+\begin{framed}
+P15 A framed environment (framed package) around a paragraph of text that is long enough to wrap onto a second line inside the frame.
+\end{framed}
+
+\begin{multicols}{2}
+P16 Two columns from multicol with a paragraph long enough to fill a few lines in each of the two columns, repeated: text text text text text text text text text text text text text text text text text text text text text text text text.
+\end{multicols}
+
+\begin{sloppypar}
+P17 A sloppypar environment with a paragraph that would otherwise be hard to break: supercalifragilisticexpialidocious antidisestablishmentarianism pneumonoultramicroscopicsilicovolcanoconiosis floccinaucinihilipilification.
+\end{sloppypar}
+
+\begin{samepage}
+P18 A samepage environment around an ordinary paragraph of text that wraps onto a second line to exercise its penalties.
+\end{samepage}
+
+\begin{tabbing}
+P19 \= first column \= second column \\
+\> tabbing \> rows \\
+\end{tabbing}
+
+\begin{minipage}{0.6\textwidth}
+P20 A minipage with a footnote\footnote{inside the minipage} and text that wraps within the minipage width to a second line.
+\end{minipage}
+
+P21 Colour models: \textcolor[rgb]{0.2,0.4,0.8}{rgb text}, \textcolor[gray]{0.5}{gray text}, \colorbox[HTML]{FFEEAA}{html box}, \color{teal!60!black}mixed colour until the end of the paragraph, which wraps.
+
+P22 Spacing primitives at the end of lines \vskip 3pt and \vspace{2pt} inside a paragraph (vertical material in horizontal mode), plus \newline a forced newline and \\* a starred break.
+
+P23 Footnote marks and texts split: text\footnotemark{} continues\footnotetext{the text of the split footnote} and more words so that the paragraph wraps onto a second line.
+
+P24 A centerline: \centerline{centred line inside a paragraph} and after it the paragraph continues with words that wrap.
+
+P25 The \char`\A{} primitive, \symbol{65}, \string\foo{} and \expandafter\relax\csname relax\endcsname inside a paragraph of text.
+
+P26 Nested emphasis \emph{outer \emph{inner} outer} and \textit{\textbf{bold italic}} and \underline{\emph{under}} in text that wraps onto the next line of the page.
+
+P27 A list with custom labels:
+\begin{itemize}
+  \item[\textbullet] bullet item
+  \item[--] dash item
+  \item[$\star$] star item
+\end{itemize}
+
+P28 Loops: \newcount\cnt \cnt=0 \loop x\advance\cnt 1 \ifnum\cnt<5 \repeat{} and a \foreach \i in {1,2,3} {\i,} foreach from pgf.
+
+\end{document}

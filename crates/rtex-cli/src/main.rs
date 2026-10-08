@@ -64,6 +64,9 @@ enum Cmd {
         /// Fail unless at least this many units are eligible for the fast path (regression gate).
         #[arg(long)]
         min_eligible: Option<usize>,
+        /// Research: ignore the allow-list and let the row comparison judge every unit.
+        #[arg(long)]
+        permissive: bool,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -73,6 +76,10 @@ enum Cmd {
         main: String,
         #[arg(long)]
         build: Option<PathBuf>,
+        /// Per-unit fast-path budget in milliseconds: a unit whose compiles take longer three
+        /// times in a row goes to the background path until the next layout (default 5).
+        #[arg(long, default_value_t = 5)]
+        fast_budget_ms: u64,
     },
     /// Open a session, apply one edit, print the resulting paragraph update.
     Edit {
@@ -187,6 +194,7 @@ fn main() -> anyhow::Result<()> {
             units,
             dump_rows,
             min_eligible,
+            permissive,
         } => {
             let r = verify::run(verify::VerifyOpts {
                 project,
@@ -199,6 +207,7 @@ fn main() -> anyhow::Result<()> {
                 units,
                 dump_rows,
                 min_eligible,
+                permissive,
             })?;
             if !(r.layer1_pass
                 && r.layer2_pass
@@ -212,7 +221,8 @@ fn main() -> anyhow::Result<()> {
             project,
             main,
             build,
-        } => serve::run(project, main, build)?,
+            fast_budget_ms,
+        } => serve::run(project, main, build, fast_budget_ms)?,
         Cmd::Edit {
             project,
             main,
