@@ -81,7 +81,7 @@ local function font_entry(f)
   local e = font_cache[f]
   if not e then
     local tfm = font.getfont(f)
-    e = { tfm = tfm, chars = tfm and tfm.characters or {}, widths = {}, idx = {},
+    e = { tfm = tfm, chars = tfm and tfm.characters or {}, widths = {}, idx = {}, ew = {},
           virtual = tfm and tfm.type == "virtual" or false,
           fonts = tfm and tfm.fonts or nil }
     font_cache[f] = e
@@ -156,12 +156,32 @@ end
 
 -- Binary sink (docs/DISPLAY_LIST.md): records are appended to self.buf as they are produced;
 -- consecutive glyphs with the same font/baseline/expansion are coalesced into one GLYPHS run.
+-- A glyph run is a flat integer array (char, glyph index, x, width per glyph) packed once at
+-- flush time with a cached repeated format: cheaper than one string.pack per glyph (E22).
+local RUN_FMT = setmetatable({}, { __index = function(t, k) local f = "<" .. ("I4I4i4i4"):rep(k); t[k] = f; return f end })
+local RUN_CHUNK = 256  -- glyphs per pack call (bounds the format string and the unpack size)
+local unpack = table.unpack
 function State:bin_flush_run()
   local run = self.run
   if run then
-    local n = self.rn
+    local k = self.rn
+    local n = k // 4
     self.glyphs = self.glyphs + n
-    self.buf[#self.buf + 1] = pack("<Bs4", 0x20, pack("<I4i4i4I4", self.run_font, self.run_y, self.run_ef, n) .. concat(run, "", 1, n))
+    local head = pack("<I4i4i4I4", self.run_font, self.run_y, self.run_ef, n)
+    local body
+    if n <= RUN_CHUNK then
+      body = pack(RUN_FMT[n], unpack(run, 1, k))
+    else
+      local parts, np = {}, 0
+      for i = 1, k, RUN_CHUNK * 4 do
+        local j = i + RUN_CHUNK * 4 - 1
+        if j > k then j = k end
+        np = np + 1
+        parts[np] = pack(RUN_FMT[(j - i + 1) // 4], unpack(run, i, j))
+      end
+      body = concat(parts, "", 1, np)
+    end
+    self.buf[#self.buf + 1] = pack("<Bs4", 0x20, head .. body)
     self.run = nil
     self.rn = 0
   end
@@ -180,9 +200,10 @@ function State:emit(item)
         self:bin_flush_run()
         self.run, self.rn, self.run_font, self.run_y, self.run_ef = {}, 0, f, y, ef
       end
-      local n = self.rn + 1
-      self.rn = n
-      self.run[n] = pack("<I4I4i4i4", item[3] or 0, item[4] or 0xFFFFFFFF, item[5], item[7])
+      local n = self.rn
+      local run = self.run
+      run[n + 1], run[n + 2], run[n + 3], run[n + 4] = item[3] or 0, item[4] or 0xFFFFFFFF, item[5], item[7]
+      self.rn = n + 4
       -- (binary mode counts glyphs at flush time)
     elseif t == "r" then self:bin_rec(0x21, pack("<i4i4i4i4", item[2], item[3], item[4], item[5]))
     elseif t == "c" then
@@ -217,6 +238,7 @@ local hlist_out, vlist_out
 -- move it to/from the state around calls that may emit records or recurse.
 hlist_out = function(st, box, left, base_v)
   local last_f, last_e = nil, nil
+  local ew, ew_f, ew_ef = nil, nil, nil  -- advance-width cache for the current (font, expansion)
   local bin = st.bin
   local g_order, g_sign, g_set = getfield(box, "glue_order"), getfield(box, "glue_sign"), getfield(box, "glue_set")
   local box_w, box_h, box_d = getwhd(box)
@@ -254,19 +276,29 @@ hlist_out = function(st, box, left, base_v)
         local f, c = getfont(n), getchar(n)
         local ef = getexpansion(n) or 0
         local xo, yo = getoffsets(n)
-        -- glyph widths from the engine are integers (scaled points)
-        local w = getwidth(n)
-        if ef ~= 0 then w = expand(w, ef) end
         if f ~= last_f then
-          last_e = font_entry(f)
+          last_e = font_cache[f] or font_entry(f)
           last_f = f
           if not st.fonts[f] then st:usefont(f) end
         end
         local e = last_e
+        -- advance width: the engine's integer char width, expanded by ef; the same (font,
+        -- char, ef) always yields the same value, so it is computed once per font entry
+        if f ~= ew_f or ef ~= ew_ef then
+          ew = e.ew[ef]
+          if not ew then ew = {}; e.ew[ef] = ew end
+          ew_f, ew_ef = f, ef
+        end
+        local w = ew[c]
+        if w == nil then
+          w = getwidth(n)
+          if ef ~= 0 then w = expand(w, ef) end
+          ew[c] = w
+        end
         if e.virtual then
           sync_out(); st:emit_virtual(f, c, cur_h + (xo or 0), base_v - (yo or 0), ef); sync_in()
         elseif bin then
-          -- hot path: pack straight into the current glyph run
+          -- hot path: append to the current glyph run (flat integer array)
           local y = base_v - yo
           if not run or f ~= run_font or y ~= run_y or ef ~= run_ef then
             sync_out(); st:bin_flush_run()
@@ -278,8 +310,8 @@ hlist_out = function(st, box, left, base_v)
             gi = (ch and ch.index) or 0xFFFFFFFF
             e.idx[c] = gi
           end
-          rn = rn + 1
-          run[rn] = pack("<I4I4i4i4", c, gi, cur_h + xo, w)
+          run[rn + 1], run[rn + 2], run[rn + 3], run[rn + 4] = c, gi, cur_h + xo, w
+          rn = rn + 4
         else
           local gi = glyph_index(f, c)
           st.glyphs = st.glyphs + 1

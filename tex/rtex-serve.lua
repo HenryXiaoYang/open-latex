@@ -46,19 +46,41 @@ local FP_CATCODES = { 92, 123, 125, 36, 38, 35, 94, 95, 37, 126 }
 local tex_get, getcatcode, getcount, gettoks = tex.get, tex.getcatcode, tex.getcount, tex.gettoks
 local create = token.create
 local IFTRUE_MODE = create("iftrue").mode
+-- Token objects report the *current* meaning of their control sequence (E24), so the kernel
+-- conditionals are created once and only their mode is read per compile.
+local FP_IFS = {}
 local function ifmode(name)
   local ok, t = pcall(create, name)
   return ok and t and t.mode or -1
 end
-function S.fingerprint()
-  local fp = { tex.currentgrouplevel, tex.nest.ptr, tex.interactionmode,
-               gettoks("everypar"), tex_get("hsize"), tex_get("parindent"), tex_get("language"),
-               ifmode("if@inlabel"), ifmode("if@newlist"), ifmode("if@minipage") }
+local function fp_if(i, name)
+  local t = FP_IFS[i]
+  if t == nil then
+    local ok, tok = pcall(create, name)
+    t = ok and tok or false
+    FP_IFS[i] = t
+  end
+  return t and t.mode or -1
+end
+local FP_N = 10 + #FP_CATCODES + 10
+-- The fingerprint is an array (compared element-wise against the baseline: no string building
+-- on the hot path); S.fp_string renders it for the fatal report.
+function S.fingerprint(fp)
+  fp = fp or {}
+  fp[1], fp[2], fp[3] = tex.currentgrouplevel, tex.nest.ptr, tex.interactionmode
+  fp[4], fp[5], fp[6], fp[7] = gettoks("everypar"), tex_get("hsize"), tex_get("parindent"), tex_get("language")
+  fp[8], fp[9], fp[10] = fp_if(1, "if@inlabel"), fp_if(2, "if@newlist"), fp_if(3, "if@minipage")
   local n = 10
   for i = 1, #FP_CATCODES do n = n + 1; fp[n] = getcatcode(FP_CATCODES[i]) end
   for i = 0, 9 do n = n + 1; fp[n] = getcount(i) end
-  return table.concat(fp, "|", 1, n)
+  return fp
 end
+function S.fp_equal(a, b)
+  for i = 1, FP_N do if a[i] ~= b[i] then return false end end
+  return true
+end
+function S.fp_string(fp) return table.concat(fp, "|", 1, FP_N) end
+local fp_scratch = {}
 -- Baseline taken once the server is idle at the outer level (init, and again after each
 -- font change at the outer level); every compile must end in this state.
 S.fp_base = nil
@@ -90,8 +112,18 @@ S.counter_base = {}
 local tex_set, setglue = tex.set, tex.setglue
 local function install_context(id, ctx)
   local ints, dims, glues = {}, {}, {}
-  for k, v in pairs(ctx.ints or {}) do ints[#ints + 1] = k; ints[#ints + 1] = v end
-  for k, v in pairs(ctx.dims or {}) do dims[#dims + 1] = k; dims[#dims + 1] = v end
+  -- Contexts are installed while the server idles at the outer level, and the unit box
+  -- inherits that level's parameters, so only integer and dimen parameters that differ from
+  -- the idle values need replaying. Glue parameters are always replayed: \selectfont at the
+  -- outer level (font changes between requests) rewrites \baselineskip.
+  for k, v in pairs(ctx.ints or {}) do
+    local ok, cur = pcall(tex_get, k)
+    if not ok or cur ~= v then ints[#ints + 1] = k; ints[#ints + 1] = v end
+  end
+  for k, v in pairs(ctx.dims or {}) do
+    local ok, cur = pcall(tex_get, k)
+    if not ok or cur ~= v then dims[#dims + 1] = k; dims[#dims + 1] = v end
+  end
   for k, v in pairs(ctx.glues or {}) do glues[#glues + 1] = { k, v[1] or 0, v[2] or 0, v[3] or 0, v[4] or 0, v[5] or 0 } end
   ctx.a_ints, ctx.a_dims, ctx.a_glues = ints, dims, glues
   -- tokens after \bgroup: counters (TeX assignments, local to the group; `page` is never
@@ -235,10 +267,10 @@ function S.finish()
   for name, v in pairs(cb) do
     if getcount("c@" .. name) ~= v then tex.setcount("global", "c@" .. name, v) end
   end
-  local fp1 = S.fingerprint()
+  local fp1 = S.fingerprint(fp_scratch)
   local t1b = gettime()
-  if fp1 ~= S.fp_base or font.current() ~= S.font_outer then
-    send{ op = "fatal", req = cur.req, reason = "state_mismatch", before = S.fp_base, after = fp1, errors = S.errors }
+  if font.current() ~= S.font_outer or not S.fp_equal(fp1, S.fp_base) then
+    send{ op = "fatal", req = cur.req, reason = "state_mismatch", before = S.fp_string(S.fp_base), after = S.fp_string(fp1), errors = S.errors }
     resp:flush()
     os.exit(3)
   end
@@ -449,7 +481,7 @@ function S.init(boxnum, countnum, cctnum)
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,
-        fingerprint = S.fp_base, font_nextid = font.nextid() }
+        fingerprint = S.fp_string(S.fp_base), font_nextid = font.nextid() }
   log("ready")
 end
 
