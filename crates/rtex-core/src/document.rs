@@ -491,7 +491,11 @@ mod tests {
         }
         times.sort();
         eprintln!("200 edits on a {}-byte / {}-span document: median {:?}, mean {:?} per edit (the mean includes edits after a probe broke an \\end{{itemize}}, which makes the rest of the document one span)", fb.text.len(), n, times[100], t_total / 200);
-        assert!(times[100] < std::time::Duration::from_micros(250), "median per-edit cost {:?}", times[100]);
+        // the timing bound is a release-build property (debug builds are ~10× slower and also run
+        // the debug_assert that recomputes every line start); correctness is checked above either way
+        if !cfg!(debug_assertions) {
+            assert!(times[100] < std::time::Duration::from_micros(250), "median per-edit cost {:?}", times[100]);
+        }
     }
 
     #[test]
