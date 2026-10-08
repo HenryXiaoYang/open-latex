@@ -187,12 +187,7 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
         let c = &eu.captured;
         let src = fb.fast_source(span_id).unwrap_or_default();
         let (shape, mut reasons) = classify_source(&src, &policy);
-        let has_ctx = c.kind != "par"
-            || eu
-                .first_para
-                .as_ref()
-                .map(|p| p.begin.is_some())
-                .unwrap_or(false);
+        let has_ctx = eu.has_context();
         reasons.extend(check_engine_unit(
             &c.kind,
             &c.everypar,

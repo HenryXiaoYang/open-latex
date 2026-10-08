@@ -30,9 +30,16 @@ fn wait(s: &Session, secs: u64, pred: impl FnMut(&Event) -> bool) -> (Option<Eve
     (ev, others)
 }
 
+/// The next layout that ends a run. A slow multi-pass run also delivers each finished pass as a
+/// provisional layout (`Converging { reasons: ["another pass is running"] }`); those are skipped
+/// so the tests see runs, whatever the machine's speed.
 fn wait_layout(s: &Session) -> Event {
     let t0 = std::time::Instant::now();
-    let (ev, others) = wait(s, 120, |e| matches!(e, Event::LayoutUpdate { .. }));
+    let (ev, others) = wait(s, 120, |e| {
+        !matches!(e, Event::LayoutUpdate { convergence: Convergence::Converging { reasons, .. }, .. }
+            if reasons.iter().any(|r| r == "another pass is running"))
+            && matches!(e, Event::LayoutUpdate { .. })
+    });
     eprintln!(
         "[test] wait_layout: {:?} after {:.1}s ({} other events)",
         ev.as_ref().map(|e| match e {
@@ -84,7 +91,7 @@ fn fast_path_edit_produces_paragraph_update_with_fragments() {
     else {
         unreachable!()
     };
-    assert_eq!(versions.layout_version, 1);
+    assert!(versions.layout_version >= 1);
     assert_eq!(convergence, Convergence::Converged);
     assert!(pages_total >= 2);
     assert!(!eligible_paragraphs.is_empty());
@@ -124,7 +131,7 @@ fn fast_path_edit_produces_paragraph_update_with_fragments() {
     assert_eq!(status, "ok");
     assert_eq!(edit_id, r.edit_id);
     assert_eq!(v2.source_revision, r.source_revision);
-    assert_eq!(v2.layout_version, 1);
+    assert_eq!(v2.layout_version, versions.layout_version);
     assert!(!fragments.is_empty());
     assert_eq!(
         fragments.iter().map(|f| f.baselines.len()).sum::<usize>(),
@@ -182,7 +189,7 @@ fn ineligible_edit_goes_to_background_and_reconverges() {
     else {
         unreachable!()
     };
-    assert_eq!(versions.layout_version, 2);
+    assert!(versions.layout_version >= 2);
     assert_eq!(convergence, Convergence::Converged);
     assert_eq!(compile, rtex_core::session::CompileStatus::Ok); // undefined ref is a warning, not an error
     s.close();
@@ -1083,20 +1090,6 @@ fn probe_mode_verifies_and_demotes() {
     for sp in [&scaled, &paged, &leaky] {
         assert!(eligible_paragraphs.contains(&sp.id));
     }
-    if let (
-        Some(Event::LayoutUpdate {
-            eligible_paragraphs: e2,
-            versions,
-            ..
-        }),
-        _,
-    ) = wait(&s, 3, |e| matches!(e, Event::LayoutUpdate { .. }))
-    {
-        eprintln!(
-            "[test] second layout v{} eligible {:?}",
-            versions.layout_version, e2
-        );
-    }
     step("verified unit");
     let scaled = {
         let doc = s.document_text("main.tex").unwrap();
@@ -1133,20 +1126,6 @@ fn probe_mode_verifies_and_demotes() {
     assert!(status.starts_with("ok"), "{status}");
     assert!(dl.glyph_count() > 20);
     step("unverifiable unit (page number)");
-    while let (
-        Some(Event::LayoutUpdate {
-            eligible_paragraphs: e2,
-            versions,
-            ..
-        }),
-        _,
-    ) = wait(&s, 3, |e| matches!(e, Event::LayoutUpdate { .. }))
-    {
-        eprintln!(
-            "[test] later layout v{} src {} eligible {:?}",
-            versions.layout_version, versions.source_revision, e2
-        );
-    }
     let paged = {
         let doc = s.document_text("main.tex").unwrap();
         s.spans("main.tex")
@@ -1198,20 +1177,6 @@ fn probe_mode_verifies_and_demotes() {
         "{:?}",
         r3.reasons
     );
-    while let (
-        Some(Event::LayoutUpdate {
-            eligible_paragraphs: e2,
-            versions,
-            ..
-        }),
-        _,
-    ) = wait(&s, 3, |e| matches!(e, Event::LayoutUpdate { .. }))
-    {
-        eprintln!(
-            "[test] later layout v{} src {} eligible {:?}",
-            versions.layout_version, versions.source_revision, e2
-        );
-    }
     step("leaking unit");
     let gen_before = s.versions().engine_generation;
     let leaky = {

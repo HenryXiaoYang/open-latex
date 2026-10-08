@@ -59,6 +59,27 @@ impl EngineUnit {
     pub fn kind(&self) -> &str {
         &self.captured.kind
     }
+    /// Does the unit have a replayable context? Environment and heading units always (their
+    /// state is captured when they open); a paragraph unit when one of its paragraphs has a
+    /// `para/begin` record, or when it was opened by `para/begin` itself (a paragraph that
+    /// opens with display math has no line-broken text before the display, but the unit's
+    /// own record holds the state at that point).
+    pub fn has_context(&self) -> bool {
+        self.captured.kind != "par"
+            || self
+                .first_para
+                .as_ref()
+                .map(|p| p.begin.is_some())
+                .unwrap_or(false)
+            || self
+                .captured
+                .nfss
+                .family
+                .as_deref()
+                .map(|f| !f.is_empty())
+                .unwrap_or(false)
+    }
+
     /// Counters the unit advanced in the last pass (name → value at its end).
     pub fn advanced(&self) -> BTreeMap<String, i64> {
         self.captured.advanced.clone().unwrap_or_default()
@@ -95,7 +116,7 @@ impl EngineUnit {
             "kind": c.kind, "name": c.name,
             "ints": ints, "dims": dims, "glues": glues, "parshape": parshape,
             "everypar": c.everypar, "nobreak": c.nobreak, "afterindent": c.afterindent, "noskipsec": c.noskipsec,
-            "counters": c.abs_counters, "thefmt": c.abs_thefmt,
+            "counters": c.abs_counters, "thefmt": c.abs_thefmt, "macros": c.abs_macros,
             "begin": { "nfss": nfss, "color": color },
         })
     }

@@ -22,7 +22,8 @@ C.INT_PARAMS, C.DIM_PARAMS, C.GLUE_PARAMS = INT_PARAMS, DIM_PARAMS, GLUE_PARAMS
 -- environments) come from $RTEX_UNIT_ENVS.
 C.BLOCK_ENVS = { "itemize", "enumerate", "description", "quote", "quotation", "verse", "center",
   "flushleft", "flushright", "figure", "figure*", "table", "table*", "abstract", "tabbing",
-  "proof", "verbatim", "verbatim*", "lstlisting", "Verbatim", "alltt", "spacing", "thebibliography" }
+  "proof", "verbatim", "verbatim*", "lstlisting", "Verbatim", "alltt", "spacing", "thebibliography",
+  "tikzpicture", "circuitikz", "pgfpicture" }
 C.HEADINGS = { "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph" }
 local TWO_PAR_HEADINGS = { part = true, chapter = true }
 local UNSET = -0x7FFFFFFF
@@ -56,6 +57,50 @@ local function counter_delta()
   local d = {}
   for k, v in pairs(now) do if prev_counters[k] ~= v then d[k] = v end end
   prev_counters = now
+  return d
+end
+-- Macros the document body (re)defines (\renewcommand{\arraystretch}{1.6} before a table,
+-- \def\H{4} before a picture): their meaning at each unit is captured like the counters and
+-- replayed by the server, so a setting changed mid-document reaches the fast path at the right
+-- place. The names come from scanning the document's source files for definitions.
+local tracked_macros = { "arraystretch", "baselinestretch" }
+local prev_macros = {}
+local function meaning(name)
+  if token.get_meaning then
+    local ok, m = pcall(token.get_meaning, name)
+    if ok and m then return m end
+  end
+  local ok, b = pcall(token.get_macro, name)
+  return ok and b and ("->" .. b) or nil
+end
+local function scan_definitions(path, seen, depth)
+  if depth > 6 then return end
+  local f = io.open(path, "r")
+  if not f then return end
+  local text = f:read("*a")
+  f:close()
+  -- strip comments (unescaped % to end of line)
+  text = text:gsub("\\%%", "\0"):gsub("%%[^\n]*", ""):gsub("%z", "\\%%")
+  for name in text:gmatch("\\re?newcommand%*?%s*{?\\(%a+)") do seen[name] = true end
+  for name in text:gmatch("\\providecommand%*?%s*{?\\(%a+)") do seen[name] = true end
+  for name in text:gmatch("\\[gex]?def%s*\\(%a+)") do seen[name] = true end
+  for name in text:gmatch("\\let%s*\\(%a+)") do seen[name] = true end
+  for name in text:gmatch("\\setlength%s*\\(%a+)") do seen[name] = true end
+  for sub in text:gmatch("\\input%s*{([^}]*)}") do
+    local sp = sub:match("%.tex$") and sub or (sub .. ".tex")
+    scan_definitions(sp, seen, depth + 1)
+  end
+  for sub in text:gmatch("\\include%s*{([^}]*)}") do
+    scan_definitions(sub .. ".tex", seen, depth + 1)
+  end
+end
+local function macro_delta()
+  local d = {}
+  for i = 1, #tracked_macros do
+    local n = tracked_macros[i]
+    local m = meaning(n)
+    if m and prev_macros[n] ~= m then d[n] = m; prev_macros[n] = m end
+  end
   return d
 end
 -- \the<counter> formats (\thesection …): \appendix, \renewcommand{\thesection}{…} and
@@ -109,6 +154,15 @@ function C.begin_document()
   for n in ck:gmatch("\\@elt%s*{([^}]*)}") do counter_names[#counter_names + 1] = n end
   prev_counters = {}
   prev_thefmt = {}
+  prev_macros = {}
+  local seen = {}
+  scan_definitions(tex.jobname .. ".tex", seen, 0)
+  for name in pairs(seen) do
+    local known = false
+    for i = 1, #tracked_macros do if tracked_macros[i] == name then known = true end end
+    -- only macros (not counters, lengths or primitives): \c@…, \the…, \if… are handled elsewhere
+    if not known and not name:match("^the") and not name:match("^if") then tracked_macros[#tracked_macros + 1] = name end
+  end
   C.outer = snapshot_outer()
 end
 
@@ -117,7 +171,7 @@ local function unit_open(kind, name, set_attr)
   C.uid = C.uid + 1
   local ints, dims, glues = params()
   local u = { uid = C.uid, kind = kind, name = name, file = status.filename, begin_line = tex.inputlineno,
-              nest = tex.nest.ptr, seqs = {}, placements = {}, counters = counter_delta(), thefmt = thefmt_delta(),
+              nest = tex.nest.ptr, seqs = {}, placements = {}, counters = counter_delta(), thefmt = thefmt_delta(), macros = macro_delta(),
               everypar = tex.gettoks("everypar"), nobreak = iftrue("if@nobreak"),
               afterindent = iftrue("if@afterindent"), noskipsec = iftrue("if@noskipsec"),
               nfss = nfss(), color = macro("current@color"),

@@ -302,6 +302,8 @@ struct Shared {
     pending_signal: (Sender<()>, Receiver<()>),
     bg_signal: (Sender<BgCmd>, Receiver<BgCmd>),
     shutdown: AtomicBool,
+    /// A background pass is compiling right now: fast-path timings are not budget evidence.
+    bg_running: AtomicBool,
     /// Background passes are deferred while paused (benchmarks, host-controlled quiet periods).
     bg_paused: AtomicBool,
     bg_pending_while_paused: AtomicBool,
@@ -401,6 +403,7 @@ impl Session {
             pending_signal: unbounded(),
             bg_signal: unbounded(),
             shutdown: AtomicBool::new(false),
+            bg_running: AtomicBool::new(false),
             bg_paused: AtomicBool::new(false),
             bg_pending_while_paused: AtomicBool::new(false),
             cfg,
@@ -861,18 +864,9 @@ impl Session {
                     }
                 }
                 let c = &eu.captured;
-                for r in check_engine_unit(
-                    &c.kind,
-                    &c.everypar,
-                    c.kind != "par"
-                        || eu
-                            .first_para
-                            .as_ref()
-                            .map(|p| p.begin.is_some())
-                            .unwrap_or(false),
-                    eu.rows(),
-                    &eu.flags,
-                ) {
+                for r in
+                    check_engine_unit(&c.kind, &c.everypar, eu.has_context(), eu.rows(), &eu.flags)
+                {
                     reasons.push(reason_str(&r));
                 }
                 let shape_ok = match (&shape, c.kind.as_str()) {
@@ -1834,6 +1828,10 @@ fn handle_result(
     // in a row mark the unit.
     const STRIKES: u32 = 3;
     if total_us > s.cfg.fast_budget.as_micros() as u64 {
+        if s.bg_running.load(Ordering::SeqCst) {
+            // a layout pass is using the CPU: a slow round trip now says nothing about the unit
+            return;
+        }
         let mut cand = s.slow_candidates.lock();
         let n = cand.entry(req.par_id).or_insert(0);
         *n += 1;
@@ -2008,6 +2006,16 @@ fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpan>, Revisio
 }
 
 fn run_background_pass(s: &Shared) {
+    s.bg_running.store(true, Ordering::SeqCst);
+    run_background_pass_inner(s);
+    s.bg_running.store(false, Ordering::SeqCst);
+}
+
+/// A pass of a multi-pass run that took long enough to be worth showing before the run is
+/// stable (TikZ-heavy documents: 45 s per pass, three passes to converge).
+const PROVISIONAL_LAYOUT_AFTER: Duration = Duration::from_secs(2);
+
+fn run_background_pass_inner(s: &Shared) {
     let t0 = Instant::now();
     let (texts, spans, rev) = snapshot(s);
     let snap_dir = snapshot_dir(&s.cfg.build_dir);
@@ -2114,6 +2122,23 @@ fn run_background_pass(s: &Shared) {
             }
             w.run(&s.cfg.project_root, &texts, &s.cfg.main_file)
         };
+        let spans_for_provisional = spans.clone();
+        let mut pass_started = Instant::now();
+        let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
+            if pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
+                deliver_layout(
+                    s,
+                    t0,
+                    cap,
+                    pass,
+                    false,
+                    spans_for_provisional.clone(),
+                    rev,
+                    true,
+                );
+            }
+            pass_started = Instant::now();
+        };
         run_pass_with_runner(
             &s.tl,
             &standby_dir(s, 0),
@@ -2122,6 +2147,7 @@ fn run_background_pass(s: &Shared) {
             s.cfg.max_passes,
             s.cfg.bib_tool,
             &mut runner,
+            &mut on_pass,
         )
     } else {
         run_pass_with(
@@ -2142,7 +2168,73 @@ fn run_background_pass(s: &Shared) {
             return;
         }
     };
-    let mut diagnostics = parse_log(&outcome.capture.log);
+    let outcome_cap = outcome.capture;
+    deliver_layout(
+        s,
+        t0,
+        &outcome_cap,
+        outcome.passes,
+        outcome.aux_stable,
+        spans,
+        rev,
+        false,
+    );
+}
+
+fn layout_failed(s: &Shared, t0: Instant, rev: Revision, msg: String) {
+    s.events
+        .send(Event::Diagnostics {
+            source: "background".into(),
+            items: vec![Diagnostic {
+                severity: "error".into(),
+                file: None,
+                line: None,
+                message: msg.clone(),
+                context: None,
+            }],
+        })
+        .ok();
+    *s.convergence.lock() = Some(Convergence::PassLimitReached {
+        passes: 0,
+        reasons: vec![msg.clone()],
+    });
+    s.events
+        .send(Event::LayoutUpdate {
+            versions: Versions {
+                source_revision: rev,
+                ..Default::default()
+            },
+            compile: CompileStatus::Failed,
+            convergence: Convergence::PassLimitReached {
+                passes: 0,
+                reasons: vec![msg],
+            },
+            passes: 0,
+            pages_changed: vec![],
+            pages_total: 0,
+            placements: vec![],
+            eligible_paragraphs: vec![],
+            pdf_fallback: None,
+            wall_ms: t0.elapsed().as_millis() as u64,
+        })
+        .ok();
+}
+
+/// Install a pass's capture as the current layout and tell the host. `provisional`: a pass of a
+/// run that is not stable yet (another pass follows); the layout is usable, its convergence is
+/// `Converging`.
+#[allow(clippy::too_many_arguments)]
+fn deliver_layout(
+    s: &Shared,
+    t0: Instant,
+    cap: &crate::capture::CaptureResult,
+    passes: u32,
+    aux_stable: bool,
+    spans: Vec<SnapshotSpan>,
+    rev: Revision,
+    provisional: bool,
+) {
+    let mut diagnostics = parse_log(&cap.log);
     for d in &mut diagnostics {
         // the standby reads the preamble from rtex-preamble.tex (same line numbers)
         if d.file
@@ -2154,7 +2246,7 @@ fn run_background_pass(s: &Shared) {
         }
     }
     let errors = diagnostics.iter().filter(|d| d.severity == "error").count();
-    let compile = if outcome.capture.json.pages == 0 {
+    let compile = if cap.json.pages == 0 {
         CompileStatus::Failed
     } else if errors > 0 {
         CompileStatus::CompiledWithErrors { count: errors }
@@ -2176,10 +2268,10 @@ fn run_background_pass(s: &Shared) {
                 },
                 compile,
                 convergence: Convergence::PassLimitReached {
-                    passes: outcome.passes,
+                    passes: passes,
                     reasons: vec!["no pages".into()],
                 },
-                passes: outcome.passes,
+                passes: passes,
                 pages_changed: vec![],
                 pages_total: 0,
                 placements: vec![],
@@ -2195,7 +2287,7 @@ fn run_background_pass(s: &Shared) {
         // together)
         let files = s.files.lock();
         let mut layout = s.layout.lock();
-        let changed = match layout.install(&outcome.capture, spans, rev) {
+        let changed = match layout.install(&cap, spans, rev) {
             Ok(c) => {
                 // verdicts are keyed by layout version; drop the old ones while the lock is held
                 s.probe.lock().clear();
@@ -2204,7 +2296,7 @@ fn run_background_pass(s: &Shared) {
             Err(e) => {
                 drop(layout);
                 drop(files);
-                failed(format!("install layout: {e}"));
+                layout_failed(s, t0, rev, format!("install layout: {e}"));
                 return;
             }
         };
@@ -2235,12 +2327,7 @@ fn run_background_pass(s: &Shared) {
                     kind,
                 });
             }
-            let has_ctx = c.kind != "par"
-                || eu
-                    .first_para
-                    .as_ref()
-                    .map(|p| p.begin.is_some())
-                    .unwrap_or(false);
+            let has_ctx = eu.has_context();
             // eligible = capture facts clean AND the span's source passes the allow-list with the
             // shape the capture saw (what apply_edit will decide for a one-character edit)
             let source_ok = layout
@@ -2338,7 +2425,7 @@ fn run_background_pass(s: &Shared) {
     s.counters_seen.lock().clear();
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
-    if !outcome.aux_stable {
+    if !aux_stable {
         reasons.push("aux family still changing".into());
     }
     if errors > 0 {
@@ -2348,16 +2435,21 @@ fn run_background_pass(s: &Shared) {
         Convergence::Stale {
             pending_since: rev + 1,
         }
-    } else if outcome.aux_stable && errors == 0 {
+    } else if provisional {
+        Convergence::Converging {
+            pass: passes,
+            reasons: vec!["another pass is running".into()],
+        }
+    } else if aux_stable && errors == 0 {
         Convergence::Converged
-    } else if !outcome.aux_stable && outcome.passes >= s.cfg.max_passes {
+    } else if !aux_stable && passes >= s.cfg.max_passes {
         Convergence::PassLimitReached {
-            passes: outcome.passes,
+            passes: passes,
             reasons: reasons.clone(),
         }
     } else {
         Convergence::Converging {
-            pass: outcome.passes,
+            pass: passes,
             reasons: reasons.clone(),
         }
     };
@@ -2376,7 +2468,7 @@ fn run_background_pass(s: &Shared) {
             })
             .collect()
     };
-    let pages_total = outcome.capture.json.pages;
+    let pages_total = cap.json.pages;
     if !diagnostics.is_empty() {
         s.events
             .send(Event::Diagnostics {
@@ -2391,7 +2483,7 @@ fn run_background_pass(s: &Shared) {
             versions,
             compile,
             convergence: convergence.clone(),
-            passes: outcome.passes,
+            passes: passes,
             pages_changed,
             pages_total,
             placements,

@@ -215,6 +215,7 @@ pub fn run_pass_with(
         max_passes,
         bib,
         &mut runner,
+        &mut |_, _| {},
     )
 }
 
@@ -228,6 +229,7 @@ pub fn run_pass_with_runner(
     max_passes: u32,
     bib: BibTool,
     runner: &mut dyn FnMut(u32) -> Result<CaptureResult>,
+    on_pass: &mut dyn FnMut(&CaptureResult, u32),
 ) -> Result<PassOutcome> {
     std::fs::create_dir_all(out_dir)?;
     let jobname = Path::new(main)
@@ -285,6 +287,10 @@ pub fn run_pass_with_runner(
         // part of the signature
         let rerun = log_requests_rerun(&cap.log) || sig_after != sig_before;
         sig_before = sig_after;
+        if rerun && passes < max_passes {
+            // another pass follows: the caller may show this one meanwhile
+            on_pass(&cap, passes);
+        }
         last = Some(cap);
         if !rerun {
             stable = true;

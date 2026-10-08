@@ -27,3 +27,13 @@ A missing bibliography tool makes the pass stop with `PassLimitReached` and a di
 `PdfExported.status` follows the same scale (`Ok` / `CompiledWithErrors` / `Failed`) and carries
 `converged` (aux stable and no errors); only `converged = true` claims equality with a clean
 LuaLaTeX build.
+
+## Provisional layouts (slow multi-pass runs)
+
+A run that needs several passes delivers each finished pass whose compile took 2 s or more as
+a **provisional** `LayoutUpdate` (`convergence: Converging { pass, reasons: ["another pass is
+running"] }`) while the next pass runs, then the final one as usual. On a TikZ-heavy document
+(45 s per pass, three passes to converge) the host shows a usable layout after 45 s instead of
+135 s. A provisional layout is a complete layout: placements, pages, contexts; only its
+cross-references and page numbers may still move. Short runs (under 2 s per pass) deliver only
+the final layout, as before.

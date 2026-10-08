@@ -66,13 +66,16 @@ of the latest pass (`EngineUnit::context_json`):
   "everypar": "", "nobreak": false, "afterindent": true, "noskipsec": false,
   "counters": {"chapter":1, "section":2, "equation":3, "footnote":1, "figure":0, "...":0},
   "thefmt": {"section":"\\@Alph \\c@section ", "...":"..."},
+  "macros": {"arraystretch":"->1.6", "H":"->4"},
   "begin": { "nfss": {"enc":"TU","family":"TeXGyrePagella(0)","series":"m","shape":"n","size":"10.95","baselineskip":"13.6pt"},
              "color": "0 g 0 G" } }
 ```
 
 `everypar` must be one of the kernel's own patterns (empty, `\leftprotrusion`, the text left by
 `\@afterheading`, `\@doendpe` or `\@setminipage`); the host refuses anything else before the
-server does. `thefmt` holds the `\the<counter>` bodies in force at the unit (replayed as local
+server does. `macros` holds the meanings (`"macro:#1->body"`, as `\meaning` prints them) of the
+macros the document body (re)defines, in force at the unit; the server replays them as local
+`\def`s. `thefmt` holds the `\the<counter>` bodies in force at the unit (replayed as local
 `\def\the<counter>{…}` when they differ from the server's idle ones: `\appendix`,
 `\renewcommand{\thesection}`). `counters` are the LaTeX counters at the unit's start (replayed as local `\c@…=`
 assignments; `page` is never replayed) so equation, figure, table, footnote and theorem numbers

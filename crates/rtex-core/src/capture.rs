@@ -95,6 +95,12 @@ pub struct CapturedUnit {
     /// Absolute `\the<counter>` bodies at unit begin (filled by `CaptureJson::finalize`).
     #[serde(skip)]
     pub abs_thefmt: BTreeMap<String, String>,
+    /// Meanings of the macros the body (re)defines that changed since the previous unit (delta).
+    #[serde(default)]
+    pub macros: serde_json::Value,
+    /// Absolute meanings at unit begin (filled by `CaptureJson::finalize`).
+    #[serde(skip)]
+    pub abs_macros: BTreeMap<String, String>,
     #[serde(default)]
     pub everypar: String,
     #[serde(default)]
@@ -188,6 +194,7 @@ impl CaptureJson {
     pub fn finalize(&mut self) {
         let mut acc: BTreeMap<String, i64> = BTreeMap::new();
         let mut fmt: BTreeMap<String, String> = BTreeMap::new();
+        let mut mac: BTreeMap<String, String> = BTreeMap::new();
         for u in &mut self.units {
             if let serde_json::Value::Object(m) = &u.counters {
                 for (k, v) in m {
@@ -203,8 +210,16 @@ impl CaptureJson {
                     }
                 }
             }
+            if let serde_json::Value::Object(m) = &u.macros {
+                for (k, v) in m {
+                    if let Some(b) = v.as_str() {
+                        mac.insert(k.clone(), b.to_string());
+                    }
+                }
+            }
             u.abs_counters = acc.clone();
             u.abs_thefmt = fmt.clone();
+            u.abs_macros = mac.clone();
         }
     }
     pub fn unit(&self, uid: i64) -> Option<&CapturedUnit> {

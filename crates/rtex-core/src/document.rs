@@ -75,6 +75,10 @@ pub const BLOCK_ENVS: &[&str] = &[
     "spacing",
     // manual bibliography: its \section* heading and \bibitem list are one unit
     "thebibliography",
+    // pictures: a top-level picture is a unit of its own (blank lines inside it never split it)
+    "tikzpicture",
+    "circuitikz",
+    "pgfpicture",
 ];
 const HEADING_CMDS: &[&str] = &[
     "\\chapter",
@@ -308,24 +312,25 @@ pub fn body_setup_statements(
     texts: &std::collections::BTreeMap<String, String>,
     main: &str,
 ) -> Vec<String> {
+    // segmented like the session does it, so a definition inside an environment (a
+    // \newcommand in a tikzpicture, between blank lines) is part of that environment's span
+    // and never a setup statement of its own
     let mut out = Vec::new();
+    let mut ids = IdAllocator(0);
     let mut scan = |text: &str| {
-        for chunk in text.split("\n\n") {
-            let stripped = crate::eligibility::strip_comments(chunk);
+        let fb = FileBuf::new(text, &mut ids, 1);
+        for sp in &fb.spans {
+            if sp.kind != SpanKind::Body {
+                continue;
+            }
+            let stripped = crate::eligibility::strip_comments(&fb.text[sp.range.clone()]);
             if let Some(st) = crate::eligibility::setup_statements(&stripped) {
                 out.push(st);
             }
         }
     };
     if let Some(t) = texts.get(main) {
-        let body = crate::split_preamble(t).map(|(_, b)| b).unwrap_or("");
-        let body = body
-            .strip_prefix("\\begin{document}")
-            .unwrap_or(body)
-            .split("\\end{document}")
-            .next()
-            .unwrap_or("");
-        scan(body);
+        scan(t);
     }
     for (name, t) in texts {
         if name != main {

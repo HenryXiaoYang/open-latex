@@ -1025,6 +1025,10 @@ fn package_macro(name: &str, policy: &Policy) -> Option<Result<(), &'static str>
     first.map(Err)
 }
 
+/// Picture environments: block units (a top-level picture is a unit of its own, blank lines
+/// inside it never split it) whose vocabulary the allow-list does not cover.
+const PICTURE_ENVS: &[&str] = &["tikzpicture", "circuitikz", "pgfpicture"];
+
 /// Macros whose argument(s) are opaque (URLs, units, verbatim): skipped, not classified.
 /// (name, brace arguments to skip; 0 = delimited like \verb|…|).
 const OPAQUE_ARGS: &[(&str, usize)] = &[
@@ -1942,6 +1946,11 @@ pub fn classify_source_with(
                 } else if policy.is_block_env(&env) {
                     if in_math {
                         push(&mut reasons, Reason::UnbalancedMath);
+                    }
+                    if PICTURE_ENVS.contains(&env.as_str()) {
+                        // a unit of its own (block), but its drawing commands are not
+                        // allow-listed: probe mode compiles and compares it
+                        push(&mut reasons, Reason::DisallowedEnvironment(env.clone()));
                     }
                     if block_env_closed_at.is_some() && env_depth == 0 && shape == UnitShape::Par {
                         // text (or another environment) after a block environment: the capture

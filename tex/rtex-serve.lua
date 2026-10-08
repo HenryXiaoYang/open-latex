@@ -107,6 +107,31 @@ local FLOAT_ENVS = { figure = "columnwidth", table = "columnwidth", ["figure*"] 
 S.counter_names = {}
 S.counter_base = {}
 S.the_base = {}
+-- idle meanings of the macros the capture reports (looked up lazily)
+S.macro_base = setmetatable({}, { __index = function(t, name)
+  local m = nil
+  if token.get_meaning then
+    local ok, mm = pcall(token.get_meaning, name)
+    if ok then m = mm end
+  end
+  if m == nil then
+    local ok, b = pcall(token.get_macro, name)
+    m = ok and b and ("->" .. b) or false
+  end
+  rawset(t, name, m)
+  return m
+end })
+-- token.get_meaning gives "#1#2->body" (no "macro:" prefix, no \long): rebuild the
+-- definition as \def\name#1#2{body}, \long when the server's current meaning is a long macro
+-- or the name is undefined here (\newcommand defines long macros); nil when not a macro meaning
+function S.def_from_meaning(name, m)
+  local params, body = m:match("^(.-)%->(.*)$")
+  if not params then return nil end
+  local pre = "\\long"
+  local ok, t = pcall(create, name)
+  if ok and t and t.cmdname == "call" then pre = "" end
+  return pre .. "\\def\\" .. name .. params .. "{" .. body .. "}"
+end
 
 -- Contexts are preprocessed when installed: parameter tables become flat arrays, and the
 -- NFSS selection string is built once.
@@ -146,6 +171,16 @@ local function install_context(id, ctx)
   end
   table.sort(fnames)
   for _, k in ipairs(fnames) do extra[#extra + 1] = format("\\def\\the%s{%s}", k, ctx.thefmt[k]) end
+  -- macros the body (re)defines, in the meaning they had at the unit ("macro:#1->body")
+  local mnames = {}
+  for k, v in pairs(ctx.macros or {}) do
+    if k:match("^[%a@]+$") and S.macro_base[k] ~= v then mnames[#mnames + 1] = k end
+  end
+  table.sort(mnames)
+  for _, k in ipairs(mnames) do
+    local d = S.def_from_meaning(k, ctx.macros[k])
+    if d then extra[#extra + 1] = d end
+  end
   extra[#extra + 1] = ctx.nobreak and "\\@nobreaktrue " or "\\@nobreakfalse "
   extra[#extra + 1] = ctx.afterindent and "\\@afterindenttrue " or "\\@afterindentfalse "
   extra[#extra + 1] = ctx.noskipsec and "\\@noskipsectrue " or "\\@noskipsecfalse "

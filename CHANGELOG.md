@@ -115,6 +115,14 @@
   C ABI `"eligibility"`, `rtex serve --eligibility`; `rtex verify --permissive --max-differing`
   gates it in CI (`--expect-differing`: the known state-dependent units must be caught
   exactly). Paragraph units reported on the blank line before a span map to that span.
+- Macros the body (re)defines are captured per unit and replayed by the server (`macros` in
+  the context: the capture scans the sources for `\renewcommand`/`\def`/`\let` names), so
+  `\renewcommand{\arraystretch}` before one table applies to that table only, as in the pass.
+  Setup statements are detected on the real segmentation (a definition inside a picture is
+  not one). `tikzpicture`/`circuitikz`/`pgfpicture` are block units. Paragraphs opening with
+  display math have a context (the unit's own record). Slow multi-pass runs deliver each
+  finished pass as a provisional layout (docs/CONVERGENCE.md). Over-budget compiles are not
+  counted while a layout pass is running.
 - Fixes from a 111-page real-world document (TikZ, pgfplots, circuitikz, fancyhdr, xeCJK):
   a heading right after a paragraph's last line no longer loses that paragraph's last rows
   (the capture closes the unit after the heading's own `\par`); running heads and feet built

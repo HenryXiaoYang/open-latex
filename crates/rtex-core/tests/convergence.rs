@@ -28,11 +28,25 @@ fn setup(
     Some((tl, root, project))
 }
 
+/// The next layout that ends a run: a slow multi-pass run also delivers each finished pass
+/// as a provisional layout (`Converging { reasons: ["another pass is running"] }`), skipped here.
 fn wait_layout(s: &Session, secs: u64) -> Event {
-    let (ev, _) = s.wait_for(Duration::from_secs(secs), |e| {
-        matches!(e, Event::LayoutUpdate { .. })
-    });
-    ev.expect("layout update")
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let (ev, _) = s.wait_for(left, |e| matches!(e, Event::LayoutUpdate { .. }));
+        let ev = ev.expect("layout update");
+        if let Event::LayoutUpdate {
+            convergence: rtex_core::Convergence::Converging { reasons, .. },
+            ..
+        } = &ev
+        {
+            if reasons.iter().any(|r| r == "another pass is running") {
+                continue;
+            }
+        }
+        return ev;
+    }
 }
 
 #[test]
