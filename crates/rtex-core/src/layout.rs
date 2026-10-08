@@ -46,6 +46,9 @@ pub struct EngineUnit {
     /// (groupcode, nest) of every member paragraph.
     pub members: Vec<(String, i64)>,
     pub span: Option<ParaId>,
+    /// Capture unit ids this unit is made of: one, or several consecutive paragraph units that
+    /// share a source span (`{\Large Title\par}` followed by a line of text), typeset as one box.
+    pub uids: Vec<i64>,
 }
 
 impl EngineUnit {
@@ -153,7 +156,62 @@ impl LayoutStore {
                 .or_else(|| u.seqs.iter().filter_map(|s| paras.get(s)).find(|p| p.begin.is_some()))
                 .or_else(|| u.seqs.first().and_then(|s| paras.get(s)))
                 .map(|p| (*p).clone());
-            self.units.push(EngineUnit { uid: u.uid, captured: u.clone(), first_para, flags, members, span });
+            self.units.push(EngineUnit { uid: u.uid, captured: u.clone(), first_para, flags, members, span, uids: vec![u.uid] });
+        }
+        // Several consecutive paragraph units in one span (an explicit \par, a title line followed
+        // by a text line) form one composite unit: the fast path typesets the span as one box, and
+        // its rows are the members' rows in order. The first member provides the context.
+        let mut idx_by_span: HashMap<ParaId, Vec<usize>> = HashMap::new();
+        for (i, eu) in self.units.iter().enumerate() {
+            if let Some(id) = eu.span {
+                idx_by_span.entry(id).or_default().push(i);
+            }
+        }
+        let mut merged_away: Vec<usize> = Vec::new();
+        for (id, idxs) in idx_by_span.iter() {
+            if idxs.len() < 2 || !idxs.iter().all(|i| self.units[*i].captured.kind == "par" && self.units[*i].captured.nest == 1) {
+                continue;
+            }
+            let mut idxs = idxs.clone();
+            idxs.sort();
+            let (first, rest) = idxs.split_first().unwrap();
+            let mut placements = Vec::new();
+            let mut seqs = Vec::new();
+            let mut members = Vec::new();
+            let mut flags: BTreeMap<String, i64> = BTreeMap::new();
+            let mut end_line = None;
+            let mut uids = Vec::new();
+            for i in rest {
+                let u = &self.units[*i];
+                placements.extend(u.captured.placements.iter().cloned());
+                seqs.extend(u.captured.seqs.iter().cloned());
+                members.extend(u.members.iter().cloned());
+                for (k, v) in &u.flags {
+                    *flags.entry(k.clone()).or_default() += v;
+                }
+                end_line = u.captured.end_line.or(end_line);
+                uids.push(u.uid);
+                merged_away.push(*i);
+            }
+            let f = &mut self.units[*first];
+            f.captured.placements.extend(placements);
+            for (k, p) in f.captured.placements.iter_mut().enumerate() {
+                p.row = k as i64 + 1;
+            }
+            f.captured.rows = f.captured.placements.len() as i64;
+            f.captured.seqs.extend(seqs);
+            f.members.extend(members);
+            for (k, v) in flags {
+                *f.flags.entry(k).or_default() += v;
+            }
+            if end_line.is_some() {
+                f.captured.end_line = end_line;
+            }
+            f.uids.extend(uids);
+            per_span_count.insert(*id, 1);
+        }
+        for i in merged_away {
+            self.units[i].span = None;
         }
         for (i, eu) in self.units.iter_mut().enumerate() {
             if let Some(id) = eu.span {

@@ -83,14 +83,18 @@ pub struct Report {
 /// spread over several pages. Every row gets its own (x, y) offset from its placement, so the
 /// comparison is of each row's content and geometry, not of the vertical arrangement (which the
 /// page builder owns).
-fn compare_rows(fast: &DisplayList, pages: &[(i64, &DisplayList)], uid: i64) -> (usize, usize, Vec<String>) {
-    let mut ref_rows: Vec<(i64, &Line)> = Vec::new();
-    for (pno, page) in pages {
-        for l in page.rows_of(uid) {
-            ref_rows.push((*pno, l));
+fn compare_rows(fast: &DisplayList, pages: &[(i64, &DisplayList)], uids: &[i64]) -> (usize, usize, Vec<String>) {
+    // rows of every member unit (a composite unit is several capture units), in member order
+    let mut keyed: Vec<((usize, i64), i64, &Line)> = Vec::new();
+    for (k, uid) in uids.iter().enumerate() {
+        for (pno, page) in pages {
+            for l in page.rows_of(*uid) {
+                keyed.push(((k, l.row), *pno, l));
+            }
         }
     }
-    ref_rows.sort_by_key(|(_, l)| l.row);
+    keyed.sort_by_key(|(key, _, _)| *key);
+    let ref_rows: Vec<(i64, &Line)> = keyed.into_iter().map(|(_, pno, l)| (pno, l)).collect();
     let mut notes = Vec::new();
     if ref_rows.len() != fast.lines.len() {
         notes.push(format!("row count: fast {} vs capture {}", fast.lines.len(), ref_rows.len()));
@@ -263,16 +267,18 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
                 }
             }
             let pages: Vec<(i64, &DisplayList)> = pnos.iter().map(|pno| (*pno, &page_cache[pno])).collect();
-            let (same, total, notes) = compare_rows(fast, &pages, eu.uid);
+            let (same, total, notes) = compare_rows(fast, &pages, &eu.uids);
             if opts.dump_rows && (same != total || !notes.is_empty()) {
                 println!("--- unit {} ({}) fast rows:", eu.uid, c.kind);
                 for (k, l) in fast.lines.iter().enumerate() {
                     println!("  f{:2} x={} y={} w={} h={} gs={:.4}: {}", k + 1, l.x, l.y, l.w, l.h, l.gs, row_text(l));
                 }
                 println!("--- capture rows:");
-                for (_, pg) in &pages {
-                    for l in pg.rows_of(eu.uid) {
-                        println!("  c{:2} x={} y={} w={} h={} gs={:.4}: {}", l.row, l.x, l.y, l.w, l.h, l.gs, row_text(l));
+                for uid in &eu.uids {
+                    for (_, pg) in &pages {
+                        for l in pg.rows_of(*uid) {
+                            println!("  c{:2} x={} y={} w={} h={} gs={:.4}: {}", l.row, l.x, l.y, l.w, l.h, l.gs, row_text(l));
+                        }
                     }
                 }
             }

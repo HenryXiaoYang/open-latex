@@ -70,7 +70,7 @@ const TEXT_MACROS: &[&str] = &[
     "textsuperscript", "textsubscript",
     // spacing and breaks
     "\\", ",", ";", ":", "!", "quad", "qquad", "hspace", "hspace*", "mbox", "phantom", "hphantom", "vphantom", "noindent", "indent", "thinspace", "enspace", "enskip", "nolinebreak", "linebreak", "newline", "allowbreak", "-", "/", "@",
-    "hfill", "hfil", "hss", "vspace", "vspace*", "smallskip", "medskip", "bigskip", "strut", "relax",
+    "hfill", "hfil", "hss", "vspace", "vspace*", "smallskip", "medskip", "bigskip", "strut", "relax", "par",
     // color (xcolor)
     "textcolor", "color",
     // characters, accents, symbols
@@ -119,7 +119,6 @@ const MATH_MACROS: &[&str] = &[
 
 /// Patterns that make a unit background-only regardless of allow-lists.
 const HARD_STOPS: &[(&str, Reason)] = &[
-    ("\\par", Reason::ParagraphBreak),
     ("\\verb", Reason::Verbatim),
 ];
 
@@ -680,7 +679,10 @@ mod tests {
         assert!(reasons("\\mymacro{x}").contains(&Reason::DisallowedMacro("mymacro".into())));
         assert!(reasons("Text \\large leaking.").contains(&Reason::SizeDeclarationOutsideGroup("large".into())));
         assert!(reasons("one\n\ntwo").contains(&Reason::ParagraphBreak));
-        assert!(reasons("a \\par b").contains(&Reason::ParagraphBreak));
+        // an explicit \par is fine: a span may hold several consecutive paragraphs (one unit)
+        assert!(!reasons("a \\par b").contains(&Reason::ParagraphBreak));
+        let r = reasons("{\\Large\\bfseries Title\\par}\nName \\hfill 22 September 2026");
+        assert!(r.is_empty(), "{r:?}");
         assert!(!ok("a \\parbox-like? no: \\parskip is disallowed"));
         assert!(reasons("\\begin{tikzpicture}\\end{tikzpicture}").contains(&Reason::DisallowedEnvironment("tikzpicture".into())));
     }

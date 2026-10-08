@@ -34,6 +34,11 @@ attribute unset (`\@outputpage` hook); footnote text rows belong to no unit. The
 produces the same regions (blank lines, headings, environment ends) so that each span maps to
 exactly one unit.
 
+A source span (text between blank lines) that the engine typesets as several consecutive
+paragraphs, such as `{\Large\bfseries Title\par}` followed by a line of text, or a paragraph
+with an explicit `\par`, maps to one **composite** unit: the capture units' rows are concatenated
+in order, the first one provides the context, and the fast path typesets the span as one box.
+
 ## Fast path (per keystroke)
 
 1. `apply_edit` updates the buffer, re-segments a window around the edit, keeps ids stable, bumps

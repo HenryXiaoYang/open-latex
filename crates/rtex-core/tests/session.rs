@@ -239,3 +239,40 @@ fn stale_results_are_discarded() {
     assert!(drained.iter().filter(|e| matches!(e, Event::ParagraphUpdate { .. })).count() <= 1);
     s.close();
 }
+
+/// A span holding several consecutive paragraphs (a title line with its own \par, then a text
+/// line) is one composite unit: typeset live as one box, rows matching the layout.
+#[test]
+fn multi_paragraph_span_is_one_live_unit() {
+    if rtex_core::texlive::TexLive::discover().is_err() {
+        eprintln!("SKIP: no lualatex");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("rtex-session-{}-multipar", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("main.tex"), "\\documentclass{article}\n\\usepackage[T1]{fontenc}\n\\usepackage{lmodern}\n\\begin{document}\n{\\Large\\bfseries Computer Hardware and Operation\\par}\nHenry Yang \\hfill 22 September 2026\n\nA body paragraph long enough to wrap onto a second line in the article class at ten points, with ordinary words following.\n\\end{document}\n").unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.debounce = Duration::from_millis(50);
+    let s = Session::open(cfg).unwrap();
+    let Event::LayoutUpdate { eligible_paragraphs, placements, .. } = wait_layout(&s) else { unreachable!() };
+    let doc = s.document_text("main.tex").unwrap();
+    let spans = s.spans("main.tex");
+    let head = spans.iter().find(|sp| doc[sp.range.clone()].starts_with("{\\Large")).expect("title span");
+    assert!(eligible_paragraphs.contains(&head.id), "title span not eligible");
+    let pl = placements.iter().find(|p| p.par_id == head.id).expect("placement");
+    assert_eq!(pl.lines, 2, "title + name line");
+    let pos = head.range.start + doc[head.range.clone()].find("Henry Yang").unwrap() + "Henry".len();
+    let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: " X.".into() }).unwrap();
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == head.id));
+    let Some(Event::ParagraphUpdate { status, fragments, pagination_stale, context_stale, dl, .. }) = ev else { panic!("no update") };
+    assert_eq!(status, "ok");
+    assert_eq!(dl.lines.len(), 2);
+    assert!(!pagination_stale && !context_stale);
+    assert_eq!(fragments.len(), 1);
+    assert_eq!(fragments[0].baselines.len(), 2);
+    s.close();
+}

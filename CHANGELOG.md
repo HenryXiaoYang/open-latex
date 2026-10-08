@@ -58,6 +58,9 @@
   threads took the file and layout locks in opposite orders). A unit whose live compile hung or
   crashed the engine is quarantined on the full compile until the preamble changes instead of
   killing the server again on the next keystroke.
+- A span holding several consecutive paragraphs (an explicit `\par`, a title line with its own
+  `\par` followed by a text line) is one composite unit on the fast path instead of
+  "ParagraphBreak"/"NoContext" background-only.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

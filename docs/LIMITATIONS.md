@@ -20,6 +20,7 @@ in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 | Figures and tables (`figure`/`table` with `\includegraphics`, `tabular`, `booktabs` rules, `\caption`) | content in **real time** at the float's last position; a moved float after the next pass | float unit, float-box state replayed; placement is page-global |
 | Headings (`\chapter`, `\section`, …) | **real time**; TOC and running heads after the next pass | heading unit |
 | A unit that changes its row count (grows/shrinks) | unit in real time (rows placed with its own geometry); following material after the next pass | page breaks are global; `pagination_stale` says so |
+| Several paragraphs in one source span (an explicit `\par`, a title line `{\Large\bfseries …\par}` followed by a text line) | **real time** as one unit | consecutive paragraph units of a span are merged into one composite unit |
 | Splitting a paragraph (Enter + blank line), merging two, typing a new paragraph | **real time**: the known half keeps its context, the new paragraph borrows its neighbour's (counters may lag by one until the next pass) and is placed right after it | borrowed contexts are `context_stale`, placements `approximate` |
 | `tabularx` (with the package loaded) | **real time** | inner environment like `tabular` |
 | TikZ/PGF diagrams, `\pdfliteral` drawing | background, and the page renders through the **PDF fallback** | not representable in the display list |
