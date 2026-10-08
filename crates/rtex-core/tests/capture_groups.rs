@@ -44,17 +44,41 @@ fn group_started_paragraphs_and_tabularx_have_rows_and_outer_fonts() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("main.tex"), DOC).unwrap();
     let cap = run_capture_with(&tl, &project, "main.tex", &root.join("out"), true, "").unwrap();
-    assert_eq!(cap.json.units.len(), 6, "{:?}", cap.json.units.iter().map(|u| (u.begin_line, u.end_line)).collect::<Vec<_>>());
+    assert_eq!(
+        cap.json.units.len(),
+        6,
+        "{:?}",
+        cap.json
+            .units
+            .iter()
+            .map(|u| (u.begin_line, u.end_line))
+            .collect::<Vec<_>>()
+    );
     for u in &cap.json.units {
-        assert!(!u.placements.is_empty(), "unit at line {} has no rows", u.begin_line);
+        assert!(
+            !u.placements.is_empty(),
+            "unit at line {} has no rows",
+            u.begin_line
+        );
         assert_eq!(u.kind, "par");
     }
     // the base font of the group-started paragraphs is the upright body font, not \em / \bfseries
-    let paras: std::collections::HashMap<i64, _> = cap.json.paragraphs.iter().map(|p| (p.seq, p)).collect();
+    let paras: std::collections::HashMap<i64, _> =
+        cap.json.paragraphs.iter().map(|p| (p.seq, p)).collect();
     for u in &cap.json.units[1..3] {
-        let first = u.seqs.iter().filter_map(|s| paras.get(s)).find(|p| p.nest == 1 && p.begin.is_some()).expect("body paragraph");
+        let first = u
+            .seqs
+            .iter()
+            .filter_map(|s| paras.get(s))
+            .find(|p| p.nest == 1 && p.begin.is_some())
+            .expect("body paragraph");
         let nfss = &first.begin.as_ref().unwrap().nfss;
-        assert_eq!((nfss.series.as_deref(), nfss.shape.as_deref()), (Some("m"), Some("n")), "unit at line {}", u.begin_line);
+        assert_eq!(
+            (nfss.series.as_deref(), nfss.shape.as_deref()),
+            (Some("m"), Some("n")),
+            "unit at line {}",
+            u.begin_line
+        );
     }
     // tabularx is eligible when the package is loaded, and only then
     let (pre, _) = rtex_core::split_preamble(DOC).unwrap();

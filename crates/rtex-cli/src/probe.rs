@@ -28,27 +28,60 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     let (preamble, _) = rtex_core::split_preamble(&main_text).unwrap();
     let policy = rtex_core::eligibility::Policy::from_preamble(preamble, &[], &[]);
     let (store, fb) = rtex_core::layout::LayoutStore::offline(&cap, &project, &main, &policy)?;
-    let mut cands: Vec<(&rtex_core::layout::EngineUnit, rtex_core::ParaId)> = store.mapped_units().into_iter().filter(|(u, _)| u.kind() == "par" && u.rows() > 0 && u.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false)).collect();
+    let mut cands: Vec<(&rtex_core::layout::EngineUnit, rtex_core::ParaId)> = store
+        .mapped_units()
+        .into_iter()
+        .filter(|(u, _)| {
+            u.kind() == "par"
+                && u.rows() > 0
+                && u.first_para
+                    .as_ref()
+                    .map(|p| p.begin.is_some())
+                    .unwrap_or(false)
+        })
+        .collect();
     cands.sort_by_key(|(u, _)| u.rows());
     let short = cands.iter().copied().find(|(u, _)| u.rows() == 1);
-    let medium = cands.iter().copied().find(|(u, _)| (4..=5).contains(&u.rows()));
+    let medium = cands
+        .iter()
+        .copied()
+        .find(|(u, _)| (4..=5).contains(&u.rows()));
     let long = cands.iter().copied().find(|(u, _)| u.rows() >= 10);
-    let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), preamble, 1)?;
+    let mut server = FastServer::spawn(
+        &tl,
+        &project,
+        &build.join("serve"),
+        preamble,
+        1,
+        Some(&cap.out_dir.join(format!("{}.aux", cap.jobname))),
+    )?;
     let mut pings = Vec::new();
     for _ in 0..200 {
         pings.push(server.ping()?.as_secs_f64() * 1e3);
     }
-    println!("ping: median {:.3} ms, P95 {:.3} ms", med(&mut pings), p95(&mut pings));
+    println!(
+        "ping: median {:.3} ms, P95 {:.3} ms",
+        med(&mut pings),
+        p95(&mut pings)
+    );
     for (name, p) in [("short", short), ("medium", medium), ("long", long)] {
         let Some((p, span_id)) = p else { continue };
-        let src = fb.span_text(span_id).unwrap_or("").trim_end_matches('\n').to_string();
+        let src = fb
+            .span_text(span_id)
+            .unwrap_or("")
+            .trim_end_matches('\n')
+            .to_string();
         server.set_context(p.uid, &p.context_json())?;
         for _ in 0..5 {
             server.compile(p.uid, &src)?;
         }
         let (mut tot, mut tex, mut trav) = (Vec::new(), Vec::new(), Vec::new());
         for i in 0..n {
-            let s = if i % 2 == 1 { format!("{src} x") } else { src.clone() };
+            let s = if i % 2 == 1 {
+                format!("{src} x")
+            } else {
+                src.clone()
+            };
             let (r, rt) = server.compile(p.uid, &s)?;
             if r.status != "ok" {
                 bail!("{name}: status {}", r.status);
@@ -61,12 +94,20 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
         let (t, a, b) = (med(&mut tot), med(&mut tex), med(&mut trav));
         println!("direct {name:6} (unit {} rows {}): total {:.3} ms (P95 {:.3}) tex {:.3} traverse {:.3} ipc+parse {:.3}", p.uid, p.rows(), t, p95(&mut tot), a, b, t - a - b);
         let (r, _) = server.compile(p.uid, &src)?;
-        println!("  engine stages(us): {}  host stages(us) send/wait/read/parse: {:?}", r.stages_us, r.host_us);
+        println!(
+            "  engine stages(us): {}  host stages(us) send/wait/read/parse: {:?}",
+            r.stages_us, r.host_us
+        );
         if let Some(b) = &r.dl_binary {
             let path = build.join(format!("{name}.dl"));
             let same = std::fs::read(&path).map(|old| old == *b).ok();
             std::fs::write(&path, b)?;
-            println!("  display list {} bytes written to {} (identical to previous run: {:?})", b.len(), path.display(), same);
+            println!(
+                "  display list {} bytes written to {} (identical to previous run: {:?})",
+                b.len(),
+                path.display(),
+                same
+            );
         }
         if let Response::Profile { us, .. } = server.profile(p.uid, &src, 40)? {
             println!("  profile(us): {}", us);
@@ -83,7 +124,11 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
         if !seen.insert(key.clone()) {
             continue;
         }
-        let src = fb.span_text(span_id).unwrap_or("").trim_end_matches('\n').to_string();
+        let src = fb
+            .span_text(span_id)
+            .unwrap_or("")
+            .trim_end_matches('\n')
+            .to_string();
         let (_shape, reasons) = rtex_core::eligibility::classify_source(&src, &policy);
         if !reasons.is_empty() {
             continue;
@@ -120,27 +165,65 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     let mut cfg = SessionConfig::new(&project, main.clone());
     cfg.build_dir = build.join("session");
     let session = Session::open(cfg)?;
-    let (first, _) = session.wait_for(Duration::from_secs(600), |e| matches!(e, Event::LayoutUpdate { .. }));
-    let Some(Event::LayoutUpdate { eligible_paragraphs, placements, wall_ms: first_ms, passes: first_passes, .. }) = first else { bail!("no layout") };
+    let (first, _) = session.wait_for(Duration::from_secs(600), |e| {
+        matches!(e, Event::LayoutUpdate { .. })
+    });
+    let Some(Event::LayoutUpdate {
+        eligible_paragraphs,
+        placements,
+        wall_ms: first_ms,
+        passes: first_passes,
+        ..
+    }) = first
+    else {
+        bail!("no layout")
+    };
     // a second layout: the standby engine (preamble loaded while idle) only typesets the body
     std::thread::sleep(Duration::from_millis(1500));
     session.request_layout();
-    let (second, _) = session.wait_for(Duration::from_secs(600), |e| matches!(e, Event::LayoutUpdate { .. }));
-    let Some(Event::LayoutUpdate { wall_ms: second_ms, passes: second_passes, .. }) = second else { bail!("no second layout") };
+    let (second, _) = session.wait_for(Duration::from_secs(600), |e| {
+        matches!(e, Event::LayoutUpdate { .. })
+    });
+    let Some(Event::LayoutUpdate {
+        wall_ms: second_ms,
+        passes: second_passes,
+        ..
+    }) = second
+    else {
+        bail!("no second layout")
+    };
     println!("layout: first {first_ms} ms ({first_passes} passes), second with standby engine {second_ms} ms ({second_passes} passes)");
     session.pause_background(true);
     std::thread::sleep(Duration::from_millis(1500));
     let spans = session.spans(&main);
     let doc = session.document_text(&main).unwrap();
     for (name, want) in [("short", 1usize), ("medium", 4), ("long", 10)] {
-        let Some(pl) = placements.iter().find(|p| eligible_paragraphs.contains(&p.par_id) && (p.lines as usize == want || (want == 10 && p.lines >= 10))) else { continue };
+        let Some(pl) = placements.iter().find(|p| {
+            eligible_paragraphs.contains(&p.par_id)
+                && (p.lines as usize == want || (want == 10 && p.lines >= 10))
+        }) else {
+            continue;
+        };
         let sp = spans.iter().find(|s| s.id == pl.par_id).unwrap();
         let pos = sp.range.start + doc[sp.range.clone()].find(' ').unwrap_or(0);
         let mut toggled = false;
-        let (mut tot, mut eng, mut tex, mut trav, mut host_pre) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut tot, mut eng, mut tex, mut trav, mut host_pre) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut last_host = [0u64; 3];
         for i in 0..n + 5 {
-            let edit = if toggled { Edit { start_byte: pos, end_byte: pos + 2, text: String::new() } } else { Edit { start_byte: pos, end_byte: pos, text: " x".into() } };
+            let edit = if toggled {
+                Edit {
+                    start_byte: pos,
+                    end_byte: pos + 2,
+                    text: String::new(),
+                }
+            } else {
+                Edit {
+                    start_byte: pos,
+                    end_byte: pos,
+                    text: " x".into(),
+                }
+            };
             toggled = !toggled;
             let t0 = Instant::now();
             let r = session.apply_edit(&main, edit)?;
@@ -149,9 +232,13 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
                 bail!("not fast: {:?}", r.reasons);
             }
             last_host = r.host_us;
-            let (ev, _) = session.wait_for(Duration::from_secs(30), |e| matches!(e, Event::ParagraphUpdate { .. }));
+            let (ev, _) = session.wait_for(Duration::from_secs(30), |e| {
+                matches!(e, Event::ParagraphUpdate { .. })
+            });
             let total = t0.elapsed();
-            let Some(Event::ParagraphUpdate { timing, .. }) = ev else { bail!("no update") };
+            let Some(Event::ParagraphUpdate { timing, .. }) = ev else {
+                bail!("no update")
+            };
             if i >= 5 {
                 tot.push(total.as_secs_f64() * 1e3);
                 eng.push(timing.total_us as f64 / 1e3);
@@ -161,10 +248,19 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let (t, e, a, b, h) = (med(&mut tot), med(&mut eng), med(&mut tex), med(&mut trav), med(&mut host_pre));
+        let (t, e, a, b, h) = (
+            med(&mut tot),
+            med(&mut eng),
+            med(&mut tex),
+            med(&mut trav),
+            med(&mut host_pre),
+        );
         println!("session {name:6} (par {}): total {:.3} ms (P95 {:.3}); engine compile {:.3}; tex {:.3} traverse {:.3}; apply_edit {:.3}; thread hops+events {:.3}; ipc+parse {:.3}",
             pl.par_id.0, t, p95(&mut tot), e, a, b, h, t - e - h, e - a - b);
-        println!("  apply_edit stages(us) segment/eligibility/dispatch: {:?}", last_host);
+        println!(
+            "  apply_edit stages(us) segment/eligibility/dispatch: {:?}",
+            last_host
+        );
     }
     session.close();
     Ok(())

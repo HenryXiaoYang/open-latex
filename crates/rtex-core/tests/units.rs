@@ -60,7 +60,14 @@ fn edit_offset(text: &str) -> usize {
         if i < b.len() && b[i] == open {
             let mut depth = 0;
             while i < b.len() {
-                if b[i] == open { depth += 1 } else if b[i] == close { depth -= 1; if depth == 0 { return i + 1; } }
+                if b[i] == open {
+                    depth += 1
+                } else if b[i] == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
                 i += 1;
             }
         }
@@ -75,7 +82,17 @@ fn edit_offset(text: &str) -> usize {
                 i += 1;
             }
             let name = &text[start..i];
-            let args = matches!(name, "begin" | "end" | "label" | "ref" | "eqref" | "pageref" | "cite" | "includegraphics");
+            let args = matches!(
+                name,
+                "begin"
+                    | "end"
+                    | "label"
+                    | "ref"
+                    | "eqref"
+                    | "pageref"
+                    | "cite"
+                    | "includegraphics"
+            );
             i = skip_group(i, b'[', b']');
             if args {
                 i = skip_group(i, b'{', b'}');
@@ -94,13 +111,24 @@ fn edit_offset(text: &str) -> usize {
 
 #[test]
 fn every_unit_kind_takes_the_fast_path() {
-    let Some((root, project)) = setup("kinds") else { return };
+    let Some((root, project)) = setup("kinds") else {
+        return;
+    };
     let mut cfg = SessionConfig::new(&project, "main.tex");
     cfg.build_dir = root.join("build");
     cfg.fast_budget = Duration::from_millis(50); // first compiles load fonts
     let s = Session::open(cfg).unwrap();
-    let (first, _) = s.wait_for(Duration::from_secs(300), |e| matches!(e, Event::LayoutUpdate { .. }));
-    let Some(Event::LayoutUpdate { eligible_paragraphs, placements, .. }) = first else { panic!("no layout") };
+    let (first, _) = s.wait_for(Duration::from_secs(300), |e| {
+        matches!(e, Event::LayoutUpdate { .. })
+    });
+    let Some(Event::LayoutUpdate {
+        eligible_paragraphs,
+        placements,
+        ..
+    }) = first
+    else {
+        panic!("no layout")
+    };
     s.pause_background(true);
     std::thread::sleep(Duration::from_millis(1500)); // warm-up compile
     let doc = s.document_text("main.tex").unwrap();
@@ -114,32 +142,92 @@ fn every_unit_kind_takes_the_fast_path() {
         let kind = kind_of(&text);
         // a character edit after the first letter that is not part of a control word
         let pos = sp.range.start + edit_offset(&text);
-        let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "x".into() }).unwrap();
-        assert_eq!(r.routed, "fast", "{kind} unit {:?} not routed fast: {:?}\n{text}", sp.id, r.reasons);
-        let (ev, others) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
-        let Some(Event::ParagraphUpdate { status, fragments, dl, diagnostics, timing, pagination_stale, .. }) = ev else {
-            panic!("no paragraph update for {kind} unit {:?}; events {:?}", sp.id, others.iter().map(|e| serde_json::to_value(e).map(|v| v["event"].to_string()).unwrap_or_default()).collect::<Vec<_>>())
+        let r = s
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: pos,
+                    end_byte: pos,
+                    text: "x".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            r.routed, "fast",
+            "{kind} unit {:?} not routed fast: {:?}\n{text}",
+            sp.id, r.reasons
+        );
+        let (ev, others) = s.wait_for(Duration::from_secs(60), |e| {
+            matches!(e, Event::ParagraphUpdate { .. })
+        });
+        let Some(Event::ParagraphUpdate {
+            status,
+            fragments,
+            dl,
+            diagnostics,
+            timing,
+            pagination_stale,
+            ..
+        }) = ev
+        else {
+            panic!(
+                "no paragraph update for {kind} unit {:?}; events {:?}",
+                sp.id,
+                others
+                    .iter()
+                    .map(|e| serde_json::to_value(e)
+                        .map(|v| v["event"].to_string())
+                        .unwrap_or_default())
+                    .collect::<Vec<_>>()
+            )
         };
-        assert!(status == "ok" || status == "ok_degraded", "{kind}: status {status} {diagnostics:?}");
+        assert!(
+            status == "ok" || status == "ok_degraded",
+            "{kind}: status {status} {diagnostics:?}"
+        );
         assert!(!fragments.is_empty(), "{kind}: no fragments");
         assert!(!dl.lines.is_empty(), "{kind}: empty display list");
         let pl = placements.iter().find(|p| p.par_id == sp.id).unwrap();
         // one character may reflow a tight unit by one row; then the pagination is flagged stale
         let delta = dl.lines.len() as i64 - pl.lines;
-        assert!(delta.abs() <= 1, "{kind}: row count {} vs layout {}", dl.lines.len(), pl.lines);
+        assert!(
+            delta.abs() <= 1,
+            "{kind}: row count {} vs layout {}",
+            dl.lines.len(),
+            pl.lines
+        );
         if delta != 0 {
-            assert!(pagination_stale, "{kind}: row count changed but pagination_stale is false");
+            assert!(
+                pagination_stale,
+                "{kind}: row count changed but pagination_stale is false"
+            );
         }
         let e = seen.entry(kind).or_insert((0, 0));
         e.0 += 1;
         e.1 = e.1.max(timing.total_us as u32);
         // undo
-        s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos + 1, text: String::new() }).unwrap();
-        let _ = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+        s.apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos + 1,
+                text: String::new(),
+            },
+        )
+        .unwrap();
+        let _ = s.wait_for(Duration::from_secs(60), |e| {
+            matches!(e, Event::ParagraphUpdate { .. })
+        });
     }
     eprintln!("fast-path units by kind (count, slowest µs): {seen:?}");
-    for k in ["heading", "figure", "table", "list", "theorem", "quote", "align", "equation", "display", "footnote", "refs", "plain"] {
-        assert!(seen.contains_key(k), "no eligible {k} unit in the fixture; saw {seen:?}");
+    for k in [
+        "heading", "figure", "table", "list", "theorem", "quote", "align", "equation", "display",
+        "footnote", "refs", "plain",
+    ] {
+        assert!(
+            seen.contains_key(k),
+            "no eligible {k} unit in the fixture; saw {seen:?}"
+        );
     }
     s.close();
     let _ = std::fs::remove_dir_all(&root);
@@ -147,33 +235,81 @@ fn every_unit_kind_takes_the_fast_path() {
 
 #[test]
 fn over_budget_units_fall_back_to_background() {
-    let Some((root, project)) = setup("budget") else { return };
+    let Some((root, project)) = setup("budget") else {
+        return;
+    };
     let mut cfg = SessionConfig::new(&project, "main.tex");
     cfg.build_dir = root.join("build");
     cfg.fast_budget = Duration::from_micros(1); // everything is over budget
     let s = Session::open(cfg).unwrap();
-    let (first, _) = s.wait_for(Duration::from_secs(300), |e| matches!(e, Event::LayoutUpdate { .. }));
-    let Some(Event::LayoutUpdate { eligible_paragraphs, .. }) = first else { panic!("no layout") };
+    let (first, _) = s.wait_for(Duration::from_secs(300), |e| {
+        matches!(e, Event::LayoutUpdate { .. })
+    });
+    let Some(Event::LayoutUpdate {
+        eligible_paragraphs,
+        ..
+    }) = first
+    else {
+        panic!("no layout")
+    };
     s.pause_background(true);
     std::thread::sleep(Duration::from_millis(1500));
     let doc = s.document_text("main.tex").unwrap();
     let spans = s.spans("main.tex");
-    let sp = spans.iter().find(|sp| eligible_paragraphs.contains(&sp.id) && !doc[sp.range.clone()].trim_start().starts_with('\\'))
-        .unwrap_or_else(|| panic!("no eligible plain unit; eligible texts: {:?}", spans.iter().filter(|sp| eligible_paragraphs.contains(&sp.id)).map(|sp| doc[sp.range.clone()].chars().take(30).collect::<String>()).collect::<Vec<_>>()));
+    let sp = spans
+        .iter()
+        .find(|sp| {
+            eligible_paragraphs.contains(&sp.id)
+                && !doc[sp.range.clone()].trim_start().starts_with('\\')
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no eligible plain unit; eligible texts: {:?}",
+                spans
+                    .iter()
+                    .filter(|sp| eligible_paragraphs.contains(&sp.id))
+                    .map(|sp| doc[sp.range.clone()].chars().take(30).collect::<String>())
+                    .collect::<Vec<_>>()
+            )
+        });
     let pos = sp.range.start + edit_offset(&doc[sp.range.clone()]);
     // the first two over-budget compiles are forgiven (fonts may load); the third marks the unit
     for _ in 0..3 {
-        let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "x".into() }).unwrap();
+        let r = s
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: pos,
+                    end_byte: pos,
+                    text: "x".into(),
+                },
+            )
+            .unwrap();
         assert_eq!(r.routed, "fast", "{:?}", r.reasons);
-        let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+        let (ev, _) = s.wait_for(Duration::from_secs(60), |e| {
+            matches!(e, Event::ParagraphUpdate { .. })
+        });
         assert!(ev.is_some());
     }
     // the third result arrived, and the unit is now over budget: the next edit goes to the background
     let (bg, _) = s.wait_for(Duration::from_secs(10), |e| matches!(e, Event::BackgroundScheduled { reasons, .. } if reasons.iter().any(|r| r.contains("over the budget"))));
     assert!(bg.is_some(), "no over-budget notice");
-    let r2 = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "y".into() }).unwrap();
+    let r2 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: "y".into(),
+            },
+        )
+        .unwrap();
     assert_eq!(r2.routed, "background", "{:?}", r2.reasons);
-    assert!(r2.reasons.iter().any(|r| r.contains("over the budget")), "{:?}", r2.reasons);
+    assert!(
+        r2.reasons.iter().any(|r| r.contains("over the budget")),
+        "{:?}",
+        r2.reasons
+    );
     s.close();
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -21,7 +21,14 @@ pub struct Matrix {
     pub f: f64,
 }
 impl Matrix {
-    pub const IDENTITY: Matrix = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    pub const IDENTITY: Matrix = Matrix {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
     pub fn mul(&self, m: &Matrix) -> Matrix {
         // self × m  (apply self first, then m)
         Matrix {
@@ -34,10 +41,17 @@ impl Matrix {
         }
     }
     pub fn apply(&self, x: f64, y: f64) -> (f64, f64) {
-        (self.a * x + self.c * y + self.e, self.b * x + self.d * y + self.f)
+        (
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        )
     }
     pub fn translate(tx: f64, ty: f64) -> Matrix {
-        Matrix { e: tx, f: ty, ..Matrix::IDENTITY }
+        Matrix {
+            e: tx,
+            f: ty,
+            ..Matrix::IDENTITY
+        }
     }
 }
 
@@ -110,8 +124,18 @@ fn f(o: &Object) -> Result<f64> {
 
 fn load_font(doc: &Document, resource: &str, id: ObjectId) -> Result<PdfFont> {
     let dict = doc.get_dictionary(id)?;
-    let subtype = dict.get(b"Subtype").ok().and_then(|o| o.as_name().ok()).map(|n| String::from_utf8_lossy(n).to_string()).unwrap_or_default();
-    let base_font = dict.get(b"BaseFont").ok().and_then(|o| o.as_name().ok()).map(|n| String::from_utf8_lossy(n).to_string()).unwrap_or_default();
+    let subtype = dict
+        .get(b"Subtype")
+        .ok()
+        .and_then(|o| o.as_name().ok())
+        .map(|n| String::from_utf8_lossy(n).to_string())
+        .unwrap_or_default();
+    let base_font = dict
+        .get(b"BaseFont")
+        .ok()
+        .and_then(|o| o.as_name().ok())
+        .map(|n| String::from_utf8_lossy(n).to_string())
+        .unwrap_or_default();
     let mut widths = HashMap::new();
     let mut default_width = 0.0;
     let two_byte;
@@ -120,9 +144,16 @@ fn load_font(doc: &Document, resource: &str, id: ObjectId) -> Result<PdfFont> {
         let desc = dict.get(b"DescendantFonts")?;
         let desc = doc.dereference(desc)?.1;
         let arr = desc.as_array()?;
-        let cid_id = arr.first().ok_or_else(|| anyhow!("no descendant"))?.as_reference()?;
+        let cid_id = arr
+            .first()
+            .ok_or_else(|| anyhow!("no descendant"))?
+            .as_reference()?;
         let cid = doc.get_dictionary(cid_id)?;
-        default_width = cid.get(b"DW").ok().and_then(|o| f(o).ok()).unwrap_or(1000.0);
+        default_width = cid
+            .get(b"DW")
+            .ok()
+            .and_then(|o| f(o).ok())
+            .unwrap_or(1000.0);
         if let Ok(w) = cid.get(b"W") {
             let w = doc.dereference(w)?.1.as_array()?.clone();
             let mut i = 0;
@@ -150,7 +181,11 @@ fn load_font(doc: &Document, resource: &str, id: ObjectId) -> Result<PdfFont> {
         }
     } else {
         two_byte = false;
-        let first = dict.get(b"FirstChar").ok().and_then(|o| f(o).ok()).unwrap_or(0.0) as u32;
+        let first = dict
+            .get(b"FirstChar")
+            .ok()
+            .and_then(|o| f(o).ok())
+            .unwrap_or(0.0) as u32;
         if let Ok(w) = dict.get(b"Widths") {
             let w = doc.dereference(w)?.1.as_array()?.clone();
             for (k, wv) in w.iter().enumerate() {
@@ -158,7 +193,14 @@ fn load_font(doc: &Document, resource: &str, id: ObjectId) -> Result<PdfFont> {
             }
         }
     }
-    Ok(PdfFont { resource: resource.to_string(), base_font, subtype, two_byte, widths, default_width })
+    Ok(PdfFont {
+        resource: resource.to_string(),
+        base_font,
+        subtype,
+        two_byte,
+        widths,
+        default_width,
+    })
 }
 
 fn page_fonts(doc: &Document, page_id: ObjectId) -> Result<HashMap<String, PdfFont>> {
@@ -230,7 +272,14 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
         let fonts = page_fonts(&doc, page_id)?;
         let data = doc.get_page_content(page_id)?;
         let content = Content::decode(&data)?;
-        let mut page = PdfPage { number: num, width, height, fonts, decimals: 0, ..Default::default() };
+        let mut page = PdfPage {
+            number: num,
+            width,
+            height,
+            fonts,
+            decimals: 0,
+            ..Default::default()
+        };
         let mut ctm = Matrix::IDENTITY;
         let mut stack: Vec<Matrix> = Vec::new();
         let mut tm = Matrix::IDENTITY;
@@ -250,7 +299,14 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                 "q" => stack.push(ctm),
                 "Q" => ctm = stack.pop().unwrap_or(Matrix::IDENTITY),
                 "cm" if ops.len() == 6 => {
-                    let m = Matrix { a: f(&ops[0])?, b: f(&ops[1])?, c: f(&ops[2])?, d: f(&ops[3])?, e: f(&ops[4])?, f: f(&ops[5])? };
+                    let m = Matrix {
+                        a: f(&ops[0])?,
+                        b: f(&ops[1])?,
+                        c: f(&ops[2])?,
+                        d: f(&ops[3])?,
+                        e: f(&ops[4])?,
+                        f: f(&ops[5])?,
+                    };
                     ctm = m.mul(&ctm);
                 }
                 "BT" => {
@@ -259,7 +315,10 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                 }
                 "ET" => {}
                 "Tf" if ops.len() == 2 => {
-                    font = ops[0].as_name().ok().map(|n| String::from_utf8_lossy(n).to_string());
+                    font = ops[0]
+                        .as_name()
+                        .ok()
+                        .map(|n| String::from_utf8_lossy(n).to_string());
                     size = f(&ops[1])?;
                 }
                 "Tc" => tc = f(&ops[0])?,
@@ -271,7 +330,14 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                     for o in ops.iter().skip(4) {
                         max_dec = max_dec.max(decimals_of(o));
                     }
-                    tm = Matrix { a: f(&ops[0])?, b: f(&ops[1])?, c: f(&ops[2])?, d: f(&ops[3])?, e: f(&ops[4])?, f: f(&ops[5])? };
+                    tm = Matrix {
+                        a: f(&ops[0])?,
+                        b: f(&ops[1])?,
+                        c: f(&ops[2])?,
+                        d: f(&ops[3])?,
+                        e: f(&ops[4])?,
+                        f: f(&ops[5])?,
+                    };
                     tlm = tm;
                     anchored = true;
                 }
@@ -300,7 +366,10 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                     let fname = font.clone().unwrap_or_default();
                     let fnt = page.fonts.get(&fname).cloned();
                     let elements: Vec<Object> = if op.operator == "TJ" {
-                        ops.first().and_then(|a| a.as_array().ok()).cloned().unwrap_or_default()
+                        ops.first()
+                            .and_then(|a| a.as_array().ok())
+                            .cloned()
+                            .unwrap_or_default()
                     } else {
                         vec![ops.last().cloned().unwrap_or(Object::Null)]
                     };
@@ -308,20 +377,45 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                         match el {
                             Object::String(bytes, _) => {
                                 let codes: Vec<u32> = match &fnt {
-                                    Some(fn_) if fn_.two_byte => bytes.chunks(2).map(|c| ((c[0] as u32) << 8) | *c.get(1).unwrap_or(&0) as u32).collect(),
+                                    Some(fn_) if fn_.two_byte => bytes
+                                        .chunks(2)
+                                        .map(|c| {
+                                            ((c[0] as u32) << 8) | *c.get(1).unwrap_or(&0) as u32
+                                        })
+                                        .collect(),
                                     _ => bytes.iter().map(|b| *b as u32).collect(),
                                 };
                                 for code in codes {
-                                    let w0 = fnt.as_ref().map(|fn_| *fn_.widths.get(&code).unwrap_or(&fn_.default_width)).unwrap_or(0.0) / 1000.0;
-                                    let trm = Matrix { a: size * tz, b: 0.0, c: 0.0, d: size, e: 0.0, f: ts }.mul(&tm).mul(&ctm);
+                                    let w0 = fnt
+                                        .as_ref()
+                                        .map(|fn_| {
+                                            *fn_.widths.get(&code).unwrap_or(&fn_.default_width)
+                                        })
+                                        .unwrap_or(0.0)
+                                        / 1000.0;
+                                    let trm = Matrix {
+                                        a: size * tz,
+                                        b: 0.0,
+                                        c: 0.0,
+                                        d: size,
+                                        e: 0.0,
+                                        f: ts,
+                                    }
+                                    .mul(&tm)
+                                    .mul(&ctm);
                                     let (x, y) = trm.apply(0.0, 0.0);
                                     let hscale = trm.a / size.max(1e-9);
-                                    let is_space = code == 32 && !fnt.as_ref().map(|f| f.two_byte).unwrap_or(false);
-                                    let tx = (w0 * size + tc + if is_space { tw } else { 0.0 }) * tz;
+                                    let is_space = code == 32
+                                        && !fnt.as_ref().map(|f| f.two_byte).unwrap_or(false);
+                                    let tx =
+                                        (w0 * size + tc + if is_space { tw } else { 0.0 }) * tz;
                                     let adv_user = tx * tm.a * ctm.a;
                                     page.glyphs.push(PdfGlyph {
                                         font: fname.clone(),
-                                        base_font: fnt.as_ref().map(|f| f.base_font.clone()).unwrap_or_default(),
+                                        base_font: fnt
+                                            .as_ref()
+                                            .map(|f| f.base_font.clone())
+                                            .unwrap_or_default(),
                                         code,
                                         size,
                                         x,
@@ -356,9 +450,19 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                     let lw = line_width * ctm.a.abs().max(ctm.d.abs());
                     for ((x0, y0), (x1, y1)) in path_segments.drain(..) {
                         if (y0 - y1).abs() < 1e-9 {
-                            page.rules.push(PdfRule { x: x0.min(x1), y: y0 - lw / 2.0, w: (x1 - x0).abs(), h: lw });
+                            page.rules.push(PdfRule {
+                                x: x0.min(x1),
+                                y: y0 - lw / 2.0,
+                                w: (x1 - x0).abs(),
+                                h: lw,
+                            });
                         } else if (x0 - x1).abs() < 1e-9 {
-                            page.rules.push(PdfRule { x: x0 - lw / 2.0, y: y0.min(y1), w: lw, h: (y1 - y0).abs() });
+                            page.rules.push(PdfRule {
+                                x: x0 - lw / 2.0,
+                                y: y0.min(y1),
+                                w: lw,
+                                h: (y1 - y0).abs(),
+                            });
                         }
                     }
                     path_start = None;
@@ -371,21 +475,39 @@ pub fn extract(path: &Path) -> Result<Vec<PdfPage>> {
                     // unit square mapped by the CTM
                     let (x0, y0) = ctm.apply(0.0, 0.0);
                     let (x1, y1) = ctm.apply(1.0, 1.0);
-                    page.images.push(PdfImage { name: ops[0].as_name().map(|n| String::from_utf8_lossy(n).to_string()).unwrap_or_default(), x: x0.min(x1), y: y0.min(y1), w: (x1 - x0).abs(), h: (y1 - y0).abs() });
+                    page.images.push(PdfImage {
+                        name: ops[0]
+                            .as_name()
+                            .map(|n| String::from_utf8_lossy(n).to_string())
+                            .unwrap_or_default(),
+                        x: x0.min(x1),
+                        y: y0.min(y1),
+                        w: (x1 - x0).abs(),
+                        h: (y1 - y0).abs(),
+                    });
                 }
                 "re" if ops.len() == 4 => {
                     let (x, y, w, h) = (f(&ops[0])?, f(&ops[1])?, f(&ops[2])?, f(&ops[3])?);
                     let (x0, y0) = ctm.apply(x, y);
                     let (x1, y1) = ctm.apply(x + w, y + h);
-                    page.rules.push(PdfRule { x: x0.min(x1), y: y0.min(y1), w: (x1 - x0).abs(), h: (y1 - y0).abs() });
+                    page.rules.push(PdfRule {
+                        x: x0.min(x1),
+                        y: y0.min(y1),
+                        w: (x1 - x0).abs(),
+                        h: (y1 - y0).abs(),
+                    });
                 }
                 "g" | "G" | "rg" | "RG" | "k" | "K" | "cs" | "CS" | "sc" | "SC" | "scn" | "SCN" => {
-                    let s = ops.iter().map(|o| match o {
-                        Object::Integer(i) => i.to_string(),
-                        Object::Real(r) => format!("{}", r),
-                        Object::Name(n) => format!("/{}", String::from_utf8_lossy(n)),
-                        _ => "?".into(),
-                    }).collect::<Vec<_>>().join(" ");
+                    let s = ops
+                        .iter()
+                        .map(|o| match o {
+                            Object::Integer(i) => i.to_string(),
+                            Object::Real(r) => format!("{}", r),
+                            Object::Name(n) => format!("/{}", String::from_utf8_lossy(n)),
+                            _ => "?".into(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     page.color_ops.push(format!("{} {}", s, op.operator));
                 }
                 _ => {}

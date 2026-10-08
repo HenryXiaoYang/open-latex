@@ -51,7 +51,11 @@ impl FontDesc {
     pub fn key(&self) -> String {
         format!(
             "{}#{}@{}/{}/{}/{}",
-            self.filename.clone().or_else(|| self.psname.clone()).or_else(|| self.name.clone()).unwrap_or_default(),
+            self.filename
+                .clone()
+                .or_else(|| self.psname.clone())
+                .or_else(|| self.name.clone())
+                .unwrap_or_default(),
             self.subfont.unwrap_or(0),
             self.size.map(|s| s.round() as i64).unwrap_or(0),
             self.slant.unwrap_or(0.0),
@@ -65,37 +69,87 @@ impl FontDesc {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     /// Glyph: font id, char code, glyph index (None for TFM fonts), x, baseline y, advance, expansion factor.
-    Glyph { font: i64, char: i64, index: Option<i64>, x: Sp, y: Sp, width: Sp, expansion: i64 },
+    Glyph {
+        font: i64,
+        char: i64,
+        index: Option<i64>,
+        x: Sp,
+        y: Sp,
+        width: Sp,
+        expansion: i64,
+    },
     /// Filled rectangle: x, top y, width, height.
-    Rule { x: Sp, y_top: Sp, width: Sp, height: Sp },
+    Rule {
+        x: Sp,
+        y_top: Sp,
+        width: Sp,
+        height: Sp,
+    },
     /// pdf_colorstack whatsit: stack id, command, data (raw PDF color operators).
-    Color { stack: i64, cmd: Option<i64>, data: String },
+    Color {
+        stack: i64,
+        cmd: Option<i64>,
+        data: String,
+    },
     /// pdf_literal / special passthrough (mode -1 = \special).
     Literal { mode: i64, data: String },
     /// Something the extractor cannot represent; the page is degraded.
-    Unsupported { kind: String, detail: serde_json::Value },
+    Unsupported {
+        kind: String,
+        detail: serde_json::Value,
+    },
     /// Inline math boundary marker (on/off) at x.
     Math { on: bool, x: Sp },
     /// Image placement: engine image resource index, x, top y, width, height.
-    Image { index: i64, x: Sp, y_top: Sp, width: Sp, height: Sp },
+    Image {
+        index: i64,
+        x: Sp,
+        y_top: Sp,
+        width: Sp,
+        height: Sp,
+    },
     /// PDF transformation state: `save` (q), `set` (the matrix "a b c d" applied about (x, y) to
     /// everything up to the matching `restore`), `restore` (Q). graphicx scaling and rotation.
-    Matrix { op: String, x: Sp, y: Sp, data: String },
+    Matrix {
+        op: String,
+        x: Sp,
+        y: Sp,
+        data: String,
+    },
 }
 
 impl Serialize for Item {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde_json::{json, Value};
         let v: Value = match self {
-            Item::Glyph { font, char, index, x, y, width, expansion } => {
+            Item::Glyph {
+                font,
+                char,
+                index,
+                x,
+                y,
+                width,
+                expansion,
+            } => {
                 json!(["g", font, char, index, x, y, width, expansion])
             }
-            Item::Rule { x, y_top, width, height } => json!(["r", x, y_top, width, height]),
+            Item::Rule {
+                x,
+                y_top,
+                width,
+                height,
+            } => json!(["r", x, y_top, width, height]),
             Item::Color { stack, cmd, data } => json!(["c", stack, cmd, data]),
             Item::Literal { mode, data } => json!(["l", mode, data]),
             Item::Unsupported { kind, detail } => json!(["u", kind, detail]),
             Item::Math { on, x } => json!(["m", if *on { "on" } else { "off" }, x]),
-            Item::Image { index, x, y_top, width, height } => json!(["i", index, x, y_top, width, height]),
+            Item::Image {
+                index,
+                x,
+                y_top,
+                width,
+                height,
+            } => json!(["i", index, x, y_top, width, height]),
             Item::Matrix { op, x, y, data } => json!(["M", op, x, y, data]),
         };
         v.serialize(s)
@@ -110,9 +164,18 @@ impl<'de> Deserialize<'de> for Item {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         let v = serde_json::Value::deserialize(d)?;
-        let arr = v.as_array().ok_or_else(|| D::Error::custom("item must be an array"))?;
-        let tag = arr.first().and_then(|t| t.as_str()).ok_or_else(|| D::Error::custom("item tag"))?;
-        let g = |i: usize| arr.get(i).and_then(num).ok_or_else(|| D::Error::custom(format!("item field {i}")));
+        let arr = v
+            .as_array()
+            .ok_or_else(|| D::Error::custom("item must be an array"))?;
+        let tag = arr
+            .first()
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| D::Error::custom("item tag"))?;
+        let g = |i: usize| {
+            arr.get(i)
+                .and_then(num)
+                .ok_or_else(|| D::Error::custom(format!("item field {i}")))
+        };
         Ok(match tag {
             "g" => Item::Glyph {
                 font: g(1)?,
@@ -123,27 +186,61 @@ impl<'de> Deserialize<'de> for Item {
                 width: g(6)?,
                 expansion: g(7).unwrap_or(0),
             },
-            "r" => Item::Rule { x: g(1)?, y_top: g(2)?, width: g(3)?, height: g(4)? },
+            "r" => Item::Rule {
+                x: g(1)?,
+                y_top: g(2)?,
+                width: g(3)?,
+                height: g(4)?,
+            },
             "c" => Item::Color {
                 stack: g(1).unwrap_or(0),
                 cmd: arr.get(2).and_then(num),
-                data: arr.get(3).and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                data: arr
+                    .get(3)
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             },
             "l" => Item::Literal {
                 mode: g(1).unwrap_or(0),
-                data: arr.get(2).and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                data: arr
+                    .get(2)
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             },
             "u" => Item::Unsupported {
-                kind: arr.get(1).and_then(|d| d.as_str()).unwrap_or("?").to_string(),
+                kind: arr
+                    .get(1)
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
                 detail: arr.get(2).cloned().unwrap_or(serde_json::Value::Null),
             },
-            "m" => Item::Math { on: arr.get(1).and_then(|d| d.as_str()) == Some("on"), x: g(2)? },
-            "i" => Item::Image { index: g(1).unwrap_or(0), x: g(2)?, y_top: g(3)?, width: g(4)?, height: g(5)? },
+            "m" => Item::Math {
+                on: arr.get(1).and_then(|d| d.as_str()) == Some("on"),
+                x: g(2)?,
+            },
+            "i" => Item::Image {
+                index: g(1).unwrap_or(0),
+                x: g(2)?,
+                y_top: g(3)?,
+                width: g(4)?,
+                height: g(5)?,
+            },
             "M" => Item::Matrix {
-                op: arr.get(1).and_then(|d| d.as_str()).unwrap_or("set").to_string(),
+                op: arr
+                    .get(1)
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("set")
+                    .to_string(),
                 x: g(2)?,
                 y: g(3)?,
-                data: arr.get(4).and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                data: arr
+                    .get(4)
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             },
             other => return Err(D::Error::custom(format!("unknown item tag {other}"))),
         })
@@ -184,10 +281,19 @@ fn is_zero(v: &i64) -> bool {
 }
 
 /// Lua encodes an empty table as `[]`; accept that where a map is expected.
-fn map_or_empty_array<'de, D: serde::Deserializer<'de>, V: serde::de::DeserializeOwned>(d: D) -> Result<BTreeMap<String, V>, D::Error> {
+fn map_or_empty_array<'de, D: serde::Deserializer<'de>, V: serde::de::DeserializeOwned>(
+    d: D,
+) -> Result<BTreeMap<String, V>, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     match v {
-        serde_json::Value::Object(m) => m.into_iter().map(|(k, v)| serde_json::from_value(v).map(|x| (k, x)).map_err(serde::de::Error::custom)).collect(),
+        serde_json::Value::Object(m) => m
+            .into_iter()
+            .map(|(k, v)| {
+                serde_json::from_value(v)
+                    .map(|x| (k, x))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect(),
         _ => Ok(BTreeMap::new()),
     }
 }
@@ -226,7 +332,12 @@ pub struct DisplayList {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub inserts: i64,
     /// Image resource indices → files (from the capture or the server).
-    #[serde(default, rename = "images_info", skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "map_or_empty_array")]
+    #[serde(
+        default,
+        rename = "images_info",
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "map_or_empty_array"
+    )]
     pub images: BTreeMap<String, ImageInfo>,
     #[serde(default)]
     pub width: Sp,
@@ -268,8 +379,20 @@ impl DisplayList {
         self.fonts.get(&id.to_string())
     }
     pub fn glyph_count(&self) -> usize {
-        self.lines.iter().map(|l| l.items.iter().filter(|i| matches!(i, Item::Glyph { .. })).count()).sum::<usize>()
-            + self.other.iter().filter(|i| matches!(i, Item::Glyph { .. })).count()
+        self.lines
+            .iter()
+            .map(|l| {
+                l.items
+                    .iter()
+                    .filter(|i| matches!(i, Item::Glyph { .. }))
+                    .count()
+            })
+            .sum::<usize>()
+            + self
+                .other
+                .iter()
+                .filter(|i| matches!(i, Item::Glyph { .. }))
+                .count()
     }
     /// Rows belonging to capture unit `unit`, in row order.
     pub fn rows_of(&self, unit: i64) -> Vec<&Line> {

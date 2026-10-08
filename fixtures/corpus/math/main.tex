@@ -1,0 +1,56 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{enumitem}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\begin{document}
+\section{Sequences}
+\begin{definition}
+A sequence $(a_n)_{n\in\N}$ in $\R$ \emph{converges} to $L$ if for every $\varepsilon>0$ there is $N$ such that $\abs{a_n-L}<\varepsilon$ for all $n\geq N$.
+\end{definition}
+
+\begin{theorem}[Uniqueness of limits]\label{thm:unique}
+A convergent sequence has exactly one limit.
+\end{theorem}
+\begin{proof}
+Suppose $a_n\to L$ and $a_n\to L'$. Then
+\begin{align}
+  \abs{L-L'} &\leq \abs{L-a_n}+\abs{a_n-L'} \label{eq:tri}\\
+             &< 2\varepsilon
+\end{align}
+for all large $n$, so $L=L'$ by \eqref{eq:tri}.
+\end{proof}
+
+\begin{example}
+The sequence $a_n = \dfrac{1}{n}$ converges to $0$, while $b_n = (-1)^n$ does not converge.
+\end{example}
+
+The variance of $X$ is $\Var(X) = \mathbb{E}\big[(X-\mu)^2\big]$ and the maximiser is
+\[
+  x^\star = \argmax_{x\in[0,1]} \bigl( f(x) - \tfrac{1}{2}\norm{x}^2 \bigr),
+  \qquad
+  f(x) = \begin{cases} x^2 & x \geq 0,\\ -x & x < 0. \end{cases}
+\]
+
+\begin{enumerate}[label=\roman*)]
+  \item Show that $\sum_{k=1}^{n} k = \frac{n(n+1)}{2}$ for all $n \in \N$.
+  \item Compute $\lim_{x\to 0} \frac{\sin x}{x}$ and $\int_0^1 e^{-x^2}\,\mathrm{d}x$ numerically.
+  \item Let $\bm{v} \in \R^3$; find $\norm{\bm{v}}$ when $\bm{v} = (1,2,2)^{\top}$.
+\end{enumerate}
+
+\begin{lemma}
+For matrices $A = \begin{pmatrix} a & b \\ c & d \end{pmatrix}$ we have $\det A = ad - bc$ and, if $\det A \neq 0$, $A^{-1} = \frac{1}{\det A}\begin{pmatrix} d & -b \\ -c & a\end{pmatrix}$.
+\end{lemma}
+By Theorem~\ref{thm:unique} the limit is unique. Note that $\overbrace{1+1+\cdots+1}^{n\text{ times}} = n$ and $\underbrace{x \cdot x \cdots x}_{k} = x^k$.
+\end{document}

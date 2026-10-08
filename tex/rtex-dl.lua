@@ -40,8 +40,14 @@ local ws_colorstack, ws_literal, ws_special = W.pdf_colorstack, W.pdf_literal, W
 local ws_late_lua, ws_user = W.late_lua, W.user_defined
 local ws_setmatrix, ws_save, ws_restore = W.pdf_setmatrix, W.pdf_save, W.pdf_restore
 local ws_open, ws_write, ws_close, ws_savepos = W.open, W.write, W.close, W.save_pos
+-- hyperref's link/destination/annotation whatsits carry no ink (link borders are PDF viewer
+-- decorations); the engine still typesets everything around them identically
+local SILENT = { [ws_user] = true, [ws_late_lua] = true, [ws_open] = true, [ws_write] = true, [ws_close] = true, [ws_savepos] = true }
+for _, name in ipairs({ "pdf_dest", "pdf_annot", "pdf_start_link", "pdf_end_link", "pdf_refobj", "pdf_thread", "pdf_start_thread", "pdf_end_thread", "pdf_action", "pdf_link_data" }) do
+  if W[name] then SILENT[W[name]] = true end
+end
 local function silent_whatsit(sub)
-  return sub == ws_user or sub == ws_late_lua or sub == ws_open or sub == ws_write or sub == ws_close or sub == ws_savepos
+  return SILENT[sub] == true
 end
 
 local RUNNING = -1073741824  -- null_flag: running dimension for rules

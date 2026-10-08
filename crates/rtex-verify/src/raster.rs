@@ -25,7 +25,8 @@ impl FontCache {
         if let Some(f) = self.files.get(&key) {
             return Ok(f.clone());
         }
-        let data = std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?;
+        let data =
+            std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?;
         let fd = std::rc::Rc::new(FontData { data, index });
         self.files.insert(key, fd.clone());
         Ok(fd)
@@ -75,7 +76,13 @@ pub struct RasterStats {
 
 /// Rasterize page-coordinate display lists (sp, origin top-left) onto a white canvas of
 /// `page_w_bp × page_h_bp` at `dpi`. Returns grayscale coverage (0 = white, 255 = black).
-pub fn rasterize(dls: &[&DisplayList], page_w_bp: f64, page_h_bp: f64, dpi: f64, cache: &mut FontCache) -> Result<(Vec<u8>, usize, usize, RasterStats)> {
+pub fn rasterize(
+    dls: &[&DisplayList],
+    page_w_bp: f64,
+    page_h_bp: f64,
+    dpi: f64,
+    cache: &mut FontCache,
+) -> Result<(Vec<u8>, usize, usize, RasterStats)> {
     let scale = dpi / 72.0; // px per bp
     let w = (page_w_bp * scale).round() as usize;
     let h = (page_h_bp * scale).round() as usize;
@@ -85,13 +92,32 @@ pub fn rasterize(dls: &[&DisplayList], page_w_bp: f64, page_h_bp: f64, dpi: f64,
     paint.set_color(tiny_skia::Color::BLACK);
     paint.anti_alias = true;
     let sp_to_px = scale / SP_PER_BP;
-    let mut stats = RasterStats { glyphs_drawn: 0, glyphs_skipped: 0, rules_drawn: 0, skipped_fonts: vec![] };
+    let mut stats = RasterStats {
+        glyphs_drawn: 0,
+        glyphs_skipped: 0,
+        rules_drawn: 0,
+        skipped_fonts: vec![],
+    };
     for dl in dls {
-        let items = dl.lines.iter().flat_map(|l| l.items.iter()).chain(dl.other.iter());
+        let items = dl
+            .lines
+            .iter()
+            .flat_map(|l| l.items.iter())
+            .chain(dl.other.iter());
         for it in items {
             match it {
-                Item::Glyph { font, index, x, y, expansion, .. } => {
-                    let Some(fd) = dl.font(*font) else { stats.glyphs_skipped += 1; continue };
+                Item::Glyph {
+                    font,
+                    index,
+                    x,
+                    y,
+                    expansion,
+                    ..
+                } => {
+                    let Some(fd) = dl.font(*font) else {
+                        stats.glyphs_skipped += 1;
+                        continue;
+                    };
                     let (Some(file), Some(idx)) = (fd.filename.as_ref(), index) else {
                         stats.glyphs_skipped += 1;
                         let name = fd.psname.clone().or(fd.name.clone()).unwrap_or_default();
@@ -102,7 +128,10 @@ pub fn rasterize(dls: &[&DisplayList], page_w_bp: f64, page_h_bp: f64, dpi: f64,
                     };
                     let path = Path::new(file);
                     let lower = file.to_ascii_lowercase();
-                    if !(lower.ends_with(".otf") || lower.ends_with(".ttf") || lower.ends_with(".ttc")) {
+                    if !(lower.ends_with(".otf")
+                        || lower.ends_with(".ttf")
+                        || lower.ends_with(".ttc"))
+                    {
                         stats.glyphs_skipped += 1;
                         if !stats.skipped_fonts.contains(file) {
                             stats.skipped_fonts.push(file.clone());
@@ -110,26 +139,55 @@ pub fn rasterize(dls: &[&DisplayList], page_w_bp: f64, page_h_bp: f64, dpi: f64,
                         continue;
                     }
                     let data = cache.load(path, fd.subfont.unwrap_or(0).max(0) as u32)?;
-                    let face = ttf_parser::Face::parse(&data.data, data.index.saturating_sub(1)).map_err(|e| anyhow!("{e:?}"))?;
+                    let face = ttf_parser::Face::parse(&data.data, data.index.saturating_sub(1))
+                        .map_err(|e| anyhow!("{e:?}"))?;
                     let upem = face.units_per_em() as f32;
                     let size_pt = fd.size.unwrap_or(655360.0) as f32 / 65536.0;
                     let px_per_unit = size_pt * (72.0 / 72.27) * scale as f32 / upem;
-                    let hx = px_per_unit * (1.0 + *expansion as f32 / 1_000_000.0) * fd.extend.map(|e| e as f32 / 1000.0).filter(|e| *e != 0.0).unwrap_or(1.0);
+                    let hx = px_per_unit
+                        * (1.0 + *expansion as f32 / 1_000_000.0)
+                        * fd.extend
+                            .map(|e| e as f32 / 1000.0)
+                            .filter(|e| *e != 0.0)
+                            .unwrap_or(1.0);
                     let slant = fd.slant.map(|s| s as f32 / 1000.0).unwrap_or(0.0);
                     let ox = *x as f32 * sp_to_px as f32;
                     let oy = *y as f32 * sp_to_px as f32;
                     // font units → device: x' = ox + hx*ux + slant*px_per_unit*uy ; y' = oy - px_per_unit*uy
-                    let tf = Transform::from_row(hx, 0.0, slant * px_per_unit, -px_per_unit, ox, oy);
+                    let tf =
+                        Transform::from_row(hx, 0.0, slant * px_per_unit, -px_per_unit, ox, oy);
                     let mut pb = PathBuilder::new();
-                    if face.outline_glyph(ttf_parser::GlyphId(*idx as u16), &mut Outline { pb: &mut pb, tf }).is_some() {
+                    if face
+                        .outline_glyph(
+                            ttf_parser::GlyphId(*idx as u16),
+                            &mut Outline { pb: &mut pb, tf },
+                        )
+                        .is_some()
+                    {
                         if let Some(p) = pb.finish() {
-                            pix.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+                            pix.fill_path(
+                                &p,
+                                &paint,
+                                FillRule::Winding,
+                                Transform::identity(),
+                                None,
+                            );
                         }
                     }
                     stats.glyphs_drawn += 1;
                 }
-                Item::Rule { x, y_top, width, height } => {
-                    let r = Rect::from_xywh(*x as f32 * sp_to_px as f32, *y_top as f32 * sp_to_px as f32, (*width as f32 * sp_to_px as f32).max(0.5), (*height as f32 * sp_to_px as f32).max(0.5));
+                Item::Rule {
+                    x,
+                    y_top,
+                    width,
+                    height,
+                } => {
+                    let r = Rect::from_xywh(
+                        *x as f32 * sp_to_px as f32,
+                        *y_top as f32 * sp_to_px as f32,
+                        (*width as f32 * sp_to_px as f32).max(0.5),
+                        (*height as f32 * sp_to_px as f32).max(0.5),
+                    );
                     if let Some(r) = r {
                         pix.fill_rect(r, &paint, Transform::identity(), None);
                         stats.rules_drawn += 1;
@@ -164,7 +222,12 @@ pub fn compare(a: &[u8], b: &[u8], w: usize, h: usize, ink_threshold: u8) -> Ras
             for dx in -1i64..=1 {
                 let xx = x as i64 + dx;
                 let yy = y as i64 + dy;
-                if xx >= 0 && yy >= 0 && (xx as usize) < w && (yy as usize) < h && ink(img, xx as usize, yy as usize) {
+                if xx >= 0
+                    && yy >= 0
+                    && (xx as usize) < w
+                    && (yy as usize) < h
+                    && ink(img, xx as usize, yy as usize)
+                {
                     return true;
                 }
             }
@@ -181,20 +244,35 @@ pub fn compare(a: &[u8], b: &[u8], w: usize, h: usize, ink_threshold: u8) -> Ras
                 ink_a += 1;
                 if !near(b, x, y) {
                     ua += 1;
-                    bbox = Some(match bbox { None => (x, y, x, y), Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)) });
+                    bbox = Some(match bbox {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
                 }
             }
             if ib {
                 ink_b += 1;
                 if !near(a, x, y) {
                     ub += 1;
-                    bbox = Some(match bbox { None => (x, y, x, y), Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)) });
+                    bbox = Some(match bbox {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
                 }
             }
         }
     }
     let denom = (ink_a + ink_b).max(1) as f64;
-    RasterDiff { width: w, height: h, ink_a, ink_b, unmatched_a: ua, unmatched_b: ub, unmatched_fraction: (ua + ub) as f64 / denom, bbox_unmatched: bbox }
+    RasterDiff {
+        width: w,
+        height: h,
+        ink_a,
+        ink_b,
+        unmatched_a: ua,
+        unmatched_b: ub,
+        unmatched_fraction: (ua + ub) as f64 / denom,
+        bbox_unmatched: bbox,
+    }
 }
 
 pub fn write_png(path: &Path, gray: &[u8], w: usize, h: usize) -> Result<()> {
@@ -217,8 +295,14 @@ pub fn read_png_gray(path: &Path) -> Result<(Vec<u8>, usize, usize)> {
     let gray: Vec<u8> = match info.color_type {
         png::ColorType::Grayscale => bytes.iter().map(|v| 255 - *v).collect(),
         png::ColorType::GrayscaleAlpha => bytes.chunks(2).map(|c| 255 - c[0]).collect(),
-        png::ColorType::Rgb => bytes.chunks(3).map(|c| 255 - ((c[0] as u32 + c[1] as u32 + c[2] as u32) / 3) as u8).collect(),
-        png::ColorType::Rgba => bytes.chunks(4).map(|c| 255 - ((c[0] as u32 + c[1] as u32 + c[2] as u32) / 3) as u8).collect(),
+        png::ColorType::Rgb => bytes
+            .chunks(3)
+            .map(|c| 255 - ((c[0] as u32 + c[1] as u32 + c[2] as u32) / 3) as u8)
+            .collect(),
+        png::ColorType::Rgba => bytes
+            .chunks(4)
+            .map(|c| 255 - ((c[0] as u32 + c[1] as u32 + c[2] as u32) / 3) as u8)
+            .collect(),
         other => anyhow::bail!("unsupported png color type {other:?}"),
     };
     Ok((gray, w, h))
@@ -248,7 +332,10 @@ pub fn render_pdf_page_with_pymupdf(pdf: &Path, page: u32, dpi: u32, out: &Path)
         .output()
         .with_context(|| format!("running {} (PyMuPDF)", python.to_string_lossy()))?;
     if !st.status.success() {
-        anyhow::bail!("pymupdf render failed: {}", String::from_utf8_lossy(&st.stderr));
+        anyhow::bail!(
+            "pymupdf render failed: {}",
+            String::from_utf8_lossy(&st.stderr)
+        );
     }
     Ok(())
 }

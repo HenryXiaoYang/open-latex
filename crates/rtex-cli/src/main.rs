@@ -9,7 +9,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "rtex", version, about = "Real-time LuaTeX compilation library driver")]
+#[command(
+    name = "rtex",
+    version,
+    about = "Real-time LuaTeX compilation library driver"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -57,6 +61,9 @@ enum Cmd {
         /// Print fast and capture rows of differing units.
         #[arg(long)]
         dump_rows: bool,
+        /// Fail unless at least this many units are eligible for the fast path (regression gate).
+        #[arg(long)]
+        min_eligible: Option<usize>,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -92,7 +99,11 @@ enum Cmd {
         /// Projects to benchmark (fixture directories with main.tex).
         #[arg(long, num_args = 1..)]
         project: Vec<PathBuf>,
-        #[arg(long, default_value = "short,medium,long,inline-math", value_delimiter = ',')]
+        #[arg(
+            long,
+            default_value = "short,medium,long,inline-math",
+            value_delimiter = ','
+        )]
         categories: Vec<String>,
         #[arg(long, default_value_t = 300)]
         samples: usize,
@@ -148,17 +159,68 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Slice { project, main, paragraph, edits, build, json_out } => {
-            slice::run(slice::SliceOpts { project, main, paragraph, edits, build, json_out })?;
+        Cmd::Slice {
+            project,
+            main,
+            paragraph,
+            edits,
+            build,
+            json_out,
+        } => {
+            slice::run(slice::SliceOpts {
+                project,
+                main,
+                paragraph,
+                edits,
+                build,
+                json_out,
+            })?;
         }
-        Cmd::Verify { project, main, build, dpi, raster, json_out, max_paragraphs, units, dump_rows } => {
-            let r = verify::run(verify::VerifyOpts { project, main, build, dpi, raster, json_out, max_paragraphs, units, dump_rows })?;
-            if !(r.layer1_pass && r.layer2_pass && r.layer3_pass.unwrap_or(true) && r.capture_pdf_equals_clean) {
+        Cmd::Verify {
+            project,
+            main,
+            build,
+            dpi,
+            raster,
+            json_out,
+            max_paragraphs,
+            units,
+            dump_rows,
+            min_eligible,
+        } => {
+            let r = verify::run(verify::VerifyOpts {
+                project,
+                main,
+                build,
+                dpi,
+                raster,
+                json_out,
+                max_paragraphs,
+                units,
+                dump_rows,
+                min_eligible,
+            })?;
+            if !(r.layer1_pass
+                && r.layer2_pass
+                && r.layer3_pass.unwrap_or(true)
+                && r.capture_pdf_equals_clean)
+            {
                 std::process::exit(1);
             }
         }
-        Cmd::Serve { project, main, build } => serve::run(project, main, build)?,
-        Cmd::Edit { project, main, byte, find, text, wait } => serve::edit_once(project, main, byte, find, text, wait)?,
+        Cmd::Serve {
+            project,
+            main,
+            build,
+        } => serve::run(project, main, build)?,
+        Cmd::Edit {
+            project,
+            main,
+            byte,
+            find,
+            text,
+            wait,
+        } => serve::edit_once(project, main, byte, find, text, wait)?,
         Cmd::PdfCompare { a, b } => {
             let d = rtex_verify::pdfcompare::compare(&a, &b)?;
             println!("{}", serde_json::to_string_pretty(&d)?);
@@ -171,34 +233,88 @@ fn main() -> anyhow::Result<()> {
             let dl = rtex_dl::DisplayList::from_binary(&bytes)?;
             println!("{}", serde_json::to_string_pretty(&dl)?);
         }
-        Cmd::Bench { project, categories, samples, inner, build, out, quick } => {
+        Cmd::Bench {
+            project,
+            categories,
+            samples,
+            inner,
+            build,
+            out,
+            quick,
+        } => {
             let (samples, inner) = if quick { (30, 10) } else { (samples, inner) };
             let r = bench::run_all(project, categories, samples, inner, build, out, quick)?;
             if !r.pass {
                 std::process::exit(1);
             }
         }
-        Cmd::Export { project, main, out, check } => {
-            let session = rtex_core::Session::open(rtex_core::SessionConfig::new(&project, main.clone()))?;
+        Cmd::Export {
+            project,
+            main,
+            out,
+            check,
+        } => {
+            let session =
+                rtex_core::Session::open(rtex_core::SessionConfig::new(&project, main.clone()))?;
             let job = session.export_pdf(&out);
-            let (ev, _) = session.wait_for(std::time::Duration::from_secs(1800), |e| matches!(e, rtex_core::Event::PdfExported { job_id, .. } if *job_id == job));
-            let Some(rtex_core::Event::PdfExported { path, status, converged, passes, .. }) = ev else { anyhow::bail!("no export result") };
-            println!("export: status {:?} converged {} passes {} path {:?}", status, converged, passes, path);
+            let (ev, _) = session.wait_for(
+                std::time::Duration::from_secs(1800),
+                |e| matches!(e, rtex_core::Event::PdfExported { job_id, .. } if *job_id == job),
+            );
+            let Some(rtex_core::Event::PdfExported {
+                path,
+                status,
+                converged,
+                passes,
+                ..
+            }) = ev
+            else {
+                anyhow::bail!("no export result")
+            };
+            println!(
+                "export: status {:?} converged {} passes {} path {:?}",
+                status, converged, passes, path
+            );
             session.close();
             if check {
                 let tl = rtex_core::texlive::TexLive::discover()?;
-                let tmp = std::env::temp_dir().join(format!("rtex-export-check-{}", std::process::id()));
-                let o = rtex_core::background::run_pass(&tl, &project.canonicalize()?, &main, &tmp, 5, rtex_core::background::BibTool::Auto, false)?;
+                let tmp =
+                    std::env::temp_dir().join(format!("rtex-export-check-{}", std::process::id()));
+                let o = rtex_core::background::run_pass(
+                    &tl,
+                    &project.canonicalize()?,
+                    &main,
+                    &tmp,
+                    5,
+                    rtex_core::background::BibTool::Auto,
+                    false,
+                )?;
                 let d = rtex_verify::pdfcompare::compare(&out, &o.capture.pdf)?;
-                println!("independent clean build: {} passes, equal = {} {:?}", o.passes, d.equal, d.differences.iter().take(3).collect::<Vec<_>>());
+                println!(
+                    "independent clean build: {} passes, equal = {} {:?}",
+                    o.passes,
+                    d.equal,
+                    d.differences.iter().take(3).collect::<Vec<_>>()
+                );
                 let _ = std::fs::remove_dir_all(&tmp);
                 if !d.equal || !converged {
                     std::process::exit(1);
                 }
             }
         }
-        Cmd::Probe { project, main, n, build } => probe::run(project, main, n, build)?,
-        Cmd::GenBook { pages, variant, fonts, seed, out } => {
+        Cmd::Probe {
+            project,
+            main,
+            n,
+            build,
+        } => probe::run(project, main, n, build)?,
+        Cmd::GenBook {
+            pages,
+            variant,
+            fonts,
+            seed,
+            out,
+        } => {
             gen_book::generate(pages, variant, fonts, seed, &out)?;
             println!("wrote {}", out.display());
         }

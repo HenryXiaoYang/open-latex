@@ -61,7 +61,12 @@ fn dl_glyphs<'a>(dl: &'a DisplayList, lines: &[&'a Line]) -> Vec<DlGlyph<'a>> {
     for l in lines {
         for it in &l.items {
             if let Item::Glyph { expansion, .. } = it {
-                v.push(DlGlyph { line: l.i, par: l.par, item: it, scale: 1.0 + *expansion as f64 / 1_000_000.0 });
+                v.push(DlGlyph {
+                    line: l.i,
+                    par: l.par,
+                    item: it,
+                    scale: 1.0 + *expansion as f64 / 1_000_000.0,
+                });
             }
         }
     }
@@ -71,13 +76,27 @@ fn dl_glyphs<'a>(dl: &'a DisplayList, lines: &[&'a Line]) -> Vec<DlGlyph<'a>> {
 
 /// Compare the glyphs of `lines` (page coordinates, sp) against the PDF page. When `lines` is
 /// empty, all lines and `other` items of the display list are used.
-pub fn compare_page(dl: &DisplayList, pdf: &PdfPage, lines: &[&Line], tolerance_bp: f64) -> CompareReport {
-    let all_lines: Vec<&Line> = if lines.is_empty() { dl.lines.iter().collect() } else { lines.to_vec() };
+pub fn compare_page(
+    dl: &DisplayList,
+    pdf: &PdfPage,
+    lines: &[&Line],
+    tolerance_bp: f64,
+) -> CompareReport {
+    let all_lines: Vec<&Line> = if lines.is_empty() {
+        dl.lines.iter().collect()
+    } else {
+        lines.to_vec()
+    };
     let mut glyphs = dl_glyphs(dl, &all_lines);
     if lines.is_empty() {
         for it in &dl.other {
             if let Item::Glyph { expansion, .. } = it {
-                glyphs.push(DlGlyph { line: 0, par: 0, item: it, scale: 1.0 + *expansion as f64 / 1_000_000.0 });
+                glyphs.push(DlGlyph {
+                    line: 0,
+                    par: 0,
+                    item: it,
+                    scale: 1.0 + *expansion as f64 / 1_000_000.0,
+                });
             }
         }
     }
@@ -88,10 +107,26 @@ pub fn compare_page(dl: &DisplayList, pdf: &PdfPage, lines: &[&Line], tolerance_
     for (i, g) in pdf.glyphs.iter().enumerate() {
         by_code.entry(g.code).or_default().push(i);
     }
-    let mut rep = CompareReport { page: pdf.number, dl_glyphs: glyphs.len(), pdf_glyphs: pdf.glyphs.len(), tolerance_bp, ..Default::default() };
+    let mut rep = CompareReport {
+        page: pdf.number,
+        dl_glyphs: glyphs.len(),
+        pdf_glyphs: pdf.glyphs.len(),
+        tolerance_bp,
+        ..Default::default()
+    };
     let mut diffs: Vec<GlyphDiff> = Vec::new();
     for g in &glyphs {
-        let Item::Glyph { char, index, x, y, width, .. } = g.item else { continue };
+        let Item::Glyph {
+            char,
+            index,
+            x,
+            y,
+            width,
+            ..
+        } = g.item
+        else {
+            continue;
+        };
         let code = index.unwrap_or(*char) as u32;
         let dl_x = *x as f64 / SP_PER_BP;
         let dl_y = page_h - *y as f64 / SP_PER_BP;
@@ -109,7 +144,16 @@ pub fn compare_page(dl: &DisplayList, pdf: &PdfPage, lines: &[&Line], tolerance_
                 }
             }
         }
-        let mut diff = GlyphDiff { line: g.line, par: g.par, index: *index, dl_x_bp: dl_x, dl_y_bp: dl_y, dl_scale: g.scale, dl_advance_bp: dl_adv, ..Default::default() };
+        let mut diff = GlyphDiff {
+            line: g.line,
+            par: g.par,
+            index: *index,
+            dl_x_bp: dl_x,
+            dl_y_bp: dl_y,
+            dl_scale: g.scale,
+            dl_advance_bp: dl_adv,
+            ..Default::default()
+        };
         match best {
             Some((ci, _)) => {
                 used[ci] = true;
@@ -129,13 +173,18 @@ pub fn compare_page(dl: &DisplayList, pdf: &PdfPage, lines: &[&Line], tolerance_
                     rep.anchored_max_dx_bp = rep.anchored_max_dx_bp.max(dx.abs());
                     rep.anchored_max_dy_bp = rep.anchored_max_dy_bp.max(dy.abs());
                 }
-                let e = rep.max_dx_by_font.entry(pg.base_font.clone()).or_insert(0.0);
+                let e = rep
+                    .max_dx_by_font
+                    .entry(pg.base_font.clone())
+                    .or_insert(0.0);
                 *e = e.max(dx.abs());
                 rep.matched += 1;
                 rep.max_dx_bp = rep.max_dx_bp.max(dx.abs());
                 rep.max_dy_bp = rep.max_dy_bp.max(dy.abs());
                 rep.max_scale_err = rep.max_scale_err.max((pg.hscale - g.scale).abs());
-                rep.max_advance_err_bp = rep.max_advance_err_bp.max((pg.advance - dl_adv * 1.0).abs());
+                rep.max_advance_err_bp = rep
+                    .max_advance_err_bp
+                    .max((pg.advance - dl_adv * 1.0).abs());
                 if dx.abs() <= tolerance_bp && dy.abs() <= tolerance_bp {
                     rep.within_tolerance += 1;
                 }
@@ -145,8 +194,16 @@ pub fn compare_page(dl: &DisplayList, pdf: &PdfPage, lines: &[&Line], tolerance_
         diffs.push(diff);
     }
     diffs.sort_by(|a, b| {
-        let da = a.dx_bp.map(|d| d.abs()).unwrap_or(f64::INFINITY).max(a.dy_bp.map(|d| d.abs()).unwrap_or(f64::INFINITY));
-        let db = b.dx_bp.map(|d| d.abs()).unwrap_or(f64::INFINITY).max(b.dy_bp.map(|d| d.abs()).unwrap_or(f64::INFINITY));
+        let da = a
+            .dx_bp
+            .map(|d| d.abs())
+            .unwrap_or(f64::INFINITY)
+            .max(a.dy_bp.map(|d| d.abs()).unwrap_or(f64::INFINITY));
+        let db = b
+            .dx_bp
+            .map(|d| d.abs())
+            .unwrap_or(f64::INFINITY)
+            .max(b.dy_bp.map(|d| d.abs()).unwrap_or(f64::INFINITY));
         db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
     });
     rep.worst = diffs.into_iter().take(5).collect();
@@ -154,26 +211,60 @@ pub fn compare_page(dl: &DisplayList, pdf: &PdfPage, lines: &[&Line], tolerance_
     let mut dl_rules = Vec::new();
     for l in &all_lines {
         for it in &l.items {
-            if let Item::Rule { x, y_top, width, height } = it {
-                dl_rules.push((*x as f64 / SP_PER_BP, page_h - (*y_top + *height) as f64 / SP_PER_BP, *width as f64 / SP_PER_BP, *height as f64 / SP_PER_BP));
+            if let Item::Rule {
+                x,
+                y_top,
+                width,
+                height,
+            } = it
+            {
+                dl_rules.push((
+                    *x as f64 / SP_PER_BP,
+                    page_h - (*y_top + *height) as f64 / SP_PER_BP,
+                    *width as f64 / SP_PER_BP,
+                    *height as f64 / SP_PER_BP,
+                ));
             }
         }
     }
     if lines.is_empty() {
         for it in &dl.other {
-            if let Item::Rule { x, y_top, width, height } = it {
-                dl_rules.push((*x as f64 / SP_PER_BP, page_h - (*y_top + *height) as f64 / SP_PER_BP, *width as f64 / SP_PER_BP, *height as f64 / SP_PER_BP));
+            if let Item::Rule {
+                x,
+                y_top,
+                width,
+                height,
+            } = it
+            {
+                dl_rules.push((
+                    *x as f64 / SP_PER_BP,
+                    page_h - (*y_top + *height) as f64 / SP_PER_BP,
+                    *width as f64 / SP_PER_BP,
+                    *height as f64 / SP_PER_BP,
+                ));
             }
         }
     }
     rep.rules_dl = dl_rules.len();
     rep.rules_pdf = pdf.rules.len();
     for (x, y, w, h) in dl_rules {
-        if pdf.rules.iter().any(|r| (r.x - x).abs() < 0.01 && (r.y - y).abs() < 0.01 && (r.w - w).abs() < 0.01 && (r.h - h).abs() < 0.01) {
+        if pdf.rules.iter().any(|r| {
+            (r.x - x).abs() < 0.01
+                && (r.y - y).abs() < 0.01
+                && (r.w - w).abs() < 0.01
+                && (r.h - h).abs() < 0.01
+        }) {
             rep.rules_matched += 1;
         } else {
-            let nearest = pdf.rules.iter().min_by(|a, b| ((a.x - x).abs() + (a.y - y).abs()).partial_cmp(&((b.x - x).abs() + (b.y - y).abs())).unwrap());
-            rep.rule_mismatches.push(format!("dl rule x={x:.4} y={y:.4} w={w:.4} h={h:.4}; nearest pdf {:?}", nearest.map(|r| (r.x, r.y, r.w, r.h))));
+            let nearest = pdf.rules.iter().min_by(|a, b| {
+                ((a.x - x).abs() + (a.y - y).abs())
+                    .partial_cmp(&((b.x - x).abs() + (b.y - y).abs()))
+                    .unwrap()
+            });
+            rep.rule_mismatches.push(format!(
+                "dl rule x={x:.4} y={y:.4} w={w:.4} h={h:.4}; nearest pdf {:?}",
+                nearest.map(|r| (r.x, r.y, r.w, r.h))
+            ));
         }
     }
     rep

@@ -1,0 +1,63 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage[table]{xcolor}
+\usepackage{natbib}
+\usepackage{hyperref}
+\begin{document}
+\title{A Report on Memory Hierarchies}
+\author{Henry Yang}
+\date{\today}
+\maketitle
+\tableofcontents
+
+\section{Introduction}
+Memory hierarchies trade capacity for speed \citep{hennessy2017}. \citet{smith1982} surveyed cache designs; later work \cite{hennessy2017,smith1982} refined them. Figure~\ref{fig:both} shows two placeholder images.
+
+\begin{figure}[h]
+  \centering
+  \begin{subfigure}[b]{0.45\textwidth}
+    \includegraphics[width=\linewidth]{images/figure.png}
+    \caption{First.}\label{fig:a}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.45\textwidth}
+    \includegraphics[width=\linewidth]{images/figure.png}
+    \caption{Second.}\label{fig:b}
+  \end{subfigure}
+  \caption{Two placeholder images.}\label{fig:both}
+\end{figure}
+
+\section{Results}
+Table~\ref{tab:res} summarises latencies.
+
+\begin{table}[h]
+\centering
+\rowcolors{2}{gray!15}{white}
+\begin{tabular}{llrr}
+\toprule
+\multirow{2}{*}{Level} & \multirow{2}{*}{Technology} & \multicolumn{2}{c}{Latency} \\
+\cmidrule(lr){3-4}
+ & & ns & cycles \\
+\midrule
+L1 & SRAM & 1 & 4 \\
+L2 & SRAM & 4 & 12 \\
+\rowcolor{yellow!30} DRAM & capacitors & 60 & 200 \\
+\bottomrule
+\end{tabular}
+\caption{Typical latencies.}\label{tab:res}
+\end{table}
+
+As \citeauthor{smith1982} noted in \citeyear{smith1982}, associativity matters. The data in Table~\ref{tab:res} are illustrative only.
+
+\section{Conclusion}
+Caches work because of \textbf{locality}. See \autoref{fig:a} and page \pageref{tab:res}.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+\end{document}

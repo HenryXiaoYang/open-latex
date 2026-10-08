@@ -57,19 +57,47 @@ pub struct CompileResult {
 #[serde(tag = "op")]
 pub enum Response {
     #[serde(rename = "ready")]
-    Ready { banner: String, #[serde(default)] font_nextid: i64, #[serde(default)] fingerprint: String },
+    Ready {
+        banner: String,
+        #[serde(default)]
+        font_nextid: i64,
+        #[serde(default)]
+        fingerprint: String,
+    },
     #[serde(rename = "ok")]
     Ok { id: i64 },
     #[serde(rename = "result")]
     Result(CompileResult),
     #[serde(rename = "fatal")]
-    Fatal { #[serde(default)] req: Option<i64>, reason: String, #[serde(default)] errors: Vec<EngineError>, #[serde(default)] before: String, #[serde(default)] after: String },
+    Fatal {
+        #[serde(default)]
+        req: Option<i64>,
+        reason: String,
+        #[serde(default)]
+        errors: Vec<EngineError>,
+        #[serde(default)]
+        before: String,
+        #[serde(default)]
+        after: String,
+    },
     #[serde(rename = "pong")]
     Pong,
     #[serde(rename = "stats")]
-    Stats { requests: i64, font_nextid: i64, node_mem: String, grouplevel: i64, nest: i64, luastate: f64 },
+    Stats {
+        requests: i64,
+        font_nextid: i64,
+        node_mem: String,
+        grouplevel: i64,
+        nest: i64,
+        luastate: f64,
+    },
     #[serde(rename = "profile")]
-    Profile { #[serde(default)] us: serde_json::Value, #[serde(default)] input_ptr: i64 },
+    Profile {
+        #[serde(default)]
+        us: serde_json::Value,
+        #[serde(default)]
+        input_ptr: i64,
+    },
     #[serde(rename = "bye")]
     Bye,
     #[serde(rename = "error")]
@@ -104,9 +132,27 @@ pub struct FastServer {
 impl FastServer {
     /// Write the driver file and spawn the server. `preamble` is everything before
     /// `\begin{document}` of the project's main file; `cwd` is the project directory.
-    pub fn spawn(tl: &TexLive, cwd: &Path, work_dir: &Path, preamble: &str, generation: u64) -> Result<FastServer> {
+    /// `aux`: the latest background pass's `.aux`, read by `\begin{document}` like in a real
+    /// run so packages that decide their mode from it (natbib's author-year detection, hyperref)
+    /// start in the document's state; labels are refreshed later through `set_labels`.
+    pub fn spawn(
+        tl: &TexLive,
+        cwd: &Path,
+        work_dir: &Path,
+        preamble: &str,
+        generation: u64,
+        aux: Option<&Path>,
+    ) -> Result<FastServer> {
         std::fs::create_dir_all(work_dir)?;
         let work_dir = &work_dir.canonicalize()?;
+        let own_aux = work_dir.join(format!("rtex-serve-g{generation}.aux"));
+        let _ = std::fs::remove_file(&own_aux);
+        if let Some(a) = aux {
+            if a.exists() {
+                std::fs::copy(a, &own_aux)
+                    .with_context(|| format!("copying {} for the server", a.display()))?;
+            }
+        }
         // one driver/log per generation so a crashed server's log survives the restart
         let driver = work_dir.join(format!("rtex-serve-g{generation}.tex"));
         let preamble_file = work_dir.join("rtex-preamble.tex");
@@ -152,7 +198,11 @@ impl FastServer {
             banner: String::new(),
             startup: Duration::ZERO,
             timeout: Duration::from_secs(5),
-            spin: std::env::var("RTEX_SPIN_US").ok().and_then(|v| v.parse().ok()).map(Duration::from_micros).unwrap_or(Duration::from_millis(3)),
+            spin: std::env::var("RTEX_SPIN_US")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .map(Duration::from_micros)
+                .unwrap_or(Duration::from_millis(3)),
             next_req: 1,
             frame_buf: Vec::with_capacity(1 << 16),
         };
@@ -167,7 +217,8 @@ impl FastServer {
     }
 
     pub fn log_path(&self) -> PathBuf {
-        self.work_dir.join(format!("rtex-serve-g{}.log", self.generation))
+        self.work_dir
+            .join(format!("rtex-serve-g{}.log", self.generation))
     }
 
     fn send(&mut self, v: &serde_json::Value) -> Result<()> {
@@ -203,7 +254,10 @@ impl FastServer {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 self.kill();
-                bail!("engine watchdog: no response within {:?}; server killed", timeout);
+                bail!(
+                    "engine watchdog: no response within {:?}; server killed",
+                    timeout
+                );
             }
             let ms = remaining.as_millis().min(u16::MAX as u128) as u16;
             let mut fds = [PollFd::new(self.resp.get_ref().as_fd(), PollFlags::POLLIN)];
@@ -222,7 +276,9 @@ impl FastServer {
     fn recv_timed(&mut self) -> Result<Response> {
         let t0 = Instant::now();
         let mut hdr = [0u8; 4];
-        self.resp.read_exact(&mut hdr).context("server closed the response channel")?;
+        self.resp
+            .read_exact(&mut hdr)
+            .context("server closed the response channel")?;
         let n = u32::from_le_bytes(hdr) as usize;
         let mut buf = std::mem::take(&mut self.frame_buf);
         buf.resize(n, 0);
@@ -232,14 +288,24 @@ impl FastServer {
         r
     }
 
-    fn parse_frame(&mut self, buf: &[u8], t0: Instant, read: std::io::Result<()>) -> Result<Response> {
+    fn parse_frame(
+        &mut self,
+        buf: &[u8],
+        t0: Instant,
+        read: std::io::Result<()>,
+    ) -> Result<Response> {
         read?;
         let t_read = t0.elapsed();
         if buf.is_empty() {
             bail!("empty frame");
         }
         match buf[0] {
-            0 => Ok(serde_json::from_slice(&buf[1..]).with_context(|| format!("bad response: {}", String::from_utf8_lossy(&buf[1..buf.len().min(300)])))?),
+            0 => Ok(serde_json::from_slice(&buf[1..]).with_context(|| {
+                format!(
+                    "bad response: {}",
+                    String::from_utf8_lossy(&buf[1..buf.len().min(300)])
+                )
+            })?),
             1 => {
                 if buf.len() < 5 {
                     bail!("short result frame");
@@ -247,9 +313,16 @@ impl FastServer {
                 let jl = u32::from_le_bytes(buf[1..5].try_into().unwrap()) as usize;
                 let json = &buf[5..5 + jl];
                 let bin = &buf[5 + jl..];
-                let mut cr: CompileResult = serde_json::from_slice(json).with_context(|| format!("bad result header: {}", String::from_utf8_lossy(&json[..json.len().min(300)])))?;
+                let mut cr: CompileResult = serde_json::from_slice(json).with_context(|| {
+                    format!(
+                        "bad result header: {}",
+                        String::from_utf8_lossy(&json[..json.len().min(300)])
+                    )
+                })?;
                 if !bin.is_empty() {
-                    cr.dl = Some(DisplayList::from_binary(bin).context("decoding binary display list")?);
+                    cr.dl = Some(
+                        DisplayList::from_binary(bin).context("decoding binary display list")?,
+                    );
                     cr.dl_binary = Some(bin.to_vec());
                 }
                 cr.host_us[2] = t_read.as_micros() as u64;
@@ -310,7 +383,12 @@ impl FastServer {
         let total = t0.elapsed();
         match r {
             Response::Result(mut cr) => {
-                cr.host_us = [t_sent.as_micros() as u64, (t_ready - t_sent).as_micros() as u64, cr.host_us[2], cr.host_us[3]];
+                cr.host_us = [
+                    t_sent.as_micros() as u64,
+                    (t_ready - t_sent).as_micros() as u64,
+                    cr.host_us[2],
+                    cr.host_us[3],
+                ];
                 let rt = RoundTrip {
                     total,
                     t_tex: Duration::from_micros(cr.t_tex_us as u64),
@@ -319,7 +397,13 @@ impl FastServer {
                 };
                 Ok((cr, rt))
             }
-            Response::Fatal { reason, errors, before, after, .. } => bail!("engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"),
+            Response::Fatal {
+                reason,
+                errors,
+                before,
+                after,
+                ..
+            } => bail!("engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"),
             other => bail!("compile: unexpected {other:?}"),
         }
     }
@@ -335,7 +419,9 @@ impl FastServer {
 
     /// In-engine micro-profile of the replay machinery (diagnostic; uses tex.runtoks).
     pub fn profile(&mut self, ctx: i64, source: &str, n: usize) -> Result<Response> {
-        self.send(&serde_json::json!({"op": "profile", "req": 0, "ctx": ctx, "source": source, "n": n}))?;
+        self.send(
+            &serde_json::json!({"op": "profile", "req": 0, "ctx": ctx, "source": source, "n": n}),
+        )?;
         self.recv()
     }
 
@@ -394,7 +480,10 @@ fn open_fifo_with_timeout(fifo: &Path, child: &mut Child, timeout: Duration) -> 
     // Open the read end once, non-blocking, so the open itself never blocks and the server's
     // own open(2) for writing succeeds as soon as it gets there. Never close and reopen:
     // a write into a FIFO without a reader would be lost (EPIPE on the server side).
-    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(fifo)?;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(fifo)?;
     let t0 = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {

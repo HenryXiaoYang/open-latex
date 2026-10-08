@@ -21,6 +21,7 @@ PACKAGES=(
   fontspec unicode-math lm lm-math tex-gyre tex-gyre-math
   lipsum biber bibtex biblatex logreq xstring etoolbox
   pgf hyperref csquotes
+  enumitem multirow ulem cancel wrapfig titlesec siunitx algorithms algorithmicx framed soul
 )
 
 arch() {

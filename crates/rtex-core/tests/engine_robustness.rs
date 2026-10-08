@@ -28,28 +28,55 @@ fn preamble(project: &std::path::Path) -> String {
 }
 
 /// (unit id, context) of the paragraph units of a capture, in document order.
-fn paragraph_units(cap: &rtex_core::capture::CaptureResult, project: &std::path::Path) -> Vec<(i64, serde_json::Value)> {
+fn paragraph_units(
+    cap: &rtex_core::capture::CaptureResult,
+    project: &std::path::Path,
+) -> Vec<(i64, serde_json::Value)> {
     let policy = rtex_core::eligibility::Policy::from_preamble(&preamble(project), &[], &[]);
-    let (store, _fb) = rtex_core::layout::LayoutStore::offline(cap, project, "main.tex", &policy).unwrap();
-    store.mapped_units().into_iter().filter(|(u, _)| u.kind() == "par" && u.rows() > 0).map(|(u, _)| (u.uid, u.context_json())).collect()
+    let (store, _fb) =
+        rtex_core::layout::LayoutStore::offline(cap, project, "main.tex", &policy).unwrap();
+    store
+        .mapped_units()
+        .into_iter()
+        .filter(|(u, _)| u.kind() == "par" && u.rows() > 0)
+        .map(|(u, _)| (u.uid, u.context_json()))
+        .collect()
 }
 
 #[test]
 fn errors_do_not_poison_the_server() {
-    let Some((tl, root, project)) = setup("errors") else { return };
+    let Some((tl, root, project)) = setup("errors") else {
+        return;
+    };
     let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
     let (seq, ctx) = paragraph_units(&cap, &project).remove(0);
     let para_seq = seq;
-    let mut s = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 1).unwrap();
+    let mut s = FastServer::spawn(
+        &tl,
+        &project,
+        &root.join("serve"),
+        &preamble(&project),
+        1,
+        None,
+    )
+    .unwrap();
     s.set_context(para_seq, &ctx).unwrap();
-    let (ok, _) = s.compile(para_seq, "A plain paragraph of text that is fine.").unwrap();
+    let (ok, _) = s
+        .compile(para_seq, "A plain paragraph of text that is fine.")
+        .unwrap();
     assert_eq!(ok.status, "ok");
     let lines_ok = ok.dl.unwrap().lines.len();
 
     // undefined macro → error status with a diagnostic, server keeps going
-    let (bad, _) = s.compile(para_seq, "Text with \\nosuchmacro here.").unwrap();
+    let (bad, _) = s
+        .compile(para_seq, "Text with \\nosuchmacro here.")
+        .unwrap();
     assert_eq!(bad.status, "error");
-    assert!(bad.errors.iter().any(|e| e.message.as_deref().unwrap_or("").contains("Undefined control sequence")));
+    assert!(bad.errors.iter().any(|e| e
+        .message
+        .as_deref()
+        .unwrap_or("")
+        .contains("Undefined control sequence")));
 
     // unbalanced brace → TeX inserts the missing brace; still an error, state stays consistent
     let (unb, _) = s.compile(para_seq, "Unbalanced { brace here.").unwrap();
@@ -62,11 +89,15 @@ fn errors_do_not_poison_the_server() {
     assert_eq!(fn_.dl.as_ref().unwrap().inserts, 1);
 
     // and the good paragraph still compiles identically
-    let (again, _) = s.compile(para_seq, "A plain paragraph of text that is fine.").unwrap();
+    let (again, _) = s
+        .compile(para_seq, "A plain paragraph of text that is fine.")
+        .unwrap();
     assert_eq!(again.status, "ok");
     assert_eq!(again.dl.unwrap().lines.len(), lines_ok);
     match s.stats().unwrap() {
-        Response::Stats { grouplevel, nest, .. } => {
+        Response::Stats {
+            grouplevel, nest, ..
+        } => {
             assert_eq!(grouplevel, 0);
             assert_eq!(nest, 0);
         }
@@ -78,10 +109,20 @@ fn errors_do_not_poison_the_server() {
 
 #[test]
 fn watchdog_kills_a_runaway_paragraph() {
-    let Some((tl, root, project)) = setup("watchdog") else { return };
+    let Some((tl, root, project)) = setup("watchdog") else {
+        return;
+    };
     let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
     let (seq, ctx) = paragraph_units(&cap, &project).remove(0);
-    let mut s = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 1).unwrap();
+    let mut s = FastServer::spawn(
+        &tl,
+        &project,
+        &root.join("serve"),
+        &preamble(&project),
+        1,
+        None,
+    )
+    .unwrap();
     s.set_context(seq, &ctx).unwrap();
     s.timeout = Duration::from_millis(800);
     let t0 = std::time::Instant::now();
@@ -90,7 +131,15 @@ fn watchdog_kills_a_runaway_paragraph() {
     assert!(t0.elapsed() < Duration::from_secs(5));
     assert!(!s.is_alive(), "server must be killed by the watchdog");
     // a fresh generation works again
-    let mut s2 = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 2).unwrap();
+    let mut s2 = FastServer::spawn(
+        &tl,
+        &project,
+        &root.join("serve"),
+        &preamble(&project),
+        2,
+        None,
+    )
+    .unwrap();
     s2.set_context(seq, &ctx).unwrap();
     let (ok, _) = s2.compile(seq, "Back to normal.").unwrap();
     assert_eq!(ok.status, "ok");
@@ -100,18 +149,37 @@ fn watchdog_kills_a_runaway_paragraph() {
 
 #[test]
 fn paragraph_result_is_independent_of_request_order() {
-    let Some((tl, root, project)) = setup("order") else { return };
+    let Some((tl, root, project)) = setup("order") else {
+        return;
+    };
     let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
-    let paras: Vec<(i64, serde_json::Value)> = paragraph_units(&cap, &project).into_iter().take(3).collect();
-    let mut s = FastServer::spawn(&tl, &project, &root.join("serve"), &preamble(&project), 1).unwrap();
+    let paras: Vec<(i64, serde_json::Value)> = paragraph_units(&cap, &project)
+        .into_iter()
+        .take(3)
+        .collect();
+    let mut s = FastServer::spawn(
+        &tl,
+        &project,
+        &root.join("serve"),
+        &preamble(&project),
+        1,
+        None,
+    )
+    .unwrap();
     for (seq, ctx) in &paras {
         s.set_context(*seq, ctx).unwrap();
     }
-    let src = "Order independence: {\\itshape italic} and $x_1 + y^2$ with \\textbf{bold} words in it.";
+    let src =
+        "Order independence: {\\itshape italic} and $x_1 + y^2$ with \\textbf{bold} words in it.";
     let (a, _) = s.compile(paras[0].0, src).unwrap();
-    let (_b, _) = s.compile(paras[1].0, "Something else entirely, \\emph{different}.").unwrap();
+    let (_b, _) = s
+        .compile(paras[1].0, "Something else entirely, \\emph{different}.")
+        .unwrap();
     let (c, _) = s.compile(paras[0].0, src).unwrap();
-    assert_eq!(serde_json::to_string(&a.dl).unwrap(), serde_json::to_string(&c.dl).unwrap());
+    assert_eq!(
+        serde_json::to_string(&a.dl).unwrap(),
+        serde_json::to_string(&c.dl).unwrap()
+    );
     s.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }

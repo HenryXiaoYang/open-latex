@@ -21,7 +21,8 @@ C.INT_PARAMS, C.DIM_PARAMS, C.GLUE_PARAMS = INT_PARAMS, DIM_PARAMS, GLUE_PARAMS
 -- Block environments that open a unit when begun in vertical mode. Extra names (theorem-like
 -- environments) come from $RTEX_UNIT_ENVS.
 C.BLOCK_ENVS = { "itemize", "enumerate", "description", "quote", "quotation", "verse", "center",
-  "flushleft", "flushright", "figure", "figure*", "table", "table*", "abstract", "tabbing" }
+  "flushleft", "flushright", "figure", "figure*", "table", "table*", "abstract", "tabbing",
+  "proof", "verbatim", "verbatim*", "lstlisting", "Verbatim", "alltt", "spacing" }
 C.HEADINGS = { "part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph" }
 local TWO_PAR_HEADINGS = { part = true, chapter = true }
 local UNSET = -0x7FFFFFFF

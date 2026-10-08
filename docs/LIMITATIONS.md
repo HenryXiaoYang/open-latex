@@ -12,11 +12,13 @@ in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 
 | Content being edited | Typeset update | Why |
 |---|---|---|
-| Body text, font switches (`\emph`, `\textbf`, …), accents, colors | **real time** | fast path |
+| Body text, font switches (`\emph`, `\textbf`, …), accents, colors, boxes (`\fbox`, `\parbox`, `\colorbox`, `\underline`, `\rule`), `\url`/`\href`/`\autoref` (hyperref), `\sout`/`\uline` (ulem), siunitx `\SI`/`\num`/`\si`, `\verb`, `\lstinline` | **real time** | fast path; package macros need their package loaded |
+| Macros you define in the preamble (`\newcommand`, `\DeclareMathOperator`, parameterless `\def`) whose bodies use only allow-listed material | **real time** | trusted automatically, in text and/or math mode as their body classifies |
 | Inline math `$…$` and display math `\[…\]`, `equation`, `align`, `gather`, `multline` (amsmath) from the allow-listed vocabulary, with `\label`/`\tag` and equation numbers | **real time** | paragraph unit; counters replayed |
-| `\ref`, `\eqref`, `\pageref`, `\label`, plain `\cite` | **real time** with the numbers of the last layout | labels from the last pass's aux; biblatex/natbib citations are background |
+| `\ref`, `\eqref`, `\pageref`, `\label`, plain and natbib `\cite`/`\citep`/`\citet`/`\citeauthor`/`\citeyear` | **real time** with the numbers of the last layout | labels and `\bibcite` from the last pass's aux, which the server also reads at `\begin{document}`; biblatex citations are background |
 | Footnotes | mark in **real time**; the footnote text at the page bottom after the next pass | inserts are placed by the page builder (`reasons: inserts`) |
-| Lists (`itemize`, `enumerate`, `description`), `quote`/`quotation`/`verse`, `center`, `abstract`, theorem-like environments | **real time** as one unit | environment unit |
+| Lists (`itemize`, `enumerate`, `description`, enumitem labels), `quote`/`quotation`/`verse`, `center`, `abstract`, theorem-like environments and `proof`, `verbatim`, `lstlisting`, setspace `spacing` | **real time** as one unit | environment unit; verbatim bodies are opaque to the allow-list |
+| `subfigure`/`subtable` in a float, `tabularx`, `multirow`, colortbl/xcolor `\rowcolor`/`\cellcolor`/`\rowcolors` | **real time** inside their float or table unit | inner environments and table macros |
 | Figures and tables (`figure`/`table` with `\includegraphics`, `tabular`, `booktabs` rules, `\caption`) | content in **real time** at the float's last position; a moved float after the next pass | float unit, float-box state replayed; placement is page-global |
 | Headings (`\chapter`, `\section`, …) | **real time**; TOC and running heads after the next pass | heading unit |
 | A unit that changes its row count (grows/shrinks) | unit in real time (rows placed with its own geometry); following material after the next pass | page breaks are global; `pagination_stale` says so |
@@ -24,9 +26,10 @@ in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 | Splitting a paragraph (Enter + blank line), merging two, typing a new paragraph | **real time**: the known half keeps its context, the new paragraph borrows its neighbour's (counters may lag by one until the next pass) and is placed right after it | borrowed contexts are `context_stale`, placements `approximate` |
 | `tabularx` (with the package loaded) | **real time** | inner environment like `tabular` |
 | TikZ/PGF diagrams, `\pdfliteral` drawing | background, and the page renders through the **PDF fallback** | not representable in the display list |
-| `minipage`/`parbox` blocks, `\marginpar`, `\verb`, verbatim | background | not allow-listed |
+| `\maketitle`, `\tableofcontents`, `\bibliography` | background | generated material (title block, TOC entries, bibliography) is not typed in place |
+| `\marginpar`, `wrapfigure`, `\setlength`/`\renewcommand` at a unit's top level | background | would change the state the following units are typeset in (inside a group or environment they are fine) |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
-| Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
+| Macros you defined yourself whose bodies are not allow-listed (`\def` with parameters, TikZ, `\global` …) | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
 | Any unit whose fast compiles exceed `fast_budget` (5 ms by default) three times in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
 | A unit whose live compile hung (watchdog, 5 s) or crashed the engine | background until the preamble changes (`EngineFailed`) | retrying would kill the server on every keystroke; `rtex verify` on the project shows the engine error for that unit |
 

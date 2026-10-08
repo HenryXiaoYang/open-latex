@@ -56,24 +56,132 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "paragraph", "line", "breaking", "engine", "glyph", "position", "measure", "document", "page",
-    "layout", "font", "kerning", "margin", "protrusion", "expansion", "editor", "keystroke",
-    "latency", "cache", "background", "convergence", "footnote", "float", "counter", "reference",
-    "typesetting", "algorithm", "demerits", "penalty", "glue", "stretch", "shrink", "baseline",
-    "height", "depth", "width", "box", "list", "node", "attribute", "callback", "process",
-    "persistent", "session", "revision", "snapshot", "render", "display", "export", "quality",
-    "typography", "author", "book", "chapter", "section", "sentence", "word", "letter", "space",
-    "the", "a", "an", "of", "in", "on", "with", "and", "or", "but", "for", "to", "from", "by",
-    "that", "which", "when", "while", "because", "although", "every", "each", "some", "many",
-    "is", "are", "was", "were", "becomes", "remains", "depends", "produces", "requires", "allows",
-    "quickly", "slowly", "exactly", "nearly", "always", "never", "often", "rarely", "again",
-    "fidelity", "identical", "independent", "local", "global", "incremental", "immediate",
+    "paragraph",
+    "line",
+    "breaking",
+    "engine",
+    "glyph",
+    "position",
+    "measure",
+    "document",
+    "page",
+    "layout",
+    "font",
+    "kerning",
+    "margin",
+    "protrusion",
+    "expansion",
+    "editor",
+    "keystroke",
+    "latency",
+    "cache",
+    "background",
+    "convergence",
+    "footnote",
+    "float",
+    "counter",
+    "reference",
+    "typesetting",
+    "algorithm",
+    "demerits",
+    "penalty",
+    "glue",
+    "stretch",
+    "shrink",
+    "baseline",
+    "height",
+    "depth",
+    "width",
+    "box",
+    "list",
+    "node",
+    "attribute",
+    "callback",
+    "process",
+    "persistent",
+    "session",
+    "revision",
+    "snapshot",
+    "render",
+    "display",
+    "export",
+    "quality",
+    "typography",
+    "author",
+    "book",
+    "chapter",
+    "section",
+    "sentence",
+    "word",
+    "letter",
+    "space",
+    "the",
+    "a",
+    "an",
+    "of",
+    "in",
+    "on",
+    "with",
+    "and",
+    "or",
+    "but",
+    "for",
+    "to",
+    "from",
+    "by",
+    "that",
+    "which",
+    "when",
+    "while",
+    "because",
+    "although",
+    "every",
+    "each",
+    "some",
+    "many",
+    "is",
+    "are",
+    "was",
+    "were",
+    "becomes",
+    "remains",
+    "depends",
+    "produces",
+    "requires",
+    "allows",
+    "quickly",
+    "slowly",
+    "exactly",
+    "nearly",
+    "always",
+    "never",
+    "often",
+    "rarely",
+    "again",
+    "fidelity",
+    "identical",
+    "independent",
+    "local",
+    "global",
+    "incremental",
+    "immediate",
 ];
 
 const MATH: &[&str] = &[
-    r"$f(x) = x^2 + 1$", r"$\sum_{i=1}^{n} a_i$", r"$\alpha + \beta = \gamma$", r"$O(1)$", r"$O(n)$",
-    r"$\frac{1}{2}$", r"$x \in \mathbb{R}$", r"$\sqrt{2}$", r"$\pi \approx 3.14159$", r"$e^{i\pi} + 1 = 0$",
-    r"$\lim_{n \to \infty} x_n$", r"$a \leq b$", r"$\partial f / \partial x$", r"$\mathbf{v} \cdot \mathbf{w}$",
+    r"$f(x) = x^2 + 1$",
+    r"$\sum_{i=1}^{n} a_i$",
+    r"$\alpha + \beta = \gamma$",
+    r"$O(1)$",
+    r"$O(n)$",
+    r"$\frac{1}{2}$",
+    r"$x \in \mathbb{R}$",
+    r"$\sqrt{2}$",
+    r"$\pi \approx 3.14159$",
+    r"$e^{i\pi} + 1 = 0$",
+    r"$\lim_{n \to \infty} x_n$",
+    r"$a \leq b$",
+    r"$\partial f / \partial x$",
+    r"$\mathbf{v} \cdot \mathbf{w}$",
 ];
 
 fn sentence(rng: &mut Rng, pure_math_ok: bool) -> String {
@@ -210,7 +318,9 @@ pub fn preamble_for(fonts: FontSet, variant: Variant) -> String {
             });
             // unicode-math keeps every font OpenType (no Type1 CM math), which hosts and our
             // rasterizer can render from glyph indices alone.
-            s.push_str("\\usepackage{microtype}\n\\usepackage{amsmath}\n\\usepackage{unicode-math}\n");
+            s.push_str(
+                "\\usepackage{microtype}\n\\usepackage{amsmath}\n\\usepackage{unicode-math}\n",
+            );
             s.push_str(match fonts {
                 FontSet::LatinModern => "\\setmathfont{Latin Modern Math}\n",
                 _ => "\\setmathfont{TeX Gyre Pagella Math}\n",
@@ -230,7 +340,13 @@ pub fn preamble_for(fonts: FontSet, variant: Variant) -> String {
     s
 }
 
-pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &Path) -> anyhow::Result<()> {
+pub fn generate(
+    pages: u32,
+    variant: Variant,
+    fonts: FontSet,
+    seed: u64,
+    out: &Path,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(out)?;
     let mut rng = Rng::new(seed ^ (pages as u64) << 8 ^ (variant as u64));
     if variant == Variant::Units {
@@ -240,7 +356,11 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
     // calibrated on TeX Gyre Pagella 11pt book class: headings, floats, lists and the TOC of the
     // mixed variant take roughly a third of the pages
     // measured: pure ≈ 392 words/page; mixed ≈ 300 words/page plus ≈ 3 pages of front matter
-    let target_words = if mixed { (pages as usize * 300).saturating_sub(1100).max(600) } else { pages as usize * 392 };
+    let target_words = if mixed {
+        (pages as usize * 300).saturating_sub(1100).max(600)
+    } else {
+        pages as usize * 392
+    };
     let mut body = String::new();
     let mut words = 0usize;
     let mut chapter = 0;
@@ -250,7 +370,11 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
     while words < target_words {
         if mixed && (para_idx == 0 || rng.chance(40)) {
             chapter += 1;
-            let _ = writeln!(body, "\\chapter{{Chapter {}}}\\label{{ch:{}}}\n", chapter, chapter);
+            let _ = writeln!(
+                body,
+                "\\chapter{{Chapter {}}}\\label{{ch:{}}}\n",
+                chapter, chapter
+            );
             labels.push(format!("ch:{}", chapter));
             words += 60; // heading + whitespace cost
         } else if mixed && rng.chance(120) {
@@ -260,8 +384,18 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
         // paragraph length mix so that every benchmark category exists: ~12 % one-line
         // paragraphs (short), ~12 % 12-16-sentence paragraphs (long), the rest 2-9 sentences
         let roll = rng.below(100);
-        let sentences = if roll < 12 { 1 } else if roll < 24 { rng.range(12, 16) } else { rng.range(2, 9) };
-        let (mut p, w) = if sentences == 1 { short_paragraph(&mut rng) } else { paragraph(&mut rng, sentences, true) };
+        let sentences = if roll < 12 {
+            1
+        } else if roll < 24 {
+            rng.range(12, 16)
+        } else {
+            rng.range(2, 9)
+        };
+        let (mut p, w) = if sentences == 1 {
+            short_paragraph(&mut rng)
+        } else {
+            paragraph(&mut rng, sentences, true)
+        };
         words += w;
         if mixed {
             if rng.chance(80) {
@@ -270,7 +404,9 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
                 p.push_str("}, this holds.");
             }
             if rng.chance(60) {
-                p.push_str("\\footnote{A footnote with a short remark about the preceding sentence.}");
+                p.push_str(
+                    "\\footnote{A footnote with a short remark about the preceding sentence.}",
+                );
             }
             if rng.chance(40) {
                 p.push_str(" See~\\cite{knuth1981}.");
@@ -280,7 +416,12 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
         para_idx += 1;
         if mixed {
             if rng.chance(50) {
-                let _ = writeln!(body, "\\[ \\int_0^1 x^{} \\, dx = \\frac{{1}}{{{}}} \\]\n", para_idx % 7 + 1, para_idx % 7 + 2);
+                let _ = writeln!(
+                    body,
+                    "\\[ \\int_0^1 x^{} \\, dx = \\frac{{1}}{{{}}} \\]\n",
+                    para_idx % 7 + 1,
+                    para_idx % 7 + 2
+                );
             }
             if rng.chance(40) {
                 let _ = writeln!(body, "\\begin{{itemize}}\n\\item First item of a list.\n\\item Second item, slightly longer than the first one.\n\\item Third.\n\\end{{itemize}}\n");
@@ -339,7 +480,13 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
 
 /// The `units` variant: a rotation of every unit kind the fast path supports, so each kind
 /// appears many times in a 10-page book and can be verified and benchmarked.
-fn generate_units(pages: u32, fonts: FontSet, seed: u64, out: &Path, rng: &mut Rng) -> anyhow::Result<()> {
+fn generate_units(
+    pages: u32,
+    fonts: FontSet,
+    seed: u64,
+    out: &Path,
+    rng: &mut Rng,
+) -> anyhow::Result<()> {
     // measured: ≈ 230 words of body text per page once the structural units are counted in
     let target_words = (pages as usize * 230).max(500);
     let mut body = String::new();
@@ -354,17 +501,35 @@ fn generate_units(pages: u32, fonts: FontSet, seed: u64, out: &Path, rng: &mut R
     while words < target_words {
         if para_idx % 9 == 0 {
             chapter += 1;
-            let _ = writeln!(body, "\\chapter{{Chapter {}}}\\label{{ch:{}}}\n", chapter, chapter);
+            let _ = writeln!(
+                body,
+                "\\chapter{{Chapter {}}}\\label{{ch:{}}}\n",
+                chapter, chapter
+            );
             labels.push(format!("ch:{chapter}"));
             words += 60;
         } else if para_idx % 3 == 0 {
-            let _ = writeln!(body, "\\section{{Section {}}}\\label{{sec:{}}}\n", para_idx, para_idx);
+            let _ = writeln!(
+                body,
+                "\\section{{Section {}}}\\label{{sec:{}}}\n",
+                para_idx, para_idx
+            );
             labels.push(format!("sec:{para_idx}"));
             words += 25;
         }
         let roll = rng.below(100);
-        let sentences = if roll < 12 { 1 } else if roll < 24 { rng.range(10, 14) } else { rng.range(2, 7) };
-        let (mut p, w) = if sentences == 1 { short_paragraph(rng) } else { paragraph(rng, sentences, true) };
+        let sentences = if roll < 12 {
+            1
+        } else if roll < 24 {
+            rng.range(10, 14)
+        } else {
+            rng.range(2, 7)
+        };
+        let (mut p, w) = if sentences == 1 {
+            short_paragraph(rng)
+        } else {
+            paragraph(rng, sentences, true)
+        };
         words += w;
         // one structural feature per paragraph, in rotation
         match para_idx % 10 {
@@ -454,7 +619,11 @@ fn png_placeholder() -> Vec<u8> {
         for i in 0..256u32 {
             let mut c = i;
             for _ in 0..8 {
-                c = if c & 1 != 0 { 0xEDB88320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB88320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
             }
             table[i as usize] = c;
         }

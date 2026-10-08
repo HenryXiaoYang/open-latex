@@ -45,18 +45,30 @@ pub fn run(project: PathBuf, main: String, build: Option<PathBuf>) -> Result<()>
         let v: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                tx.send(serde_json::json!({"reply": "error", "message": format!("bad json: {e}")}).to_string()).ok();
+                tx.send(
+                    serde_json::json!({"reply": "error", "message": format!("bad json: {e}")})
+                        .to_string(),
+                )
+                .ok();
                 continue;
             }
         };
         let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
         let reply = match cmd {
             "edit" => {
-                let path = v.get("path").and_then(|p| p.as_str()).unwrap_or("main.tex").to_string();
+                let path = v
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("main.tex")
+                    .to_string();
                 let edit = Edit {
                     start_byte: v.get("start").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
                     end_byte: v.get("end").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                    text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    text: v
+                        .get("text")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 };
                 match session.apply_edit(&path, edit) {
                     Ok(r) => serde_json::json!({"reply": "edit", "result": r}),
@@ -64,28 +76,48 @@ pub fn run(project: PathBuf, main: String, build: Option<PathBuf>) -> Result<()>
                 }
             }
             "set_document" => {
-                let path = v.get("path").and_then(|p| p.as_str()).unwrap_or("main.tex").to_string();
-                let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let path = v
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("main.tex")
+                    .to_string();
+                let text = v
+                    .get("text")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 match session.set_document(&path, &text) {
                     Ok(r) => serde_json::json!({"reply": "set_document", "result": r}),
                     Err(e) => serde_json::json!({"reply": "error", "message": e.to_string()}),
                 }
             }
             "spans" => {
-                let path = v.get("path").and_then(|p| p.as_str()).unwrap_or("main.tex").to_string();
+                let path = v
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("main.tex")
+                    .to_string();
                 serde_json::json!({"reply": "spans", "spans": session.spans(&path)})
             }
-            "status" => serde_json::json!({"reply": "status", "versions": session.versions(), "convergence": session.convergence()}),
+            "status" => {
+                serde_json::json!({"reply": "status", "versions": session.versions(), "convergence": session.convergence()})
+            }
             "request_layout" => {
                 session.request_layout();
                 serde_json::json!({"reply": "request_layout"})
             }
             "export_pdf" => {
-                let out = v.get("out").and_then(|p| p.as_str()).unwrap_or("out.pdf").to_string();
+                let out = v
+                    .get("out")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("out.pdf")
+                    .to_string();
                 serde_json::json!({"reply": "export_pdf", "job_id": session.export_pdf(out)})
             }
             "quit" => break,
-            other => serde_json::json!({"reply": "error", "message": format!("unknown cmd {other}")}),
+            other => {
+                serde_json::json!({"reply": "error", "message": format!("unknown cmd {other}")})
+            }
         };
         tx.send(reply.to_string()).ok();
     }
@@ -94,32 +126,89 @@ pub fn run(project: PathBuf, main: String, build: Option<PathBuf>) -> Result<()>
 
 /// `rtex edit`: open a session, wait for the first layout, apply one edit, print the paragraph
 /// update (or the background routing) and exit.
-pub fn edit_once(project: PathBuf, main: String, byte: Option<usize>, find: Option<String>, text: String, wait_s: u64) -> Result<()> {
+pub fn edit_once(
+    project: PathBuf,
+    main: String,
+    byte: Option<usize>,
+    find: Option<String>,
+    text: String,
+    wait_s: u64,
+) -> Result<()> {
     let session = Session::open(SessionConfig::new(project, main.clone()))?;
-    let (first, _) = session.wait_for(Duration::from_secs(wait_s), |e| matches!(e, rtex_core::Event::LayoutUpdate { .. }));
-    if let Some(rtex_core::Event::LayoutUpdate { versions, convergence, pages_total, eligible_paragraphs, wall_ms, .. }) = &first {
-        println!("layout v{} ({} pages, {} eligible paragraphs, {:?}) in {} ms", versions.layout_version, pages_total, eligible_paragraphs.len(), convergence, wall_ms);
+    let (first, _) = session.wait_for(Duration::from_secs(wait_s), |e| {
+        matches!(e, rtex_core::Event::LayoutUpdate { .. })
+    });
+    if let Some(rtex_core::Event::LayoutUpdate {
+        versions,
+        convergence,
+        pages_total,
+        eligible_paragraphs,
+        wall_ms,
+        ..
+    }) = &first
+    {
+        println!(
+            "layout v{} ({} pages, {} eligible paragraphs, {:?}) in {} ms",
+            versions.layout_version,
+            pages_total,
+            eligible_paragraphs.len(),
+            convergence,
+            wall_ms
+        );
     } else {
         anyhow::bail!("no layout within {wait_s}s");
     }
     let doc = session.document_text(&main).unwrap();
     let pos = match (byte, &find) {
         (Some(b), _) => b,
-        (None, Some(f)) => doc.find(f.as_str()).ok_or_else(|| anyhow::anyhow!("pattern not found"))? + f.len(),
+        (None, Some(f)) => {
+            doc.find(f.as_str())
+                .ok_or_else(|| anyhow::anyhow!("pattern not found"))?
+                + f.len()
+        }
         _ => anyhow::bail!("need --byte or --find"),
     };
     let t0 = std::time::Instant::now();
-    let r = session.apply_edit(&main, Edit { start_byte: pos, end_byte: pos, text })?;
-    println!("edit {} rev {} routed {} {:?}", r.edit_id, r.source_revision, r.routed, r.reasons);
+    let r = session.apply_edit(
+        &main,
+        Edit {
+            start_byte: pos,
+            end_byte: pos,
+            text,
+        },
+    )?;
+    println!(
+        "edit {} rev {} routed {} {:?}",
+        r.edit_id, r.source_revision, r.routed, r.reasons
+    );
     if r.routed == "fast" {
-        let (ev, _) = session.wait_for(Duration::from_secs(wait_s), |e| matches!(e, rtex_core::Event::ParagraphUpdate { .. }));
+        let (ev, _) = session.wait_for(Duration::from_secs(wait_s), |e| {
+            matches!(e, rtex_core::Event::ParagraphUpdate { .. })
+        });
         match ev {
-            Some(rtex_core::Event::ParagraphUpdate { par_id, status, fragments, pagination_stale, context_stale, dl, timing, diagnostics, .. }) => {
+            Some(rtex_core::Event::ParagraphUpdate {
+                par_id,
+                status,
+                fragments,
+                pagination_stale,
+                context_stale,
+                dl,
+                timing,
+                diagnostics,
+                ..
+            }) => {
                 println!("paragraph {:?} {} in {:.3} ms (tex {:.3}, traverse {:.3}, pack {:.3}); {} lines, {} glyphs, {} fragments, pagination_stale={} context_stale={} host wall {:.3} ms",
                     par_id, status, timing.total_us as f64 / 1e3, timing.tex_us as f64 / 1e3, timing.traverse_us as f64 / 1e3, timing.pack_us as f64 / 1e3,
                     dl.lines.len(), dl.glyph_count(), fragments.len(), pagination_stale, context_stale, t0.elapsed().as_secs_f64() * 1e3);
                 for f in &fragments {
-                    println!("  fragment page {} lines {}..{} x={} baselines={:?}", f.page, f.first_line, f.last_line, f.x, &f.baselines[..f.baselines.len().min(4)]);
+                    println!(
+                        "  fragment page {} lines {}..{} x={} baselines={:?}",
+                        f.page,
+                        f.first_line,
+                        f.last_line,
+                        f.x,
+                        &f.baselines[..f.baselines.len().min(4)]
+                    );
                 }
                 for d in diagnostics {
                     println!("  diag: {} line {:?}", d.message, d.line);

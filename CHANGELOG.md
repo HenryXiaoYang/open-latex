@@ -61,6 +61,14 @@
 - A span holding several consecutive paragraphs (an explicit `\par`, a title line with its own
   `\par` followed by a text line) is one composite unit on the fast path instead of
   "ParagraphBreak"/"NoContext" background-only.
+- Fast-path coverage from a corpus of realistic documents (`fixtures/corpus`, gated in CI):
+  macros defined in the preamble are trusted when their bodies are allow-listed; hyperref
+  (`\url`, `\href`, `\autoref`), natbib citations, siunitx, ulem, soul, listings
+  (`\lstinline`, `lstlisting`), `verbatim`, amsthm `proof`, setspace `spacing`, subcaption
+  `subfigure`, multirow, colortbl, cancel, bm, boxes and rules, enumitem counter formats,
+  `\newpage` and friends; `\setlength`/`\renewcommand{\arraystretch}` inside groups. The fast
+  server reads the last pass's aux at `\begin{document}` (natbib's mode, hyperref), and
+  hyperref's link/destination whatsits no longer degrade a unit.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

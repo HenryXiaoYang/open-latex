@@ -28,13 +28,23 @@ fn stats(v: &mut Vec<f64>) -> (f64, f64, f64, f64) {
 
 /// Compare the fast-path paragraph DL (paragraph coordinates) with the capture page lines for
 /// the same paragraph (page coordinates), sp-exact after translating by the first line's origin.
-fn compare_with_capture(fast: &DisplayList, page: &DisplayList, unit: i64) -> (usize, usize, Vec<String>) {
+fn compare_with_capture(
+    fast: &DisplayList,
+    page: &DisplayList,
+    unit: i64,
+) -> (usize, usize, Vec<String>) {
     let ref_lines: Vec<&Line> = page.rows_of(unit);
     let mut notes = Vec::new();
     if ref_lines.len() != fast.lines.len() {
-        notes.push(format!("line count differs: fast {} vs capture {}", fast.lines.len(), ref_lines.len()));
+        notes.push(format!(
+            "line count differs: fast {} vs capture {}",
+            fast.lines.len(),
+            ref_lines.len()
+        ));
     }
-    let Some(first) = ref_lines.first() else { return (0, 0, notes) };
+    let Some(first) = ref_lines.first() else {
+        return (0, 0, notes);
+    };
     let fast_first = &fast.lines[0];
     let ox = first.x - fast_first.x;
     let oy = first.y - fast_first.y;
@@ -42,27 +52,86 @@ fn compare_with_capture(fast: &DisplayList, page: &DisplayList, unit: i64) -> (u
     let mut total = 0;
     for (fl, rl) in fast.lines.iter().zip(ref_lines.iter()) {
         if fl.x + ox != rl.x || fl.y + oy != rl.y || fl.w != rl.w || fl.h != rl.h || fl.d != rl.d {
-            notes.push(format!("line {} box differs: fast ({},{},{},{},{}) capture ({},{},{},{},{})", fl.i, fl.x + ox, fl.y + oy, fl.w, fl.h, fl.d, rl.x, rl.y, rl.w, rl.h, rl.d));
+            notes.push(format!(
+                "line {} box differs: fast ({},{},{},{},{}) capture ({},{},{},{},{})",
+                fl.i,
+                fl.x + ox,
+                fl.y + oy,
+                fl.w,
+                fl.h,
+                fl.d,
+                rl.x,
+                rl.y,
+                rl.w,
+                rl.h,
+                rl.d
+            ));
         }
         if (fl.gs - rl.gs).abs() > 1e-12 {
-            notes.push(format!("line {} glue_set differs: {} vs {}", fl.i, fl.gs, rl.gs));
+            notes.push(format!(
+                "line {} glue_set differs: {} vs {}",
+                fl.i, fl.gs, rl.gs
+            ));
         }
-        let fg: Vec<&Item> = fl.items.iter().filter(|i| matches!(i, Item::Glyph { .. })).collect();
-        let rg: Vec<&Item> = rl.items.iter().filter(|i| matches!(i, Item::Glyph { .. })).collect();
+        let fg: Vec<&Item> = fl
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Glyph { .. }))
+            .collect();
+        let rg: Vec<&Item> = rl
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Glyph { .. }))
+            .collect();
         if fg.len() != rg.len() {
-            notes.push(format!("line {} glyph count differs: {} vs {}", fl.i, fg.len(), rg.len()));
+            notes.push(format!(
+                "line {} glyph count differs: {} vs {}",
+                fl.i,
+                fg.len(),
+                rg.len()
+            ));
         }
         for (a, b) in fg.iter().zip(rg.iter()) {
             total += 1;
-            if let (Item::Glyph { font: fa, char: ca, index: ia, x: xa, y: ya, width: wa, expansion: ea }, Item::Glyph { font: fb, char: cb, index: ib, x: xb, y: yb, width: wb, expansion: eb }) = (a, b) {
+            if let (
+                Item::Glyph {
+                    font: fa,
+                    char: ca,
+                    index: ia,
+                    x: xa,
+                    y: ya,
+                    width: wa,
+                    expansion: ea,
+                },
+                Item::Glyph {
+                    font: fb,
+                    char: cb,
+                    index: ib,
+                    x: xb,
+                    y: yb,
+                    width: wb,
+                    expansion: eb,
+                },
+            ) = (a, b)
+            {
                 let font_ok = match (fast.font(*fa), page.font(*fb)) {
                     (Some(da), Some(db)) => da.key() == db.key(),
                     _ => fa == fb,
                 };
-                if font_ok && ca == cb && ia == ib && xa + ox == *xb && ya + oy == *yb && wa == wb && ea == eb {
+                if font_ok
+                    && ca == cb
+                    && ia == ib
+                    && xa + ox == *xb
+                    && ya + oy == *yb
+                    && wa == wb
+                    && ea == eb
+                {
                     same += 1;
                 } else if notes.len() < 12 {
-                    notes.push(format!("line {} glyph differs: fast {:?} capture {:?} (font_ok={font_ok})", fl.i, a, b));
+                    notes.push(format!(
+                        "line {} glyph differs: fast {:?} capture {:?} (font_ok={font_ok})",
+                        fl.i, a, b
+                    ));
                 }
             }
         }
@@ -79,29 +148,69 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
 
     // 1. instrumented full compile (reference extractor + contexts + placements)
     let cap: CaptureResult = run_capture(&tl, &project, &opts.main, &build.join("capture"), true)?;
-    println!("capture: {} paragraphs, {} pages, {:.2}s, exit_ok={}", cap.json.paragraphs.len(), cap.json.pages, cap.wall.as_secs_f64(), cap.exit_ok);
+    println!(
+        "capture: {} paragraphs, {} pages, {:.2}s, exit_ok={}",
+        cap.json.paragraphs.len(),
+        cap.json.pages,
+        cap.wall.as_secs_f64(),
+        cap.exit_ok
+    );
     // 2. clean compile for the independent PDF check (no capture package)
     let clean = run_capture(&tl, &project, &opts.main, &build.join("clean"), false)?;
-    println!("clean build: {:.2}s, exit_ok={}", clean.wall.as_secs_f64(), clean.exit_ok);
+    println!(
+        "clean build: {:.2}s, exit_ok={}",
+        clean.wall.as_secs_f64(),
+        clean.exit_ok
+    );
 
     let main_text = std::fs::read_to_string(project.join(&opts.main))?;
     let (preamble, _) = rtex_core::split_preamble(&main_text).context("no \\begin{document}")?;
     let policy = rtex_core::eligibility::Policy::from_preamble(preamble, &[], &[]);
     let (store, fb) = rtex_core::layout::LayoutStore::offline(&cap, &project, &opts.main, &policy)?;
-    let candidates: Vec<(&rtex_core::layout::EngineUnit, rtex_core::ParaId)> = store.mapped_units().into_iter().filter(|(u, _)| u.kind() == "par" && u.rows() > 0 && u.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false)).collect();
+    let candidates: Vec<(&rtex_core::layout::EngineUnit, rtex_core::ParaId)> = store
+        .mapped_units()
+        .into_iter()
+        .filter(|(u, _)| {
+            u.kind() == "par"
+                && u.rows() > 0
+                && u.first_para
+                    .as_ref()
+                    .map(|p| p.begin.is_some())
+                    .unwrap_or(false)
+        })
+        .collect();
     if candidates.is_empty() {
         bail!("no paragraph units with placements");
     }
-    let pick = opts.paragraph.unwrap_or(candidates.len() / 2).min(candidates.len() - 1);
+    let pick = opts
+        .paragraph
+        .unwrap_or(candidates.len() / 2)
+        .min(candidates.len() - 1);
     let (para, span_id) = candidates[pick];
-    let source = fb.span_text(span_id).unwrap_or("").trim_end_matches('\n').to_string();
+    let source = fb
+        .span_text(span_id)
+        .unwrap_or("")
+        .trim_end_matches('\n')
+        .to_string();
     let placements = para.captured.placements.clone();
     let page_no = placements[0].page;
-    println!("unit {} lines {}..{:?} ({} rows, page {}), {} chars of source", para.uid, para.captured.begin_line, para.captured.end_line, para.rows(), page_no, source.len());
+    println!(
+        "unit {} lines {}..{:?} ({} rows, page {}), {} chars of source",
+        para.uid,
+        para.captured.begin_line,
+        para.captured.end_line,
+        para.rows(),
+        page_no,
+        source.len()
+    );
 
     // 3. persistent server
-    let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), preamble, 1)?;
-    println!("server ready in {:.2}s: {}", server.startup.as_secs_f64(), server.banner);
+    let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), preamble, 1, None)?;
+    println!(
+        "server ready in {:.2}s: {}",
+        server.startup.as_secs_f64(),
+        server.banner
+    );
     server.set_context(para.uid, &para.context_json())?;
     let ping = server.ping()?;
     println!("ping round trip: {:.3} ms", ping.as_secs_f64() * 1e3);
@@ -124,7 +233,10 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
 
     // 5. independent PDF check: capture page lines of this paragraph vs clean PDF content stream
     let pdf_pages = pdftext::extract(&clean.pdf)?;
-    let pdf_page = pdf_pages.iter().find(|p| p.number as i64 == page_no).context("pdf page")?;
+    let pdf_page = pdf_pages
+        .iter()
+        .find(|p| p.number as i64 == page_no)
+        .context("pdf page")?;
     let quantum = 10f64.powi(-(pdf_page.decimals.max(1) as i32));
     let tol = quantum * 1.0;
     let ref_lines = page_dl.rows_of(para.uid);
@@ -134,8 +246,21 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     let rep_page = compare_page(&page_dl, pdf_page, &[], tol);
     println!("PDF check (whole page {}): matched {}/{} DL glyphs (PDF has {}), within tol {}, max |dx| {:.5} bp, max |dy| {:.5} bp, rules {}/{} matched",
         page_no, rep_page.matched, rep_page.dl_glyphs, rep_page.pdf_glyphs, rep_page.within_tolerance, rep_page.max_dx_bp, rep_page.max_dy_bp, rep_page.rules_matched, rep_page.rules_dl);
-    println!("  anchored glyphs (origin set by Tm/Td): {} with max |dx| {:.5} bp, max |dy| {:.5} bp", rep_page.anchored, rep_page.anchored_max_dx_bp, rep_page.anchored_max_dy_bp);
-    println!("  max |dx| by PDF font: {:?}", rep_page.max_dx_by_font.iter().map(|(k, v)| (k.split('+').last().unwrap_or(k).to_string(), (v * 1e5).round() / 1e5)).collect::<Vec<_>>());
+    println!(
+        "  anchored glyphs (origin set by Tm/Td): {} with max |dx| {:.5} bp, max |dy| {:.5} bp",
+        rep_page.anchored, rep_page.anchored_max_dx_bp, rep_page.anchored_max_dy_bp
+    );
+    println!(
+        "  max |dx| by PDF font: {:?}",
+        rep_page
+            .max_dx_by_font
+            .iter()
+            .map(|(k, v)| (
+                k.split('+').last().unwrap_or(k).to_string(),
+                (v * 1e5).round() / 1e5
+            ))
+            .collect::<Vec<_>>()
+    );
     for w in rep_page.worst.iter().take(3) {
         println!("  worst: line {} idx {:?} font {:?} anchored={} dl=({:.4},{:.4}) pdf=({:.4},{:.4}) dx={:.5} dy={:.5}", w.line, w.index, w.pdf_font, w.anchored, w.dl_x_bp, w.dl_y_bp, w.pdf_x_bp.unwrap_or(0.0), w.pdf_y_bp.unwrap_or(0.0), w.dx_bp.unwrap_or(0.0), w.dy_bp.unwrap_or(0.0));
     }
@@ -151,10 +276,21 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
         l.y += oy;
         for it in &mut l.items {
             match it {
-                Item::Glyph { x, y, .. } => { *x += ox; *y += oy; }
-                Item::Rule { x, y_top, .. } => { *x += ox; *y_top += oy; }
-                Item::Math { x, .. } => { *x += ox; }
-                Item::Image { x, y_top, .. } => { *x += ox; *y_top += oy; }
+                Item::Glyph { x, y, .. } => {
+                    *x += ox;
+                    *y += oy;
+                }
+                Item::Rule { x, y_top, .. } => {
+                    *x += ox;
+                    *y_top += oy;
+                }
+                Item::Math { x, .. } => {
+                    *x += ox;
+                }
+                Item::Image { x, y_top, .. } => {
+                    *x += ox;
+                    *y_top += oy;
+                }
                 _ => {}
             }
         }
@@ -172,7 +308,11 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     let words: Vec<&str> = source.split_whitespace().collect();
     let t_loop = Instant::now();
     for i in 0..opts.edits {
-        let edited = if i % 2 == 1 { format!("{source} edit{i}") } else { source.clone() };
+        let edited = if i % 2 == 1 {
+            format!("{source} edit{i}")
+        } else {
+            source.clone()
+        };
         let (r, rt) = server.compile(para.uid, &edited)?;
         if r.status == "error" {
             bail!("edit {i} failed: {:?}", r.errors);
@@ -201,15 +341,36 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
         amort.push(t0.elapsed().as_secs_f64() * 1e3 / 20.0);
     }
     let (amed, _, ap95, _) = stats(&mut amort);
-    println!("amortized (mean of 20 back-to-back, 10 samples): median {:.3} ms, P95 {:.3} ms", amed, ap95);
+    println!(
+        "amortized (mean of 20 back-to-back, 10 samples): median {:.3} ms, P95 {:.3} ms",
+        amed, ap95
+    );
 
     // 7. error path and engine health
     let (bad, _) = server.compile(para.uid, "Text with \\undefinedmacro inside.")?;
-    println!("error path: status={} errors={:?}", bad.status, bad.errors.iter().map(|e| (e.message.clone(), e.line)).collect::<Vec<_>>());
+    println!(
+        "error path: status={} errors={:?}",
+        bad.status,
+        bad.errors
+            .iter()
+            .map(|e| (e.message.clone(), e.line))
+            .collect::<Vec<_>>()
+    );
     let (ok_again, _) = server.compile(para.uid, &source)?;
-    println!("after error: status={} lines={}", ok_again.status, ok_again.dl.as_ref().map(|d| d.lines.len()).unwrap_or(0));
+    println!(
+        "after error: status={} lines={}",
+        ok_again.status,
+        ok_again.dl.as_ref().map(|d| d.lines.len()).unwrap_or(0)
+    );
     let st = server.stats()?;
-    if let Response::Stats { requests, font_nextid, grouplevel, nest, .. } = &st {
+    if let Response::Stats {
+        requests,
+        font_nextid,
+        grouplevel,
+        nest,
+        ..
+    } = &st
+    {
         println!("engine stats: requests={requests} font_nextid={font_nextid} grouplevel={grouplevel} nest={nest}");
     }
     server.shutdown()?;

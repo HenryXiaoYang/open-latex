@@ -26,7 +26,15 @@ pub struct PassOutcome {
 
 impl Clone for CaptureResult {
     fn clone(&self) -> Self {
-        CaptureResult { out_dir: self.out_dir.clone(), jobname: self.jobname.clone(), json: self.json.clone(), pdf: self.pdf.clone(), log: self.log.clone(), wall: self.wall, exit_ok: self.exit_ok }
+        CaptureResult {
+            out_dir: self.out_dir.clone(),
+            jobname: self.jobname.clone(),
+            json: self.json.clone(),
+            pdf: self.pdf.clone(),
+            log: self.log.clone(),
+            wall: self.wall,
+            exit_ok: self.exit_ok,
+        }
     }
 }
 
@@ -63,11 +71,29 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
             copy_tree(&path, &sub, depth + 1)?;
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if matches!(ext, "pdf" | "aux" | "log" | "synctex.gz" | "fls" | "fdb_latexmk" | "out" | "toc" | "lof" | "lot" | "bbl" | "bcf" | "blg" | "run.xml") {
+            if matches!(
+                ext,
+                "pdf"
+                    | "aux"
+                    | "log"
+                    | "synctex.gz"
+                    | "fls"
+                    | "fdb_latexmk"
+                    | "out"
+                    | "toc"
+                    | "lof"
+                    | "lot"
+                    | "bbl"
+                    | "bcf"
+                    | "blg"
+                    | "run.xml"
+            ) {
                 continue;
             }
             let target = dst.join(&name);
-            if !target.exists() || std::fs::metadata(&path)?.modified()? > std::fs::metadata(&target)?.modified()? {
+            if !target.exists()
+                || std::fs::metadata(&path)?.modified()? > std::fs::metadata(&target)?.modified()?
+            {
                 std::fs::copy(&path, &target)?;
             }
         }
@@ -88,26 +114,81 @@ fn aux_signature(out_dir: &Path, jobname: &str) -> u64 {
 }
 
 fn log_requests_rerun(log: &Path) -> bool {
-    std::fs::read_to_string(log).map(|s| s.contains("Rerun to get") || s.contains("rerun LaTeX") || s.contains("Please (re)run Biber") || s.contains("Please rerun LaTeX")).unwrap_or(false)
+    std::fs::read_to_string(log)
+        .map(|s| {
+            s.contains("Rerun to get")
+                || s.contains("rerun LaTeX")
+                || s.contains("Please (re)run Biber")
+                || s.contains("Please rerun LaTeX")
+        })
+        .unwrap_or(false)
 }
 
 /// Run instrumented passes in `out_dir` until the aux family is stable or `max_passes` is hit.
-pub fn run_pass(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Path, max_passes: u32, bib: BibTool, instrumented: bool) -> Result<PassOutcome> {
-    run_pass_with(tl, snapshot_dir, main, out_dir, max_passes, bib, instrumented, "")
+pub fn run_pass(
+    tl: &TexLive,
+    snapshot_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    max_passes: u32,
+    bib: BibTool,
+    instrumented: bool,
+) -> Result<PassOutcome> {
+    run_pass_with(
+        tl,
+        snapshot_dir,
+        main,
+        out_dir,
+        max_passes,
+        bib,
+        instrumented,
+        "",
+    )
 }
 
 /// `run_pass` with extra unit environments for the capture (see `run_capture_with`).
 #[allow(clippy::too_many_arguments)]
-pub fn run_pass_with(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Path, max_passes: u32, bib: BibTool, instrumented: bool, unit_envs: &str) -> Result<PassOutcome> {
-    let mut runner = |_pass: u32| crate::capture::run_capture_with(tl, snapshot_dir, main, out_dir, instrumented, unit_envs);
-    run_pass_with_runner(tl, snapshot_dir, main, out_dir, max_passes, bib, &mut runner)
+pub fn run_pass_with(
+    tl: &TexLive,
+    snapshot_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    max_passes: u32,
+    bib: BibTool,
+    instrumented: bool,
+    unit_envs: &str,
+) -> Result<PassOutcome> {
+    let mut runner = |_pass: u32| {
+        crate::capture::run_capture_with(tl, snapshot_dir, main, out_dir, instrumented, unit_envs)
+    };
+    run_pass_with_runner(
+        tl,
+        snapshot_dir,
+        main,
+        out_dir,
+        max_passes,
+        bib,
+        &mut runner,
+    )
 }
 
 /// `run_pass_with` with the single pass supplied by `runner` (a fresh lualatex, or a standby
 /// `WarmEngine` that already holds the preamble).
-pub fn run_pass_with_runner(tl: &TexLive, snapshot_dir: &Path, main: &str, out_dir: &Path, max_passes: u32, bib: BibTool, runner: &mut dyn FnMut(u32) -> Result<CaptureResult>) -> Result<PassOutcome> {
+pub fn run_pass_with_runner(
+    tl: &TexLive,
+    snapshot_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    max_passes: u32,
+    bib: BibTool,
+    runner: &mut dyn FnMut(u32) -> Result<CaptureResult>,
+) -> Result<PassOutcome> {
     std::fs::create_dir_all(out_dir)?;
-    let jobname = Path::new(main).file_stem().and_then(|s| s.to_str()).unwrap_or("main").to_string();
+    let jobname = Path::new(main)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string();
     let mut sig_before = aux_signature(out_dir, &jobname);
     let mut bib_ran = false;
     let mut last: Option<CaptureResult> = None;
@@ -121,15 +202,29 @@ pub fn run_pass_with_runner(tl: &TexLive, snapshot_dir: &Path, main: &str, out_d
         let wants_bib = match bib {
             BibTool::None => false,
             BibTool::Biber => bcf.exists(),
-            BibTool::BibTeX => std::fs::read_to_string(&aux).map(|s| s.contains("\\citation") || s.contains("\\bibdata")).unwrap_or(false),
-            BibTool::Auto => bcf.exists() || std::fs::read_to_string(&aux).map(|s| s.contains("\\bibdata")).unwrap_or(false),
+            BibTool::BibTeX => std::fs::read_to_string(&aux)
+                .map(|s| s.contains("\\citation") || s.contains("\\bibdata"))
+                .unwrap_or(false),
+            BibTool::Auto => {
+                bcf.exists()
+                    || std::fs::read_to_string(&aux)
+                        .map(|s| s.contains("\\bibdata"))
+                        .unwrap_or(false)
+            }
         };
         if wants_bib && !bib_ran {
             let tool = if bcf.exists() { "biber" } else { "bibtex" };
             let mut cmd = Command::new(tool);
             cmd.current_dir(out_dir).arg(&jobname);
             if let Some(d) = &tl.bin_dir {
-                cmd.env("PATH", format!("{}:{}", d.display(), std::env::var("PATH").unwrap_or_default()));
+                cmd.env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        d.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                );
             }
             // bibtex needs BIBINPUTS to find .bib files in the snapshot
             cmd.env("BIBINPUTS", format!("{}:", snapshot_dir.display()));
@@ -150,7 +245,12 @@ pub fn run_pass_with_runner(tl: &TexLive, snapshot_dir: &Path, main: &str, out_d
             break;
         }
     }
-    Ok(PassOutcome { capture: last.unwrap(), passes, bib_ran, aux_stable: stable })
+    Ok(PassOutcome {
+        capture: last.unwrap(),
+        passes,
+        bib_ran,
+        aux_stable: stable,
+    })
 }
 
 pub fn snapshot_dir(build: &Path) -> PathBuf {
@@ -167,11 +267,18 @@ pub fn read_aux_labels(aux: &Path) -> Vec<(String, String)> {
     out
 }
 
-fn read_aux_into(aux: &Path, out: &mut Vec<(String, String)>, seen: &mut std::collections::HashSet<PathBuf>, depth: u32) {
+fn read_aux_into(
+    aux: &Path,
+    out: &mut Vec<(String, String)>,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    depth: u32,
+) {
     if depth > 8 || !seen.insert(aux.to_path_buf()) {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(aux) else { return };
+    let Ok(text) = std::fs::read_to_string(aux) else {
+        return;
+    };
     let b = text.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -191,7 +298,10 @@ fn read_aux_into(aux: &Path, out: &mut Vec<(String, String)>, seen: &mut std::co
             continue;
         };
         let mut j = i + prefix.len();
-        let Some((name, after)) = brace_group(&text, j) else { i += 1; continue };
+        let Some((name, after)) = brace_group(&text, j) else {
+            i += 1;
+            continue;
+        };
         j = after;
         if kind.is_empty() {
             let child = aux.parent().unwrap_or(Path::new(".")).join(name.trim());
@@ -199,7 +309,10 @@ fn read_aux_into(aux: &Path, out: &mut Vec<(String, String)>, seen: &mut std::co
             i = j;
             continue;
         }
-        let Some((value, after)) = brace_group(&text, j) else { i += 1; continue };
+        let Some((value, after)) = brace_group(&text, j) else {
+            i += 1;
+            continue;
+        };
         out.push((format!("{kind}{name}"), value));
         i = after;
     }
@@ -248,12 +361,18 @@ mod aux_tests {
         std::fs::write(dir.join("main.aux"), "\\relax\n\\newlabel{eq:a}{{1.2}{5}}\n\\bibcite{knuth}{1}\n\\@input{ch.aux}\n\\newlabel{fig:x}{{1}{2}{Caption}{figure.1}{}}\n").unwrap();
         std::fs::write(dir.join("ch.aux"), "\\newlabel{sec:b}{{3}{7}}\n").unwrap();
         let v = read_aux_labels(&dir.join("main.aux"));
-        assert_eq!(v, vec![
-            ("r@eq:a".to_string(), "{1.2}{5}".to_string()),
-            ("b@knuth".to_string(), "1".to_string()),
-            ("r@sec:b".to_string(), "{3}{7}".to_string()),
-            ("r@fig:x".to_string(), "{1}{2}{Caption}{figure.1}{}".to_string()),
-        ]);
+        assert_eq!(
+            v,
+            vec![
+                ("r@eq:a".to_string(), "{1.2}{5}".to_string()),
+                ("b@knuth".to_string(), "1".to_string()),
+                ("r@sec:b".to_string(), "{3}{7}".to_string()),
+                (
+                    "r@fig:x".to_string(),
+                    "{1}{2}{Caption}{figure.1}{}".to_string()
+                ),
+            ]
+        );
     }
 }
 
@@ -267,9 +386,17 @@ mod aux_tests {
 /// (text before `\begin{document}`) in `rtex-preamble.tex`, and `main` replaced by the body
 /// preceded by as many empty lines as the preamble had, so every line number and `status.filename`
 /// the capture records are those of the original file. Returns the preamble's hash.
-pub fn write_body_snapshot(project: &Path, files: &BTreeMap<String, String>, main: &str, dir: &Path) -> Result<u64> {
-    let main_text = files.get(main).ok_or_else(|| anyhow::anyhow!("main file {main} not in snapshot"))?;
-    let (pre, body) = crate::split_preamble(main_text).ok_or_else(|| anyhow::anyhow!("no \\begin{{document}} in {main}"))?;
+pub fn write_body_snapshot(
+    project: &Path,
+    files: &BTreeMap<String, String>,
+    main: &str,
+    dir: &Path,
+) -> Result<u64> {
+    let main_text = files
+        .get(main)
+        .ok_or_else(|| anyhow::anyhow!("main file {main} not in snapshot"))?;
+    let (pre, body) = crate::split_preamble(main_text)
+        .ok_or_else(|| anyhow::anyhow!("no \\begin{{document}} in {main}"))?;
     let mut padded = String::with_capacity(main_text.len());
     for _ in 0..pre.matches('\n').count() {
         padded.push('\n');
@@ -296,15 +423,46 @@ pub struct WarmEngine {
 impl WarmEngine {
     /// Start a standby: writes the body snapshot into `src_dir` and runs lualatex up to the end
     /// of the preamble, where it blocks on stdin (tex/rtex-bg.lua).
-    pub fn spawn(tl: &TexLive, project: &Path, files: &BTreeMap<String, String>, main: &str, src_dir: &Path, out_dir: &Path, instrumented: bool, unit_envs: &str) -> Result<WarmEngine> {
+    pub fn spawn(
+        tl: &TexLive,
+        project: &Path,
+        files: &BTreeMap<String, String>,
+        main: &str,
+        src_dir: &Path,
+        out_dir: &Path,
+        instrumented: bool,
+        unit_envs: &str,
+    ) -> Result<WarmEngine> {
         let preamble_hash = write_body_snapshot(project, files, main, src_dir)?;
-        let (mut cmd, jobname, out_dir) = capture_command(tl, src_dir, main, &out_dir.to_path_buf(), instrumented, unit_envs)?;
-        let pkg = if instrumented { "\\RequirePackage{rtex-capture}" } else { "" };
+        let (mut cmd, jobname, out_dir) = capture_command(
+            tl,
+            src_dir,
+            main,
+            &out_dir.to_path_buf(),
+            instrumented,
+            unit_envs,
+        )?;
+        let pkg = if instrumented {
+            "\\RequirePackage{rtex-capture}"
+        } else {
+            ""
+        };
         cmd.arg(format!("{pkg}\\input{{rtex-preamble.tex}}\\directlua{{dofile(kpse.find_file(\"rtex-bg.lua\",\"lua\") or \"rtex-bg.lua\")}}\\input{{{main}}}"));
-        cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
         let mut child = cmd.spawn().context("spawning standby lualatex")?;
         let stdin = child.stdin.take();
-        Ok(WarmEngine { child, stdin, preamble_hash, src_dir: src_dir.to_path_buf(), out_dir, jobname, instrumented, spawned: std::time::Instant::now() })
+        Ok(WarmEngine {
+            child,
+            stdin,
+            preamble_hash,
+            src_dir: src_dir.to_path_buf(),
+            out_dir,
+            jobname,
+            instrumented,
+            spawned: std::time::Instant::now(),
+        })
     }
 
     pub fn is_alive(&mut self) -> bool {
@@ -313,7 +471,12 @@ impl WarmEngine {
 
     /// Typeset the body: refresh the snapshot texts (same preamble), release the engine and
     /// collect the pass like a fresh run.
-    pub fn run(mut self, project: &Path, files: &BTreeMap<String, String>, main: &str) -> Result<CaptureResult> {
+    pub fn run(
+        mut self,
+        project: &Path,
+        files: &BTreeMap<String, String>,
+        main: &str,
+    ) -> Result<CaptureResult> {
         let t0 = std::time::Instant::now();
         let h = write_body_snapshot(project, files, main, &self.src_dir)?;
         if h != self.preamble_hash {
@@ -321,7 +484,10 @@ impl WarmEngine {
         }
         {
             use std::io::Write;
-            let mut stdin = self.stdin.take().ok_or_else(|| anyhow::anyhow!("standby stdin already closed"))?;
+            let mut stdin = self
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("standby stdin already closed"))?;
             stdin.write_all(b"GO\n").context("releasing standby")?;
             stdin.flush().ok();
             drop(stdin);
@@ -333,7 +499,15 @@ impl WarmEngine {
             let _ = so.read_to_end(&mut stdout);
         }
         let status = self.child.wait().context("waiting for standby pass")?;
-        collect_capture(&self.out_dir, &self.jobname, self.instrumented, status.success(), status.code(), &stdout, t0.elapsed())
+        collect_capture(
+            &self.out_dir,
+            &self.jobname,
+            self.instrumented,
+            status.success(),
+            status.code(),
+            &stdout,
+            t0.elapsed(),
+        )
     }
 
     pub fn kill(mut self) {
@@ -367,9 +541,18 @@ mod tests {
         let mut files = BTreeMap::new();
         files.insert("main.tex".to_string(), "edited".to_string());
         write_snapshot(&project, &files, &dir.join("snap")).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("snap/a/b/file.txt")).unwrap(), "nested");
-        assert_eq!(std::fs::read_to_string(dir.join("snap/a/top.bib")).unwrap(), "bib");
-        assert_eq!(std::fs::read_to_string(dir.join("snap/main.tex")).unwrap(), "edited");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("snap/a/b/file.txt")).unwrap(),
+            "nested"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("snap/a/top.bib")).unwrap(),
+            "bib"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("snap/main.tex")).unwrap(),
+            "edited"
+        );
         // a second snapshot (files already present) is fine too
         write_snapshot(&project, &files, &dir.join("snap")).unwrap();
     }
@@ -387,11 +570,22 @@ mod tests {
         let h = write_body_snapshot(&project, &files, "main.tex", &dir.join("snap")).unwrap();
         let pre = std::fs::read_to_string(dir.join("snap/rtex-preamble.tex")).unwrap();
         let body = std::fs::read_to_string(dir.join("snap/main.tex")).unwrap();
-        assert_eq!(pre, "\\documentclass{article}\n\\usepackage{xcolor}\n% two\n");
+        assert_eq!(
+            pre,
+            "\\documentclass{article}\n\\usepackage{xcolor}\n% two\n"
+        );
         assert_eq!(h, crate::document::hash_str(&pre));
         // \begin{document} is on line 4 in both the original and the padded body file
-        assert_eq!(main.lines().position(|l| l.starts_with("\\begin{document}")), Some(3));
-        assert_eq!(body.lines().position(|l| l.starts_with("\\begin{document}")), Some(3));
+        assert_eq!(
+            main.lines()
+                .position(|l| l.starts_with("\\begin{document}")),
+            Some(3)
+        );
+        assert_eq!(
+            body.lines()
+                .position(|l| l.starts_with("\\begin{document}")),
+            Some(3)
+        );
         assert_eq!(body.lines().count(), main.lines().count());
         assert_eq!(body.lines().nth(4), Some("First line of the body."));
     }

@@ -207,7 +207,9 @@ pub struct CaptureResult {
 
 impl CaptureResult {
     pub fn page(&self, n: i64) -> Result<DisplayList> {
-        let p = self.out_dir.join(format!("{}.rtex-page{}.json", self.jobname, n));
+        let p = self
+            .out_dir
+            .join(format!("{}.rtex-page{}.json", self.jobname, n));
         let s = std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
         Ok(DisplayList::from_json(&s)?)
     }
@@ -218,26 +220,63 @@ impl CaptureResult {
 
 /// Run `lualatex '\RequirePackage{rtex-capture}\input{main}'` in `src_dir`, writing to `out_dir`.
 /// `instrumented=false` runs the same build without the capture package (clean reference).
-pub fn run_capture(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path, instrumented: bool) -> Result<CaptureResult> {
+pub fn run_capture(
+    tl: &TexLive,
+    src_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    instrumented: bool,
+) -> Result<CaptureResult> {
     run_capture_with(tl, src_dir, main, out_dir, instrumented, "")
 }
 
 /// `run_capture` with extra unit environments (comma separated, `$RTEX_UNIT_ENVS`): theorem-like
 /// environments the capture should treat as units.
-pub fn run_capture_with(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path, instrumented: bool, unit_envs: &str) -> Result<CaptureResult> {
-    let (mut cmd, jobname, out_dir) = capture_command(tl, src_dir, main, out_dir, instrumented, unit_envs)?;
-    cmd.arg(if instrumented { format!("\\RequirePackage{{rtex-capture}}\\input{{{main}}}") } else { format!("\\input{{{main}}}") });
+pub fn run_capture_with(
+    tl: &TexLive,
+    src_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    instrumented: bool,
+    unit_envs: &str,
+) -> Result<CaptureResult> {
+    let (mut cmd, jobname, out_dir) =
+        capture_command(tl, src_dir, main, out_dir, instrumented, unit_envs)?;
+    cmd.arg(if instrumented {
+        format!("\\RequirePackage{{rtex-capture}}\\input{{{main}}}")
+    } else {
+        format!("\\input{{{main}}}")
+    });
     let t0 = Instant::now();
     let out = cmd.output().context("spawning lualatex")?;
-    collect_capture(&out_dir, &jobname, instrumented, out.status.success(), out.status.code(), &out.stdout, t0.elapsed())
+    collect_capture(
+        &out_dir,
+        &jobname,
+        instrumented,
+        out.status.success(),
+        out.status.code(),
+        &out.stdout,
+        t0.elapsed(),
+    )
 }
 
 /// The lualatex command for a pass over `src_dir`, without its final `\input` argument.
 /// Returns (command, jobname, canonical out_dir).
-pub fn capture_command(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path, instrumented: bool, unit_envs: &str) -> Result<(Command, String, std::path::PathBuf)> {
+pub fn capture_command(
+    tl: &TexLive,
+    src_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    instrumented: bool,
+    unit_envs: &str,
+) -> Result<(Command, String, std::path::PathBuf)> {
     std::fs::create_dir_all(out_dir)?;
     let out_dir = out_dir.canonicalize()?;
-    let jobname = Path::new(main).file_stem().and_then(|s| s.to_str()).unwrap_or("main").to_string();
+    let jobname = Path::new(main)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string();
     let mut cmd = tl.lualatex_cmd(src_dir);
     cmd.arg("-interaction=nonstopmode")
         .arg("-file-line-error")
@@ -250,7 +289,15 @@ pub fn capture_command(tl: &TexLive, src_dir: &Path, main: &str, out_dir: &Path,
 }
 
 /// Read the outputs of a finished pass (log, PDF, capture JSON when instrumented).
-pub fn collect_capture(out_dir: &Path, jobname: &str, instrumented: bool, exit_ok: bool, exit_code: Option<i32>, stdout: &[u8], wall: std::time::Duration) -> Result<CaptureResult> {
+pub fn collect_capture(
+    out_dir: &Path,
+    jobname: &str,
+    instrumented: bool,
+    exit_ok: bool,
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    wall: std::time::Duration,
+) -> Result<CaptureResult> {
     let log = out_dir.join(format!("{jobname}.log"));
     let pdf = out_dir.join(format!("{jobname}.pdf"));
     let json = if instrumented {
@@ -260,16 +307,35 @@ pub fn collect_capture(out_dir: &Path, jobname: &str, instrumented: bool, exit_o
                 "capture run produced no {}; lualatex exit {:?}\n{}",
                 jp.display(),
                 exit_code,
-                String::from_utf8_lossy(stdout).chars().rev().take(2000).collect::<String>().chars().rev().collect::<String>()
+                String::from_utf8_lossy(stdout)
+                    .chars()
+                    .rev()
+                    .take(2000)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
             );
         }
         {
-            let mut j: CaptureJson = serde_json::from_str(&std::fs::read_to_string(&jp)?).with_context(|| format!("parsing capture json {}", jp.display()))?;
+            let mut j: CaptureJson = serde_json::from_str(&std::fs::read_to_string(&jp)?)
+                .with_context(|| format!("parsing capture json {}", jp.display()))?;
             j.finalize();
             j
         }
     } else {
-        CaptureJson { jobname: jobname.to_string(), ..Default::default() }
+        CaptureJson {
+            jobname: jobname.to_string(),
+            ..Default::default()
+        }
     };
-    Ok(CaptureResult { out_dir: out_dir.to_path_buf(), jobname: jobname.to_string(), json, pdf, log, wall, exit_ok })
+    Ok(CaptureResult {
+        out_dir: out_dir.to_path_buf(),
+        jobname: jobname.to_string(),
+        json,
+        pdf,
+        log,
+        wall,
+        exit_ok,
+    })
 }

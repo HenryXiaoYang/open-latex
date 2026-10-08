@@ -49,8 +49,41 @@ pub struct FileBuf {
 
 /// Block environments after whose `\end` a span ends (the capture closes the unit there); the
 /// session adds theorem-like environments from the preamble through `FileBuf::extra_block_envs`.
-pub const BLOCK_ENVS: &[&str] = &["itemize", "enumerate", "description", "quote", "quotation", "verse", "center", "flushleft", "flushright", "abstract", "figure", "figure*", "table", "table*", "tabbing"];
-const HEADING_CMDS: &[&str] = &["\\chapter", "\\section", "\\subsection", "\\subsubsection", "\\part", "\\paragraph", "\\subparagraph", "\\tableofcontents"];
+pub const BLOCK_ENVS: &[&str] = &[
+    "itemize",
+    "enumerate",
+    "description",
+    "quote",
+    "quotation",
+    "verse",
+    "center",
+    "flushleft",
+    "flushright",
+    "abstract",
+    "figure",
+    "figure*",
+    "table",
+    "table*",
+    "tabbing",
+    // amsthm, verbatim material, setspace
+    "proof",
+    "verbatim",
+    "verbatim*",
+    "lstlisting",
+    "Verbatim",
+    "alltt",
+    "spacing",
+];
+const HEADING_CMDS: &[&str] = &[
+    "\\chapter",
+    "\\section",
+    "\\subsection",
+    "\\subsubsection",
+    "\\part",
+    "\\paragraph",
+    "\\subparagraph",
+    "\\tableofcontents",
+];
 
 fn brace_balance(line: &str) -> i32 {
     let b = line.as_bytes();
@@ -93,7 +126,10 @@ fn segment(text: &str, extra_block_envs: &[String]) -> Vec<(Range<usize>, SpanKi
         Some(i) => {
             let e = i + "\\begin{document}".len();
             // preamble includes the \begin{document} line
-            let e = text[e..].find('\n').map(|k| e + k + 1).unwrap_or(text.len());
+            let e = text[e..]
+                .find('\n')
+                .map(|k| e + k + 1)
+                .unwrap_or(text.len());
             out.push((0..e, SpanKind::Preamble));
             e
         }
@@ -110,8 +146,15 @@ fn segment(text: &str, extra_block_envs: &[String]) -> Vec<(Range<usize>, SpanKi
 /// Segment `text[body_start..body_end]` (body material only) appending absolute ranges to `out`.
 /// Returns false when the slice ends inside an unclosed environment (the caller must then
 /// re-segment the whole file, since the environment swallows everything that follows).
-fn segment_body(text: &str, body_start: usize, body_end: usize, out: &mut Vec<(Range<usize>, SpanKind)>, extra_block_envs: &[String]) -> bool {
-    let is_block = |name: &str| BLOCK_ENVS.contains(&name) || extra_block_envs.iter().any(|e| e == name);
+fn segment_body(
+    text: &str,
+    body_start: usize,
+    body_end: usize,
+    out: &mut Vec<(Range<usize>, SpanKind)>,
+    extra_block_envs: &[String],
+) -> bool {
+    let is_block =
+        |name: &str| BLOCK_ENVS.contains(&name) || extra_block_envs.iter().any(|e| e == name);
     let body = &text[body_start..body_end];
     let lines: Vec<(usize, &str)> = {
         let mut v = Vec::new();
@@ -139,8 +182,16 @@ fn segment_body(text: &str, body_start: usize, body_end: usize, out: &mut Vec<(R
         let stripped = strip_comment(trimmed);
         let is_blank = stripped.trim().is_empty() && !trimmed.starts_with('%');
         // environment tracking (only at line starts, which covers the common layout)
-        let begins: Vec<String> = if stripped.contains("\\begin{") { find_all_envs(stripped, "\\begin{") } else { Vec::new() };
-        let ends: Vec<String> = if stripped.contains("\\end{") { find_all_envs(stripped, "\\end{") } else { Vec::new() };
+        let begins: Vec<String> = if stripped.contains("\\begin{") {
+            find_all_envs(stripped, "\\begin{")
+        } else {
+            Vec::new()
+        };
+        let ends: Vec<String> = if stripped.contains("\\end{") {
+            find_all_envs(stripped, "\\end{")
+        } else {
+            Vec::new()
+        };
         let heading = HEADING_CMDS.iter().any(|h| stripped.starts_with(h));
         if env_stack.is_empty() {
             if is_blank && trimmed.is_empty() {
@@ -152,7 +203,11 @@ fn segment_body(text: &str, body_start: usize, body_end: usize, out: &mut Vec<(R
             }
             if cur_start.is_none() {
                 cur_start = Some(*lstart);
-                cur_kind = if heading { SpanKind::Heading } else { SpanKind::Body };
+                cur_kind = if heading {
+                    SpanKind::Heading
+                } else {
+                    SpanKind::Body
+                };
                 heading_balance = 0;
                 split_pending = false;
             } else if (heading && cur_kind == SpanKind::Body) || split_pending {
@@ -160,7 +215,11 @@ fn segment_body(text: &str, body_start: usize, body_end: usize, out: &mut Vec<(R
                 // after a heading or a block environment
                 flush(out, cur_start.unwrap(), *lstart, cur_kind);
                 cur_start = Some(*lstart);
-                cur_kind = if heading { SpanKind::Heading } else { SpanKind::Body };
+                cur_kind = if heading {
+                    SpanKind::Heading
+                } else {
+                    SpanKind::Body
+                };
                 heading_balance = 0;
                 split_pending = false;
             }
@@ -245,8 +304,18 @@ impl FileBuf {
         Self::with_block_envs(text, ids, rev, Vec::new())
     }
 
-    pub fn with_block_envs(text: &str, ids: &mut IdAllocator, rev: Revision, extra_block_envs: Vec<String>) -> FileBuf {
-        let mut fb = FileBuf { text: text.to_string(), line_starts: compute_line_starts(text), spans: Vec::new(), extra_block_envs };
+    pub fn with_block_envs(
+        text: &str,
+        ids: &mut IdAllocator,
+        rev: Revision,
+        extra_block_envs: Vec<String>,
+    ) -> FileBuf {
+        let mut fb = FileBuf {
+            text: text.to_string(),
+            line_starts: compute_line_starts(text),
+            spans: Vec::new(),
+            extra_block_envs,
+        };
         fb.resegment(ids, rev);
         fb
     }
@@ -254,10 +323,19 @@ impl FileBuf {
     /// Re-segment the whole buffer (new ids for every span).
     pub fn resegment(&mut self, ids: &mut IdAllocator, rev: Revision) {
         let units = segment(&self.text, &self.extra_block_envs);
-        self.spans = units.into_iter().map(|(range, kind)| {
-            let hash = hash_str(&self.text[range.clone()]);
-            Span { id: ids.next(), range, kind, hash, last_revision: rev }
-        }).collect();
+        self.spans = units
+            .into_iter()
+            .map(|(range, kind)| {
+                let hash = hash_str(&self.text[range.clone()]);
+                Span {
+                    id: ids.next(),
+                    range,
+                    kind,
+                    hash,
+                    last_revision: rev,
+                }
+            })
+            .collect();
     }
 
     pub fn line_of(&self, byte: usize) -> usize {
@@ -269,10 +347,15 @@ impl FileBuf {
     /// 1-based inclusive line range of a span.
     pub fn line_range(&self, span: &Span) -> (i64, i64) {
         let end = span.range.end.saturating_sub(1).max(span.range.start);
-        (self.line_of(span.range.start) as i64, self.line_of(end) as i64)
+        (
+            self.line_of(span.range.start) as i64,
+            self.line_of(end) as i64,
+        )
     }
     pub fn span_at(&self, byte: usize) -> Option<&Span> {
-        self.spans.iter().find(|s| s.range.start <= byte && byte <= s.range.end)
+        self.spans
+            .iter()
+            .find(|s| s.range.start <= byte && byte <= s.range.end)
     }
     pub fn span(&self, id: ParaId) -> Option<&Span> {
         self.spans.iter().find(|s| s.id == id)
@@ -295,8 +378,17 @@ impl FileBuf {
         // insert the newlines of the inserted text
         let first_after = self.line_starts.partition_point(|&p| p <= start);
         let last_removed = self.line_starts.partition_point(|&p| p <= end);
-        let mut inserted: Vec<usize> = edit.text.bytes().enumerate().filter(|(_, b)| *b == b'\n').map(|(i, _)| start + i + 1).collect();
-        let tail: Vec<usize> = self.line_starts[last_removed..].iter().map(|&p| (p as i64 + delta) as usize).collect();
+        let mut inserted: Vec<usize> = edit
+            .text
+            .bytes()
+            .enumerate()
+            .filter(|(_, b)| *b == b'\n')
+            .map(|(i, _)| start + i + 1)
+            .collect();
+        let tail: Vec<usize> = self.line_starts[last_removed..]
+            .iter()
+            .map(|&p| (p as i64 + delta) as usize)
+            .collect();
         self.line_starts.truncate(first_after);
         self.line_starts.append(&mut inserted);
         self.line_starts.extend(tail);
@@ -307,17 +399,36 @@ impl FileBuf {
         // the preamble, the trailer or no span at all fall back to a full pass.
         // spans touched by the edit, or (for an edit in a gap between spans) its neighbours
         let touches = |sp: &Span| sp.range.start <= end && start <= sp.range.end;
-        let first_touched = old_spans.iter().position(touches).or_else(|| old_spans.iter().rposition(|sp| sp.range.end <= start));
-        let last_touched = old_spans.iter().rposition(touches).or_else(|| old_spans.iter().position(|sp| sp.range.start >= end));
+        let first_touched = old_spans
+            .iter()
+            .position(touches)
+            .or_else(|| old_spans.iter().rposition(|sp| sp.range.end <= start));
+        let last_touched = old_spans
+            .iter()
+            .rposition(touches)
+            .or_else(|| old_spans.iter().position(|sp| sp.range.start >= end));
         // The window is bounded by the neighbouring spans; when a neighbour is the preamble or
         // the trailer the window starts (ends) at the body boundary instead, which is fixed.
         let window: Option<(usize, usize)> = match (first_touched, last_touched) {
             (Some(a), Some(b)) if a <= b && a > 0 && b + 1 < old_spans.len() => {
                 let (lo, hi) = (a - 1, b + 1);
-                let lo_ok = matches!(old_spans[lo].kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env | SpanKind::Preamble);
-                let hi_ok = matches!(old_spans[hi].kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env | SpanKind::Trailer);
-                let mid_ok = old_spans[a..=b].iter().all(|sp| matches!(sp.kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env));
-                if lo_ok && hi_ok && mid_ok && !edit.text.contains("\\begin{document}") && !edit.text.contains("\\end{document}") {
+                let lo_ok = matches!(
+                    old_spans[lo].kind,
+                    SpanKind::Body | SpanKind::Heading | SpanKind::Env | SpanKind::Preamble
+                );
+                let hi_ok = matches!(
+                    old_spans[hi].kind,
+                    SpanKind::Body | SpanKind::Heading | SpanKind::Env | SpanKind::Trailer
+                );
+                let mid_ok = old_spans[a..=b].iter().all(|sp| {
+                    matches!(sp.kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env)
+                });
+                if lo_ok
+                    && hi_ok
+                    && mid_ok
+                    && !edit.text.contains("\\begin{document}")
+                    && !edit.text.contains("\\end{document}")
+                {
                     Some((lo, hi))
                 } else {
                     None
@@ -328,14 +439,36 @@ impl FileBuf {
         let new_units: Vec<(Range<usize>, SpanKind)> = if let Some((lo, hi)) = window {
             let lo_is_preamble = old_spans[lo].kind == SpanKind::Preamble;
             let hi_is_trailer = old_spans[hi].kind == SpanKind::Trailer;
-            let win_start = if lo_is_preamble { old_spans[lo].range.end } else { old_spans[lo].range.start };
-            let win_end = (if hi_is_trailer { old_spans[hi].range.start } else { old_spans[hi].range.end } as i64 + delta) as usize;
+            let win_start = if lo_is_preamble {
+                old_spans[lo].range.end
+            } else {
+                old_spans[lo].range.start
+            };
+            let win_end = (if hi_is_trailer {
+                old_spans[hi].range.start
+            } else {
+                old_spans[hi].range.end
+            } as i64
+                + delta) as usize;
             let keep_prefix = if lo_is_preamble { lo + 1 } else { lo };
-            let mut units: Vec<(Range<usize>, SpanKind)> = old_spans[..keep_prefix].iter().map(|sp| (sp.range.clone(), sp.kind)).collect();
-            if segment_body(&self.text, win_start, win_end, &mut units, &self.extra_block_envs) {
+            let mut units: Vec<(Range<usize>, SpanKind)> = old_spans[..keep_prefix]
+                .iter()
+                .map(|sp| (sp.range.clone(), sp.kind))
+                .collect();
+            if segment_body(
+                &self.text,
+                win_start,
+                win_end,
+                &mut units,
+                &self.extra_block_envs,
+            ) {
                 let tail_from = if hi_is_trailer { hi } else { hi + 1 };
                 for sp in &old_spans[tail_from..] {
-                    units.push(((sp.range.start as i64 + delta) as usize..(sp.range.end as i64 + delta) as usize, sp.kind));
+                    units.push((
+                        (sp.range.start as i64 + delta) as usize
+                            ..(sp.range.end as i64 + delta) as usize,
+                        sp.kind,
+                    ));
                 }
                 units
             } else {
@@ -348,7 +481,11 @@ impl FileBuf {
         // merely borders the edit, like the preamble when typing at the top of the first
         // paragraph, is unchanged too when its range is)
         let mut prefix = 0;
-        while prefix < old_spans.len() && prefix < new_units.len() && old_spans[prefix].range.end <= start && old_spans[prefix].range == new_units[prefix].0 {
+        while prefix < old_spans.len()
+            && prefix < new_units.len()
+            && old_spans[prefix].range.end <= start
+            && old_spans[prefix].range == new_units[prefix].0
+        {
             prefix += 1;
         }
         // old spans entirely after the edit, matched from the end with the byte delta applied
@@ -356,7 +493,8 @@ impl FileBuf {
         while suffix < old_spans.len() - prefix && suffix < new_units.len() - prefix {
             let o = &old_spans[old_spans.len() - 1 - suffix];
             let n = &new_units[new_units.len() - 1 - suffix];
-            let shifted = (o.range.start as i64 + delta) as usize..(o.range.end as i64 + delta) as usize;
+            let shifted =
+                (o.range.start as i64 + delta) as usize..(o.range.end as i64 + delta) as usize;
             if o.range.start >= end && n.0 == shifted {
                 suffix += 1;
             } else {
@@ -376,14 +514,26 @@ impl FileBuf {
             let hash = hash_str(&self.text[range.clone()]);
             outcome.preamble_changed |= o.kind == SpanKind::Preamble || kind == SpanKind::Preamble;
             outcome.touched.push(o.id);
-            spans.push(Span { id: o.id, range, kind, hash, last_revision: rev });
+            spans.push(Span {
+                id: o.id,
+                range,
+                kind,
+                hash,
+                last_revision: rev,
+            });
         } else {
             // A boundary change (split, merge, a paragraph typed fresh). The first new span keeps
             // the id of the first old span when it starts at the same byte with the same kind:
             // its engine context and its first-row placement stay valid (same predecessor, same
             // start). Every other new span gets a fresh id and borrows a context (session).
             let reused = match (old_mid.first(), new_mid.first()) {
-                (Some(o), Some((range, kind))) if o.range.start == range.start && o.kind == *kind && matches!(kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env) => Some(o.id),
+                (Some(o), Some((range, kind)))
+                    if o.range.start == range.start
+                        && o.kind == *kind
+                        && matches!(kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env) =>
+                {
+                    Some(o.id)
+                }
                 _ => None,
             };
             for o in old_mid {
@@ -407,13 +557,25 @@ impl FileBuf {
                     }
                 };
                 outcome.preamble_changed |= *kind == SpanKind::Preamble;
-                spans.push(Span { id, range: range.clone(), kind: *kind, hash, last_revision: rev });
+                spans.push(Span {
+                    id,
+                    range: range.clone(),
+                    kind: *kind,
+                    hash,
+                    last_revision: rev,
+                });
             }
         }
         for k in 0..suffix {
             let o = &old_spans[old_spans.len() - suffix + k];
             let (range, kind) = new_units[new_units.len() - suffix + k].clone();
-            spans.push(Span { id: o.id, range, kind, hash: o.hash, last_revision: o.last_revision });
+            spans.push(Span {
+                id: o.id,
+                range,
+                kind,
+                hash: o.hash,
+                last_revision: o.last_revision,
+            });
         }
         self.spans = spans;
         outcome
@@ -430,8 +592,22 @@ mod tests {
         let mut ids = IdAllocator(0);
         let fb = FileBuf::new(DOC, &mut ids, 1);
         let kinds: Vec<SpanKind> = fb.spans.iter().map(|s| s.kind).collect();
-        assert_eq!(kinds, vec![SpanKind::Preamble, SpanKind::Heading, SpanKind::Body, SpanKind::Body, SpanKind::Env, SpanKind::Body, SpanKind::Trailer]);
-        assert_eq!(fb.span_text(fb.spans[2].id).unwrap(), "First paragraph\nspanning two lines.\n");
+        assert_eq!(
+            kinds,
+            vec![
+                SpanKind::Preamble,
+                SpanKind::Heading,
+                SpanKind::Body,
+                SpanKind::Body,
+                SpanKind::Env,
+                SpanKind::Body,
+                SpanKind::Trailer
+            ]
+        );
+        assert_eq!(
+            fb.span_text(fb.spans[2].id).unwrap(),
+            "First paragraph\nspanning two lines.\n"
+        );
         assert_eq!(fb.line_range(&fb.spans[2]), (6, 7));
     }
 
@@ -441,7 +617,15 @@ mod tests {
         let mut fb = FileBuf::new(DOC, &mut ids, 1);
         let before: Vec<ParaId> = fb.spans.iter().map(|s| s.id).collect();
         let pos = fb.text.find("spanning").unwrap();
-        let out = fb.apply(&Edit { start_byte: pos, end_byte: pos, text: "now ".into() }, &mut ids, 2);
+        let out = fb.apply(
+            &Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: "now ".into(),
+            },
+            &mut ids,
+            2,
+        );
         let after: Vec<ParaId> = fb.spans.iter().map(|s| s.id).collect();
         assert_eq!(before, after);
         assert_eq!(out.touched, vec![before[2]]);
@@ -458,7 +642,15 @@ mod tests {
         let n = fb.spans.len();
         let pos = fb.text.find("spanning").unwrap();
         let before: Vec<ParaId> = fb.spans.iter().map(|s| s.id).collect();
-        let out = fb.apply(&Edit { start_byte: pos, end_byte: pos, text: "\n\n".into() }, &mut ids, 2);
+        let out = fb.apply(
+            &Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: "\n\n".into(),
+            },
+            &mut ids,
+            2,
+        );
         assert_eq!(fb.spans.len(), n + 1);
         // the first half keeps the paragraph's id, the second half is new
         assert_eq!(out.touched, vec![before[2]]);
@@ -467,7 +659,15 @@ mod tests {
         assert_eq!(fb.spans[2].id, before[2]);
         assert_eq!(fb.spans[3].id, out.added[0]);
         // merge back by deleting the inserted blank line: the first id survives, the second goes
-        let out2 = fb.apply(&Edit { start_byte: pos, end_byte: pos + 2, text: String::new() }, &mut ids, 3);
+        let out2 = fb.apply(
+            &Edit {
+                start_byte: pos,
+                end_byte: pos + 2,
+                text: String::new(),
+            },
+            &mut ids,
+            3,
+        );
         assert_eq!(fb.spans.len(), n);
         assert_eq!(out2.touched, vec![before[2]]);
         assert_eq!(out2.removed, vec![out.added[0]]);
@@ -484,9 +684,12 @@ mod tests {
             if i % 11 == 0 {
                 body.push_str("\\begin{itemize}\n\\item a\n\n\\item b\n\\end{itemize}\n\n");
             }
-            body.push_str(&format!("Paragraph {i} with some words\nand a second line.\n\n"));
+            body.push_str(&format!(
+                "Paragraph {i} with some words\nand a second line.\n\n"
+            ));
         }
-        let doc = format!("\\documentclass{{book}}\n\\begin{{document}}\n{body}\\end{{document}}\n");
+        let doc =
+            format!("\\documentclass{{book}}\n\\begin{{document}}\n{body}\\end{{document}}\n");
         let mut ids = IdAllocator(0);
         let mut fb = FileBuf::new(&doc, &mut ids, 1);
         let n = fb.spans.len();
@@ -496,21 +699,42 @@ mod tests {
         let mut times: Vec<std::time::Duration> = Vec::new();
         // probe positions inside paragraph text (never inside \begin/\end lines, which would turn
         // the rest of the document into one unclosed environment and dominate the timing)
-        let anchors: Vec<usize> = fb.text.match_indices("with some words").map(|(i, _)| i + 5).collect();
+        let anchors: Vec<usize> = fb
+            .text
+            .match_indices("with some words")
+            .map(|(i, _)| i + 5)
+            .collect();
         for k in 0..200 {
             let pos = anchors[(k * 7919 + 13) % anchors.len()] + (k % 3);
             let text = probes[k % probes.len()].to_string();
             let del = if k % 5 == 0 { 3 } else { 0 };
             let t0 = std::time::Instant::now();
-            fb.apply(&Edit { start_byte: pos, end_byte: pos + del, text }, &mut ids, 2 + k as u64);
+            fb.apply(
+                &Edit {
+                    start_byte: pos,
+                    end_byte: pos + del,
+                    text,
+                },
+                &mut ids,
+                2 + k as u64,
+            );
             let dt = t0.elapsed();
             t_total += dt;
             times.push(dt);
-            assert_eq!(fb.line_starts, compute_line_starts(&fb.text), "line starts after edit {k}");
+            assert_eq!(
+                fb.line_starts,
+                compute_line_starts(&fb.text),
+                "line starts after edit {k}"
+            );
             let full = segment(&fb.text, &fb.extra_block_envs);
-            let got: Vec<(Range<usize>, SpanKind)> = fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect();
+            let got: Vec<(Range<usize>, SpanKind)> =
+                fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect();
             if got != full {
-                let i = got.iter().zip(full.iter()).position(|(a, b)| a != b).unwrap_or(got.len().min(full.len()));
+                let i = got
+                    .iter()
+                    .zip(full.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(got.len().min(full.len()));
                 let lo = i.saturating_sub(2);
                 panic!("edit {k} at {pos} (del {del}, text {:?}): first mismatch at span {i}\n got: {:?}\nfull: {:?}\ntext around: {:?}",
                     probes[k % probes.len()], &got[lo..(i + 3).min(got.len())], &full[lo..(i + 3).min(full.len())],
@@ -522,7 +746,11 @@ mod tests {
         // the timing bound is a release-build property (debug builds are ~10× slower and also run
         // the debug_assert that recomputes every line start); correctness is checked above either way
         if !cfg!(debug_assertions) {
-            assert!(times[100] < std::time::Duration::from_micros(250), "median per-edit cost {:?}", times[100]);
+            assert!(
+                times[100] < std::time::Duration::from_micros(250),
+                "median per-edit cost {:?}",
+                times[100]
+            );
         }
     }
 
@@ -531,12 +759,37 @@ mod tests {
         let doc = "\\documentclass{book}\n\\begin{document}\n\\section{Title\nover two lines}\nFirst paragraph after the heading.\nSecond line.\n\nIntro:\n\\begin{itemize}\n\\item a\n\\end{itemize}\nText after the list.\n\nMath \\begin{equation} x \\end{equation} stays\ntogether.\n\\end{document}\n";
         let mut ids = IdAllocator(0);
         let fb = FileBuf::new(doc, &mut ids, 1);
-        let texts: Vec<(&str, SpanKind)> = fb.spans.iter().map(|s| (fb.text[s.range.clone()].trim_end(), s.kind)).collect();
-        assert_eq!(texts[1], ("\\section{Title\nover two lines}", SpanKind::Heading));
-        assert_eq!(texts[2], ("First paragraph after the heading.\nSecond line.", SpanKind::Body));
-        assert_eq!(texts[3], ("Intro:\n\\begin{itemize}\n\\item a\n\\end{itemize}", SpanKind::Env));
+        let texts: Vec<(&str, SpanKind)> = fb
+            .spans
+            .iter()
+            .map(|s| (fb.text[s.range.clone()].trim_end(), s.kind))
+            .collect();
+        assert_eq!(
+            texts[1],
+            ("\\section{Title\nover two lines}", SpanKind::Heading)
+        );
+        assert_eq!(
+            texts[2],
+            (
+                "First paragraph after the heading.\nSecond line.",
+                SpanKind::Body
+            )
+        );
+        assert_eq!(
+            texts[3],
+            (
+                "Intro:\n\\begin{itemize}\n\\item a\n\\end{itemize}",
+                SpanKind::Env
+            )
+        );
         assert_eq!(texts[4], ("Text after the list.", SpanKind::Body));
-        assert_eq!(texts[5], ("Math \\begin{equation} x \\end{equation} stays\ntogether.", SpanKind::Env));
+        assert_eq!(
+            texts[5],
+            (
+                "Math \\begin{equation} x \\end{equation} stays\ntogether.",
+                SpanKind::Env
+            )
+        );
         assert_eq!(fb.spans.len(), 7);
     }
 
@@ -545,7 +798,15 @@ mod tests {
         let mut ids = IdAllocator(0);
         let mut fb = FileBuf::new(DOC, &mut ids, 1);
         let pos = fb.text.find("microtype").unwrap();
-        let out = fb.apply(&Edit { start_byte: pos, end_byte: pos + 9, text: "xcolor".into() }, &mut ids, 2);
+        let out = fb.apply(
+            &Edit {
+                start_byte: pos,
+                end_byte: pos + 9,
+                text: "xcolor".into(),
+            },
+            &mut ids,
+            2,
+        );
         assert!(out.preamble_changed);
     }
 }

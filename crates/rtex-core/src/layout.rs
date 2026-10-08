@@ -1,7 +1,7 @@
 //! Versioned layout store: engine units (contexts + row placements) from the latest background
 //! pass, their mapping to host spans, page display lists, labels, and fragment construction.
 
-use crate::capture::{CapturedParagraph, CapturedUnit, CaptureResult, Placement};
+use crate::capture::{CaptureResult, CapturedParagraph, CapturedUnit, Placement};
 use crate::document::{ParaId, Revision};
 use rtex_dl::{DisplayList, Sp};
 use serde::Serialize;
@@ -62,8 +62,15 @@ impl EngineUnit {
         self.captured.placements.len() as i64
     }
     pub fn baselineskip(&self) -> Sp {
-        let g = self.first_para.as_ref().map(|p| &p.glues).unwrap_or(&self.captured.glues);
-        g.get("baselineskip").and_then(|v| v.first()).map(|v| *v as i64).unwrap_or(0)
+        let g = self
+            .first_para
+            .as_ref()
+            .map(|p| &p.glues)
+            .unwrap_or(&self.captured.glues);
+        g.get("baselineskip")
+            .and_then(|v| v.first())
+            .map(|v| *v as i64)
+            .unwrap_or(0)
     }
     /// The context object the fast server replays before typesetting this unit.
     pub fn context_json(&self) -> serde_json::Value {
@@ -87,14 +94,31 @@ impl EngineUnit {
 }
 
 /// Snapshot spans of a file buffer (what the session records when a pass starts).
-pub fn snapshot_spans_of(fb: &crate::document::FileBuf, file: &str, policy: &crate::eligibility::Policy) -> Vec<SnapshotSpan> {
+pub fn snapshot_spans_of(
+    fb: &crate::document::FileBuf,
+    file: &str,
+    policy: &crate::eligibility::Policy,
+) -> Vec<SnapshotSpan> {
     use crate::document::SpanKind;
-    fb.spans.iter().map(|sp| {
-        let (a, b) = fb.line_range(sp);
-        let text = &fb.text[sp.range.clone()];
-        let background_only = matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) || !crate::eligibility::classify_source(text, policy).1.is_empty();
-        SnapshotSpan { id: sp.id, file: file.to_string(), first_line: a, last_line: b, last_revision: sp.last_revision, background_only }
-    }).collect()
+    fb.spans
+        .iter()
+        .map(|sp| {
+            let (a, b) = fb.line_range(sp);
+            let text = &fb.text[sp.range.clone()];
+            let background_only = matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer)
+                || !crate::eligibility::classify_source(text, policy)
+                    .1
+                    .is_empty();
+            SnapshotSpan {
+                id: sp.id,
+                file: file.to_string(),
+                first_line: a,
+                last_line: b,
+                last_revision: sp.last_revision,
+                background_only,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -118,13 +142,19 @@ pub struct LayoutStore {
 impl LayoutStore {
     /// Install a finished capture pass. Maps units to spans by their first source line inside
     /// the snapshot's span line ranges (exactly one unit per span for a fast-eligible mapping).
-    pub fn install(&mut self, cap: &CaptureResult, snapshot: Vec<SnapshotSpan>, snapshot_revision: Revision) -> anyhow::Result<Vec<i64>> {
+    pub fn install(
+        &mut self,
+        cap: &CaptureResult,
+        snapshot: Vec<SnapshotSpan>,
+        snapshot_revision: Revision,
+    ) -> anyhow::Result<Vec<i64>> {
         self.layout_version += 1;
         self.context_revision += 1;
         self.snapshot_revision = snapshot_revision;
         self.units.clear();
         self.by_span.clear();
-        let paras: HashMap<i64, &CapturedParagraph> = cap.json.paragraphs.iter().map(|p| (p.seq, p)).collect();
+        let paras: HashMap<i64, &CapturedParagraph> =
+            cap.json.paragraphs.iter().map(|p| (p.seq, p)).collect();
         let mut per_span_count: HashMap<ParaId, usize> = HashMap::new();
         for u in &cap.json.units {
             let file = u.file.clone().unwrap_or_else(|| "./main.tex".into());
@@ -152,11 +182,28 @@ impl LayoutStore {
             // the unit's body paragraph: the first member at the unit's own nesting level with a
             // para/begin record (footnote text and \parbox contents are line-broken earlier, at
             // deeper levels)
-            let first_para = u.seqs.iter().filter_map(|s| paras.get(s)).find(|p| p.nest == 1 && p.begin.is_some())
-                .or_else(|| u.seqs.iter().filter_map(|s| paras.get(s)).find(|p| p.begin.is_some()))
+            let first_para = u
+                .seqs
+                .iter()
+                .filter_map(|s| paras.get(s))
+                .find(|p| p.nest == 1 && p.begin.is_some())
+                .or_else(|| {
+                    u.seqs
+                        .iter()
+                        .filter_map(|s| paras.get(s))
+                        .find(|p| p.begin.is_some())
+                })
                 .or_else(|| u.seqs.first().and_then(|s| paras.get(s)))
                 .map(|p| (*p).clone());
-            self.units.push(EngineUnit { uid: u.uid, captured: u.clone(), first_para, flags, members, span, uids: vec![u.uid] });
+            self.units.push(EngineUnit {
+                uid: u.uid,
+                captured: u.clone(),
+                first_para,
+                flags,
+                members,
+                span,
+                uids: vec![u.uid],
+            });
         }
         // Several consecutive paragraph units in one span (an explicit \par, a title line followed
         // by a text line) form one composite unit: the fast path typesets the span as one box, and
@@ -169,7 +216,11 @@ impl LayoutStore {
         }
         let mut merged_away: Vec<usize> = Vec::new();
         for (id, idxs) in idx_by_span.iter() {
-            if idxs.len() < 2 || !idxs.iter().all(|i| self.units[*i].captured.kind == "par" && self.units[*i].captured.nest == 1) {
+            if idxs.len() < 2
+                || !idxs.iter().all(|i| {
+                    self.units[*i].captured.kind == "par" && self.units[*i].captured.nest == 1
+                })
+            {
                 continue;
             }
             let mut idxs = idxs.clone();
@@ -244,7 +295,8 @@ impl LayoutStore {
         self.snapshot_spans = snapshot;
         self.capture_dir = Some(cap.out_dir.clone());
         self.pdf = Some(cap.pdf.clone());
-        let labels = crate::background::read_aux_labels(&cap.out_dir.join(format!("{}.aux", cap.jobname)));
+        let labels =
+            crate::background::read_aux_labels(&cap.out_dir.join(format!("{}.aux", cap.jobname)));
         self.labels_hash = crate::document::hash_str(&format!("{labels:?}"));
         self.labels = Arc::new(labels);
         Ok(changed)
@@ -256,17 +308,31 @@ impl LayoutStore {
 
     /// Units mapped to spans, in document order: (unit, span id).
     pub fn mapped_units(&self) -> Vec<(&EngineUnit, ParaId)> {
-        let mut v: Vec<(&EngineUnit, ParaId)> = self.units.iter().filter_map(|u| u.span.map(|s| (u, s))).collect();
+        let mut v: Vec<(&EngineUnit, ParaId)> = self
+            .units
+            .iter()
+            .filter_map(|u| u.span.map(|s| (u, s)))
+            .collect();
         v.sort_by_key(|(u, _)| u.uid);
         v
     }
 
     /// Build a store from a capture of `project/main` without a session (verification tools,
     /// tests): the main file is segmented like the session would, and the capture installed.
-    pub fn offline(cap: &CaptureResult, project: &std::path::Path, main: &str, policy: &crate::eligibility::Policy) -> anyhow::Result<(LayoutStore, crate::document::FileBuf)> {
+    pub fn offline(
+        cap: &CaptureResult,
+        project: &std::path::Path,
+        main: &str,
+        policy: &crate::eligibility::Policy,
+    ) -> anyhow::Result<(LayoutStore, crate::document::FileBuf)> {
         let text = std::fs::read_to_string(project.join(main))?;
         let mut ids = crate::document::IdAllocator(0);
-        let fb = crate::document::FileBuf::with_block_envs(&text, &mut ids, 1, policy.theorem_envs.iter().cloned().collect());
+        let fb = crate::document::FileBuf::with_block_envs(
+            &text,
+            &mut ids,
+            1,
+            policy.theorem_envs.iter().cloned().collect(),
+        );
         let spans = snapshot_spans_of(&fb, main, policy);
         let mut store = LayoutStore::default();
         store.install(cap, spans, 1)?;
@@ -278,7 +344,13 @@ impl LayoutStore {
     /// parent currently shows `parent_rows` (its last fast result; its placement count when
     /// unknown) — exact for consecutive paragraphs with the same baselineskip and no parskip;
     /// otherwise the rows end one baselineskip above the parent's first row. Always approximate.
-    pub fn fragments_relative(&self, parent: ParaId, parent_rows: Option<i64>, after: bool, rows: &[(Sp, Sp)]) -> Option<Vec<Fragment>> {
+    pub fn fragments_relative(
+        &self,
+        parent: ParaId,
+        parent_rows: Option<i64>,
+        after: bool,
+        rows: &[(Sp, Sp)],
+    ) -> Option<Vec<Fragment>> {
         let eu = self.unit(parent)?;
         let pl = &eu.captured.placements;
         if pl.is_empty() || rows.is_empty() {
@@ -292,7 +364,11 @@ impl LayoutStore {
                 (pl[idx].page, pl[idx].x, pl[idx].y)
             } else {
                 let last = pl.last().unwrap();
-                (last.page, last.x, last.y + (idx as i64 - (pl.len() as i64 - 1)) * bs)
+                (
+                    last.page,
+                    last.x,
+                    last.y + (idx as i64 - (pl.len() as i64 - 1)) * bs,
+                )
             }
         } else {
             let (_, ly) = rows[rows.len() - 1];
@@ -300,7 +376,15 @@ impl LayoutStore {
         };
         let xs: Vec<Sp> = rows.iter().map(|(rx, _)| ax + (rx - fx)).collect();
         let baselines: Vec<Sp> = rows.iter().map(|(_, ry)| ay + (ry - fy)).collect();
-        Some(vec![Fragment { page, first_line: 1, last_line: rows.len() as i64, x: xs[0], xs, baselines, approximate: true }])
+        Some(vec![Fragment {
+            page,
+            first_line: 1,
+            last_line: rows.len() as i64,
+            x: xs[0],
+            xs,
+            baselines,
+            approximate: true,
+        }])
     }
 
     /// Page positions for the rows of a fast result. `rows` are the (x, baseline) of each row in
@@ -342,7 +426,15 @@ impl LayoutStore {
                     stale = true;
                 }
             }
-            frags.push(Fragment { page, first_line: first as i64 + 1, last_line: i as i64, x: xs[0], xs, baselines, approximate });
+            frags.push(Fragment {
+                page,
+                first_line: first as i64 + 1,
+                last_line: i as i64,
+                x: xs[0],
+                xs,
+                baselines,
+                approximate,
+            });
         }
         Some((frags, stale))
     }

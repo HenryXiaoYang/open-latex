@@ -1,0 +1,80 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{fancyhdr}\pagestyle{fancy}
+\fancyhead[L]{\small Computer Science HL}
+\fancyhead[R]{\small A1.1.1--A1.1.9}
+\fancyfoot[C]{\thepage}\setlength{\headheight}{14pt}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\lstset{basicstyle=\ttfamily\small, keywordstyle=\color{blue}, language=Python, frame=single}
+\begin{document}
+{\Large\bfseries Computer Hardware and Operation\par}
+Henry Yang \hfill 22 September 2026
+
+\section{The CPU}
+The central processing unit (CPU) fetches, decodes and executes instructions. The \textbf{control unit} (CU) coordinates the \emph{fetch--decode--execute} cycle, and the \textbf{arithmetic logic unit} (ALU) performs calculations such as \texttt{ADD}, \texttt{SUB} and comparisons.\footnote{Some architectures add a dedicated floating-point unit.}
+
+\begin{enumerate}[label=(\alph*)]
+  \item The \textbf{program counter} holds the address of the next instruction.
+  \item The \textbf{memory address register} holds the address being read or written.
+  \item The \textbf{memory data register} holds the data just read or about to be written.
+\end{enumerate}
+
+Registers are described in Table~\ref{tab:regs}; see also \url{https://en.wikipedia.org/wiki/Processor_register} and the \href{https://example.org/notes}{course notes}.
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Register & Purpose \\
+\midrule
+PC & Address of the next instruction to fetch. \\
+MAR & Address of the memory cell to access. \\
+MDR & Data read from or written to memory. \\
+\bottomrule
+\end{tabularx}
+\caption{Processor registers.}\label{tab:regs}
+\end{table}
+
+\section{A short program}
+The following Python program adds two numbers:
+\begin{lstlisting}
+def add(a, b):
+    # return the sum
+    return a + b
+
+print(add(2, 3))
+\end{lstlisting}
+Calling \lstinline|add(2, 3)| prints \texttt{5}.
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Primary memory} (RAM) is volatile.
+  \item \textbf{Secondary memory} keeps data when the power is off.
+  \begin{itemize}
+    \item Hard disk drives use magnetic platters.
+    \item Solid-state drives use flash memory.
+  \end{itemize}
+\end{itemize}
+
+\begin{description}
+  \item[Cache] A small, fast memory close to the CPU.
+  \item[Bus] A set of wires carrying data, addresses and control signals.
+\end{description}
+
+\newpage
+\section{Operating systems}
+An operating system manages \textit{resources}: memory, the processor and peripherals. Its \textbf{scheduler} decides which process runs next; a \emph{context switch} saves and restores register state. See Section~\ref{sec:q}.
+
+\section{Questions}\label{sec:q}
+\begin{enumerate}[leftmargin=*]
+  \item Outline the function of the MAR. \hfill [2]
+  \item Describe one difference between RAM and ROM. \hfill [2]
+\end{enumerate}
+\end{document}

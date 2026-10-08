@@ -1,0 +1,35 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{siunitx}
+\usepackage{cancel}
+\usepackage{amsmath}
+\lstset{basicstyle=\ttfamily, numbers=left, numberstyle=\tiny, language=C}
+\begin{document}
+\section{Verbatim}
+Plain verbatim keeps everything, including \verb|\backslashes| and \verb+%percent+ signs:
+\begin{verbatim}
+int main(void) {
+    printf("hello, %d\n", 42);   /* comment */
+    return 0;
+}
+\end{verbatim}
+
+\section{Listings}
+\begin{lstlisting}[caption={A loop}, label={lst:loop}]
+for (int i = 0; i < 10; i++) {
+    total += i;
+}
+\end{lstlisting}
+Listing~\ref{lst:loop} sums the first ten integers.
+
+\section{Units}
+The wire is \SI{2.5}{\metre} long and carries \SI{1.5}{\ampere}; its resistance is \num{3.2e-1} \si{\ohm}. The cancelled term $\cancel{x} + y$ and $\frac{\cancel{a}b}{\cancel{a}} = b$.
+
+\begin{itemize}
+  \item Sample \num{1}: \SI{20}{\celsius}
+  \item Sample \num{2}: \SI{25.5}{\degreeCelsius}
+\end{itemize}
+\end{document}
