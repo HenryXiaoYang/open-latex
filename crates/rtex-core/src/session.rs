@@ -1196,7 +1196,9 @@ fn run_background_pass(s: &Shared) {
         let changed = match layout.install(&outcome.capture, spans, rev) {
             Ok(c) => c,
             Err(e) => {
-                s.events.send(Event::Diagnostics { source: "background".into(), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: format!("install layout: {e}"), context: None }] }).ok();
+                drop(layout);
+                drop(files);
+                failed(format!("install layout: {e}"));
                 return;
             }
         };

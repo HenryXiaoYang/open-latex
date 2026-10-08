@@ -20,8 +20,20 @@ fn open(name: &str) -> Option<(Session, std::path::PathBuf)> {
 }
 
 fn wait_layout(s: &Session) -> Event {
-    let (ev, _) = s.wait_for(Duration::from_secs(120), |e| matches!(e, Event::LayoutUpdate { .. }));
+    let t0 = std::time::Instant::now();
+    let (ev, others) = s.wait_for(Duration::from_secs(120), |e| matches!(e, Event::LayoutUpdate { .. }));
+    eprintln!("[test] wait_layout: {:?} after {:.1}s ({} other events)", ev.as_ref().map(|e| match e { Event::LayoutUpdate { versions, convergence, passes, wall_ms, compile, .. } => format!("layout v{} {:?} {:?} passes {} {} ms", versions.layout_version, compile, convergence, passes, wall_ms), _ => String::new() }), t0.elapsed().as_secs_f64(), others.len());
+    if ev.is_none() {
+        eprintln!("[test] convergence: {:?}", s.convergence());
+        for o in others.iter().rev().take(30) {
+            eprintln!("[test] event: {}", serde_json::to_string(o).map(|j| j.chars().take(300).collect::<String>()).unwrap_or_default());
+        }
+    }
     ev.expect("layout update")
+}
+
+fn step(name: &str) {
+    eprintln!("[test] {name}");
 }
 
 #[test]
@@ -81,6 +93,7 @@ fn boundary_change_and_preamble_change() {
     let spans = s.spans("main.tex");
     // the longest eligible paragraph (several lines, so a split leaves a multi-line second half)
     let body = spans.iter().filter(|sp| eligible_paragraphs.contains(&sp.id)).max_by_key(|sp| sp.range.len()).unwrap();
+    step("split");
     // split the paragraph with a blank line: the first half keeps its id and context, the
     // second half borrows one and is placed after the first; both are typeset live
     let pos = body.range.start + doc[body.range.clone()].find(' ').unwrap();
@@ -109,6 +122,7 @@ fn boundary_change_and_preamble_change() {
         }
     }
     assert!(seen_first && seen_second);
+    step("keystroke in new half");
     // a keystroke in the new paragraph stays live before the next layout
     let spans1 = s.spans("main.tex");
     let newspan = spans1.iter().find(|sp| sp.id == second).unwrap();
@@ -117,6 +131,7 @@ fn boundary_change_and_preamble_change() {
     assert_eq!(r1.routed, "fast", "{:?}", r1.reasons);
     let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == second));
     assert!(ev.is_some());
+    step("merge");
     // merge the halves back: the first id survives, the second is announced as removed, the
     // merged paragraph is live with the first half's context
     let r2 = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos + 2, text: String::new() }).unwrap();
@@ -128,6 +143,7 @@ fn boundary_change_and_preamble_change() {
     let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == body.id && status == "ok"));
     let Some(Event::ParagraphUpdate { dl, .. }) = ev else { panic!("no update for the merged paragraph") };
     assert!(dl.lines.len() > 1);
+    step("fresh paragraph above the first");
     // a paragraph typed above the first one: the existing paragraph is untouched (it keeps its
     // id, context and anchor), the new one has no paragraph before it, so it borrows the context
     // of the paragraph after it and is placed above that paragraph
@@ -146,6 +162,7 @@ fn boundary_change_and_preamble_change() {
     assert!(!fragments.is_empty() && fragments[0].approximate);
     let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else { unreachable!() };
     assert!(versions.layout_version >= 2);
+    step("post-pass edit");
     // the split-off span is eligible with a captured context after the pass
     let spans2 = s.spans("main.tex");
     let newspan = spans2.iter().find(|sp| sp.id == fresh).unwrap();
@@ -154,6 +171,7 @@ fn boundary_change_and_preamble_change() {
     assert_eq!(r2.routed, "fast", "{:?}", r2.reasons);
     let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
     assert!(ev.is_some());
+    step("preamble change");
     // preamble change: engine generation bumps, server restarts, edits still work afterwards
     let gen_before = s.versions().engine_generation;
     let pos = s.document_text("main.tex").unwrap().find("\\usepackage{xcolor}").unwrap();
