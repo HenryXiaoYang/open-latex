@@ -344,9 +344,11 @@ impl FileBuf {
         } else {
             segment(&self.text, &self.extra_block_envs)
         };
-        // old spans entirely before the edit (and not touching it) are unchanged
+        // old spans before the edit whose range came out unchanged are unchanged (a span that
+        // merely borders the edit, like the preamble when typing at the top of the first
+        // paragraph, is unchanged too when its range is)
         let mut prefix = 0;
-        while prefix < old_spans.len() && prefix < new_units.len() && old_spans[prefix].range.end < start && old_spans[prefix].range == new_units[prefix].0 {
+        while prefix < old_spans.len() && prefix < new_units.len() && old_spans[prefix].range.end <= start && old_spans[prefix].range == new_units[prefix].0 {
             prefix += 1;
         }
         // old spans entirely after the edit, matched from the end with the byte delta applied
@@ -355,7 +357,7 @@ impl FileBuf {
             let o = &old_spans[old_spans.len() - 1 - suffix];
             let n = &new_units[new_units.len() - 1 - suffix];
             let shifted = (o.range.start as i64 + delta) as usize..(o.range.end as i64 + delta) as usize;
-            if o.range.start > end && n.0 == shifted {
+            if o.range.start >= end && n.0 == shifted {
                 suffix += 1;
             } else {
                 break;
@@ -376,14 +378,34 @@ impl FileBuf {
             outcome.touched.push(o.id);
             spans.push(Span { id: o.id, range, kind, hash, last_revision: rev });
         } else {
+            // A boundary change (split, merge, a paragraph typed fresh). The first new span keeps
+            // the id of the first old span when it starts at the same byte with the same kind:
+            // its engine context and its first-row placement stay valid (same predecessor, same
+            // start). Every other new span gets a fresh id and borrows a context (session).
+            let reused = match (old_mid.first(), new_mid.first()) {
+                (Some(o), Some((range, kind))) if o.range.start == range.start && o.kind == *kind && matches!(kind, SpanKind::Body | SpanKind::Heading | SpanKind::Env) => Some(o.id),
+                _ => None,
+            };
             for o in old_mid {
+                if Some(o.id) == reused {
+                    continue;
+                }
                 outcome.removed.push(o.id);
                 outcome.preamble_changed |= o.kind == SpanKind::Preamble;
             }
-            for (range, kind) in new_mid {
+            for (k, (range, kind)) in new_mid.iter().enumerate() {
                 let hash = hash_str(&self.text[range.clone()]);
-                let id = ids.next();
-                outcome.added.push(id);
+                let id = match (k, reused) {
+                    (0, Some(id)) => {
+                        outcome.touched.push(id);
+                        id
+                    }
+                    _ => {
+                        let id = ids.next();
+                        outcome.added.push(id);
+                        id
+                    }
+                };
                 outcome.preamble_changed |= *kind == SpanKind::Preamble;
                 spans.push(Span { id, range: range.clone(), kind: *kind, hash, last_revision: rev });
             }
@@ -435,15 +457,21 @@ mod tests {
         let mut fb = FileBuf::new(DOC, &mut ids, 1);
         let n = fb.spans.len();
         let pos = fb.text.find("spanning").unwrap();
+        let before: Vec<ParaId> = fb.spans.iter().map(|s| s.id).collect();
         let out = fb.apply(&Edit { start_byte: pos, end_byte: pos, text: "\n\n".into() }, &mut ids, 2);
         assert_eq!(fb.spans.len(), n + 1);
-        assert_eq!(out.removed.len(), 1);
-        assert_eq!(out.added.len(), 2);
-        // merge back by deleting the inserted blank line
+        // the first half keeps the paragraph's id, the second half is new
+        assert_eq!(out.touched, vec![before[2]]);
+        assert!(out.removed.is_empty());
+        assert_eq!(out.added.len(), 1);
+        assert_eq!(fb.spans[2].id, before[2]);
+        assert_eq!(fb.spans[3].id, out.added[0]);
+        // merge back by deleting the inserted blank line: the first id survives, the second goes
         let out2 = fb.apply(&Edit { start_byte: pos, end_byte: pos + 2, text: String::new() }, &mut ids, 3);
         assert_eq!(fb.spans.len(), n);
-        assert_eq!(out2.removed.len(), 2);
-        assert_eq!(out2.added.len(), 1);
+        assert_eq!(out2.touched, vec![before[2]]);
+        assert_eq!(out2.removed, vec![out.added[0]]);
+        assert!(out2.added.is_empty());
     }
 
     #[test]

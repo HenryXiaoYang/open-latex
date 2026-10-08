@@ -1,10 +1,10 @@
 //! The public session API: documents, edits, fast-path compiles, background layouts, events.
 
 use crate::background::{run_pass_with, snapshot_dir, write_snapshot, BibTool};
-use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, SpanKind};
-use crate::eligibility::{check_engine_unit, classify_source, Policy, Reason, UnitShape};
+use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, Span, SpanKind};
+use crate::eligibility::{check_engine_unit, classify_source, everypar_allowed, Policy, Reason, UnitShape};
 use crate::engine::{FastServer, Response};
-use crate::layout::{Fragment, LayoutStore, SnapshotSpan};
+use crate::layout::{EngineUnit, Fragment, LayoutStore, SnapshotSpan};
 use crate::texlive::TexLive;
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -89,7 +89,7 @@ pub struct Diagnostic {
     pub context: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Timing {
     pub total_us: u64,
     pub tex_us: u64,
@@ -160,6 +160,10 @@ pub struct EditResult {
     pub host_us: [u64; 3],
 }
 
+/// The kernel's `\everypar` after a heading (`\@afterheading`), replayed for a paragraph typed
+/// fresh right after a heading span.
+const AFTER_HEADING_EVERYPAR: &str = "\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\if@afterindent \\else {\\setbox \\z@ \\lastbox }\\fi \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi ";
+
 struct FastRequest {
     /// Internal warm-up compile: result is discarded, no event is emitted.
     warmup: bool,
@@ -225,6 +229,10 @@ struct Shared {
     edit_counter: AtomicU64,
     convergence: Mutex<Option<Convergence>>,
     overlays: Mutex<HashMap<ParaId, Revision>>,
+    /// Spans typeset with a borrowed context: span → (parent span, rows follow the parent).
+    derived: Mutex<HashMap<ParaId, (ParaId, bool)>>,
+    /// Row count of the latest fast result per span (anchors paragraphs placed after it).
+    live_rows: Mutex<HashMap<ParaId, i64>>,
 }
 
 enum BgCmd {
@@ -279,6 +287,8 @@ impl Session {
             edit_counter: AtomicU64::new(0),
             convergence: Mutex::new(None),
             overlays: Mutex::new(HashMap::new()),
+            derived: Mutex::new(HashMap::new()),
+            live_rows: Mutex::new(HashMap::new()),
         });
         let mut threads = Vec::new();
         {
@@ -334,12 +344,10 @@ impl Session {
         let t_start = Instant::now();
         let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let (outcome, span_info) = {
+        let outcome = {
             let mut files = self.shared.files.lock();
             let fb = files.get_mut(rel_path).ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
-            let outcome = fb.apply(&edit, &mut self.shared.ids.lock(), rev);
-            let info = outcome.touched.first().and_then(|id| fb.span(*id).cloned()).map(|s| (s.clone(), fb.text[s.range.clone()].to_string(), fb.line_range(&s)));
-            (outcome, info)
+            fb.apply(&edit, &mut self.shared.ids.lock(), rev)
         };
         if outcome.preamble_changed {
             self.shared.preamble_revision.store(rev, Ordering::SeqCst);
@@ -369,27 +377,95 @@ impl Session {
             return Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "preamble".into(), reasons: vec!["preamble changed".into()], host_us: [t_start.elapsed().as_micros() as u64, 0, 0] });
         }
         let t_seg = t_start.elapsed();
-        // split/merge or multi-span edits: background only
-        let Some((span, text, (first_line, _last_line))) = span_info else {
+        // Every body span the edit touched or created is routed (a split compiles both halves,
+        // a merge the merged paragraph, a fresh paragraph borrows a context); the first one in
+        // document order decides the reported outcome. Removed spans are announced as empty
+        // updates so hosts clear what they drew for them.
+        let mut requests: Vec<FastRequest> = Vec::new();
+        let mut primary: Option<(ParaId, bool, Vec<String>)> = None;
+        let mut any_background = false;
+        {
+            let files = self.shared.files.lock();
+            let fb = files.get(rel_path).ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
+            let layout = self.shared.layout.lock();
+            let policy = self.shared.policy.lock();
+            let mut cands: Vec<ParaId> = outcome.touched.iter().chain(outcome.added.iter()).copied().collect();
+            cands.sort_by_key(|id| fb.span(*id).map(|sp| sp.range.start).unwrap_or(usize::MAX));
+            cands.dedup();
+            for id in cands {
+                let Some(span) = fb.span(id) else { continue };
+                let (req, reasons) = self.route_span(rel_path, fb, span, rev, edit_id, &layout, &policy);
+                let live = req.is_some();
+                any_background |= !live;
+                if primary.is_none() {
+                    primary = Some((id, live, reasons));
+                }
+                if let Some(r) = req {
+                    requests.push(r);
+                }
+            }
+            if !outcome.removed.is_empty() {
+                let versions = Versions {
+                    source_revision: rev,
+                    context_revision: layout.context_revision,
+                    engine_generation: self.shared.engine_generation.load(Ordering::SeqCst),
+                    layout_version: layout.layout_version,
+                };
+                for id in &outcome.removed {
+                    self.shared.events.send(Event::ParagraphUpdate {
+                        par_id: *id, edit_id, versions: versions.clone(), status: "removed".into(), reasons: vec![],
+                        fragments: vec![], pagination_stale: true, context_stale: false, dl: DisplayList::default(),
+                        diagnostics: vec![], timing: Timing::default(),
+                    }).ok();
+                }
+            }
+        }
+        let t_elig = t_start.elapsed();
+        let Some((primary_id, primary_live, primary_reasons)) = primary else {
+            // nothing routable (e.g. everything deleted): background only
             self.note_bg_change(rel_path, rev, &outcome);
             self.schedule_background();
             self.shared.events.send(Event::BackgroundScheduled { par_id: None, reasons: vec!["paragraph boundaries changed".into()], edit_id }).ok();
             return Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons: vec!["paragraph boundaries changed".into()], host_us: [t_seg.as_micros() as u64, 0, 0] });
         };
-        // eligibility
+        for req in requests {
+            self.shared.overlays.lock().insert(req.par_id, rev);
+            self.dispatch_fast(req);
+        }
+        // a boundary change always needs a pass (pagination of what follows); so does a span
+        // the fast path could not take
+        if any_background || !outcome.added.is_empty() || !outcome.removed.is_empty() {
+            self.note_bg_change(rel_path, rev, &outcome);
+            self.schedule_background();
+        }
+        let host_us = [t_seg.as_micros() as u64, (t_elig - t_seg).as_micros() as u64, (t_start.elapsed() - t_elig).as_micros() as u64];
+        if primary_live {
+            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "fast".into(), reasons: primary_reasons, host_us })
+        } else {
+            self.shared.events.send(Event::BackgroundScheduled { par_id: Some(primary_id), reasons: primary_reasons.clone(), edit_id }).ok();
+            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons: primary_reasons, host_us: [host_us[0], host_us[1], 0] })
+        }
+    }
+
+    /// Decide the fast path for one span: the allow-list on its source, the capture facts of
+    /// its unit (or a borrowed context when the layout does not know it yet), the budget and the
+    /// context staleness. Returns the request to send, or the reasons it goes to the background.
+    fn route_span(&self, rel_path: &str, fb: &FileBuf, span: &Span, rev: Revision, edit_id: u64, layout: &LayoutStore, policy: &Policy) -> (Option<FastRequest>, Vec<String>) {
+        let text = &fb.text[span.range.clone()];
+        let (first_line, _) = fb.line_range(span);
         let mut reasons: Vec<String> = Vec::new();
         if matches!(span.kind, SpanKind::Preamble | SpanKind::Trailer) {
             reasons.push(format!("{:?} span", span.kind));
         }
-        let (shape, src_reasons) = classify_source(&text, &self.shared.policy.lock());
+        let (shape, src_reasons) = classify_source(text, policy);
         for r in src_reasons {
             reasons.push(reason_str(&r));
         }
-        let layout = self.shared.layout.lock();
-        let eu = layout.unit(span.id);
-        let mut request: Option<FastRequest> = None;
-        match eu {
-            None => reasons.push("NoContext".into()),
+        let mut seq = 0i64;
+        let mut ctx: Option<serde_json::Value> = None;
+        let mut expected_rows = 0i64;
+        let mut derived_from: Option<(ParaId, bool)> = None;
+        match layout.unit(span.id) {
             Some(eu) => {
                 let c = &eu.captured;
                 for r in check_engine_unit(&c.kind, &c.everypar, c.kind != "par" || eu.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false), eu.rows(), &eu.flags) {
@@ -409,50 +485,89 @@ impl Session {
                         reasons.push(reason_str(&Reason::OverBudget(ms)));
                     }
                 }
-                if reasons.is_empty() {
-                    // context staleness: a background-only change in this file before this span,
-                    // after the snapshot this context came from
-                    let stale = {
-                        let bg = self.shared.bg_change.lock();
-                        bg.get(rel_path).map(|v| v.iter().any(|(r, line)| *r > layout.snapshot_revision && *line < first_line)).unwrap_or(false)
-                    };
-                    if stale && !self.shared.cfg.fast_on_stale_context {
-                        reasons.push("ContextStale".into());
-                    } else {
-                        request = Some(FastRequest {
-                            warmup: false,
-                            par_id: span.id,
-                            edit_id,
-                            span_hash: span.hash,
-                            source: text.trim_end_matches('\n').to_string(),
-                            seq: eu.uid,
-                            ctx: None,
-                            versions: Versions {
-                                source_revision: rev,
-                                context_revision: layout.context_revision,
-                                engine_generation: self.shared.engine_generation.load(Ordering::SeqCst),
-                                layout_version: layout.layout_version,
-                            },
-                            context_stale: stale,
-                            expected_rows: eu.rows(),
-                        });
+                seq = eu.uid;
+                expected_rows = eu.rows();
+            }
+            None => {
+                if reasons.is_empty() && shape == UnitShape::Par && span.kind == SpanKind::Body {
+                    match self.derive_context(fb, span, layout) {
+                        Some((parent, after, json)) => {
+                            // negative context ids never collide with unit ids
+                            seq = -(span.id.0 as i64);
+                            ctx = Some(json);
+                            derived_from = Some((parent, after));
+                        }
+                        None => reasons.push("NoContext".into()),
                     }
+                } else {
+                    reasons.push("NoContext".into());
                 }
             }
         }
-        drop(layout);
-        let t_elig = t_start.elapsed();
-        if let Some(req) = request {
-            let span_id = span.id;
-            self.shared.overlays.lock().insert(span_id, rev);
-            self.dispatch_fast(req);
-            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "fast".into(), reasons, host_us: [t_seg.as_micros() as u64, (t_elig - t_seg).as_micros() as u64, (t_start.elapsed() - t_elig).as_micros() as u64] })
-        } else {
-            self.note_bg_change(rel_path, rev, &outcome);
-            self.schedule_background();
-            self.shared.events.send(Event::BackgroundScheduled { par_id: Some(span.id), reasons: reasons.clone(), edit_id }).ok();
-            Ok(EditResult { edit_id, source_revision: rev, outcome, routed: "background".into(), reasons, host_us: [t_seg.as_micros() as u64, (t_elig - t_seg).as_micros() as u64, 0] })
+        if !reasons.is_empty() {
+            return (None, reasons);
         }
+        // context staleness: a background-only change in this file before this span, after the
+        // snapshot this context came from; a borrowed context is stale by definition
+        let stale = derived_from.is_some() || {
+            let bg = self.shared.bg_change.lock();
+            bg.get(rel_path).map(|v| v.iter().any(|(r, line)| *r > layout.snapshot_revision && *line < first_line)).unwrap_or(false)
+        };
+        if stale && !self.shared.cfg.fast_on_stale_context {
+            reasons.push("ContextStale".into());
+            return (None, reasons);
+        }
+        if let Some(d) = derived_from {
+            self.shared.derived.lock().insert(span.id, d);
+        }
+        let req = FastRequest {
+            warmup: false,
+            par_id: span.id,
+            edit_id,
+            span_hash: span.hash,
+            source: text.trim_end_matches('\n').to_string(),
+            seq,
+            ctx,
+            versions: Versions {
+                source_revision: rev,
+                context_revision: layout.context_revision,
+                engine_generation: self.shared.engine_generation.load(Ordering::SeqCst),
+                layout_version: layout.layout_version,
+            },
+            context_stale: stale,
+            expected_rows,
+        };
+        (Some(req), reasons)
+    }
+
+    /// Context for a paragraph the layout does not know yet (created by a split or a merge, or
+    /// typed fresh): a plain body paragraph borrows the parameters, fonts and counters of the
+    /// nearest paragraph unit before it (after it when there is none) with the paragraph-start
+    /// state of a paragraph that follows a paragraph, or a heading when a heading span precedes
+    /// it. The next layout replaces the borrowed context with a captured one. Returns (parent
+    /// span, whether the rows follow the parent, context).
+    fn derive_context(&self, fb: &FileBuf, span: &Span, layout: &LayoutStore) -> Option<(ParaId, bool, serde_json::Value)> {
+        let idx = fb.spans.iter().position(|sp| sp.id == span.id)?;
+        let usable = |sp: &Span| -> Option<&EngineUnit> {
+            if sp.kind != SpanKind::Body {
+                return None;
+            }
+            let eu = layout.unit(sp.id)?;
+            let ok = eu.kind() == "par" && eu.rows() > 0 && eu.first_para.as_ref().map(|p| p.begin.is_some()).unwrap_or(false) && everypar_allowed(&eu.captured.everypar);
+            ok.then_some(eu)
+        };
+        let before = fb.spans[..idx].iter().rev().find_map(|sp| usable(sp).map(|eu| (sp.id, true, eu)));
+        let (parent, after, eu) = match before {
+            Some(b) => b,
+            None => fb.spans[idx + 1..].iter().find_map(|sp| usable(sp).map(|eu| (sp.id, false, eu)))?,
+        };
+        let mut json = eu.context_json();
+        let after_heading = idx > 0 && fb.spans[idx - 1].kind == SpanKind::Heading;
+        json["everypar"] = serde_json::Value::String(if after_heading { AFTER_HEADING_EVERYPAR.to_string() } else { String::new() });
+        json["nobreak"] = serde_json::Value::Bool(after_heading);
+        json["afterindent"] = serde_json::Value::Bool(false);
+        json["noskipsec"] = serde_json::Value::Bool(false);
+        Some((parent, after, json))
     }
 
     /// Hand a fast request to the server: written straight to its stdin when the server is idle
@@ -664,8 +779,24 @@ fn engine_thread(s: Arc<Shared>) {
                 continue; // superseded by a preamble change
             }
         }
-        // 3. (re)start the server when the generation changed or it died
+        // 3. (re)start the server when the generation changed or it died. A preamble edit bumps
+        //    the generation per keystroke; wait until it has been quiet for the debounce time so
+        //    a burst of preamble keystrokes costs one restart, not one per keystroke.
         if server.is_none() || server_generation != wanted_gen || !server.as_mut().unwrap().is_alive() {
+            if server.is_some() && server_generation != wanted_gen {
+                let mut g = wanted_gen;
+                loop {
+                    let _ = s.pending_signal.1.recv_timeout(s.cfg.debounce);
+                    let now = s.engine_generation.load(Ordering::SeqCst);
+                    if now == g || s.shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    g = now;
+                }
+                if g != wanted_gen {
+                    continue; // re-evaluate with the settled generation
+                }
+            }
             reset_link(&s);
             if let Some(mut old) = server.take() {
                 old.kill();
@@ -813,7 +944,24 @@ fn handle_result(s: &Shared, req: FastRequest, cr: crate::engine::CompileResult,
         dl.images = cr.images.clone();
     }
     let rows: Vec<(i64, i64)> = dl.lines.iter().map(|l| (l.x, l.y)).collect();
-    let (fragments, mut stale) = s.layout.lock().fragments(req.par_id, &rows).unwrap_or((vec![], true));
+    let (fragments, mut stale) = {
+        let layout = s.layout.lock();
+        match layout.fragments(req.par_id, &rows) {
+            Some(x) => x,
+            None => {
+                // a borrowed context: placed relative to the parent unit's rows
+                let parent = s.derived.lock().get(&req.par_id).copied();
+                let frags = parent
+                    .and_then(|(parent, after)| {
+                        let live = s.live_rows.lock().get(&parent).copied();
+                        layout.fragments_relative(parent, live, after, &rows)
+                    })
+                    .unwrap_or_default();
+                (frags, true)
+            }
+        }
+    };
+    s.live_rows.lock().insert(req.par_id, dl.lines.len() as i64);
     if req.expected_rows != dl.lines.len() as i64 {
         stale = true;
     }
@@ -1006,8 +1154,11 @@ fn run_background_pass(s: &Shared) {
             }
         }
     }
-    // commit overlays older than the snapshot
+    // commit overlays older than the snapshot; borrowed contexts and live row counts are
+    // superseded by the new placements
     s.overlays.lock().retain(|_, r| *r > rev);
+    s.derived.lock().clear();
+    s.live_rows.lock().clear();
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !outcome.aux_stable {

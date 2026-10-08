@@ -35,6 +35,13 @@
   (docs/BENCHMARKS.md, `bench/results/roundtrip-20261008-0318.md`).
 - `rtex probe` times one unit of every kind; `rtex verify` builds both references to aux
   convergence (labels resolved on both sides).
+- Paragraph boundaries no longer leave the fast path: a split keeps the first half's id and
+  context, the second half (and any paragraph typed fresh) borrows the context of its nearest
+  paragraph neighbour and is placed after it; a merge keeps the first paragraph's id and
+  announces the other as `ParagraphUpdate{status: "removed"}`. Spans that only border an edit
+  are unchanged (typing at the top of the first paragraph no longer counts as a preamble change).
+  A burst of preamble keystrokes restarts the engine once, after the debounce, instead of once
+  per keystroke.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

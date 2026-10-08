@@ -95,7 +95,7 @@ installed (flat parameter arrays, prebuilt token strings).
 JSON header:
 ```json
 { "op":"result", "req":7, "ctx":25,
-  "status":"ok" | "ok_degraded" | "error",
+  "status":"ok" | "ok_degraded" | "error",      // "removed" in a ParagraphUpdate the session emits for a span that no longer exists (no engine result)
   "errors":[{"message":"Undefined control sequence","context":"…","line":2}],
   "lines":3, "glyphs":166, "width":22609920, "height":…, "depth":…, "dl_bytes":5055,
   "t_tex_us": 1437, "t_traverse_us": 279, "t_pack_us": 0, "font_changed": false,

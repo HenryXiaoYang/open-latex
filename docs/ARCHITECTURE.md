@@ -37,10 +37,20 @@ exactly one unit.
 ## Fast path (per keystroke)
 
 1. `apply_edit` updates the buffer, re-segments a window around the edit, keeps ids stable, bumps
-   `source_revision`.
-2. The touched span is classified (paragraph / environment / heading) and checked against the
-   allow-list; it must map to exactly one unit of the latest layout whose capture facts are
-   clean (replayable `\everypar`, no direction changes, placed rows, a context).
+   `source_revision`. Across a boundary change the first new span keeps the id of the first old
+   span when it starts at the same byte (a split's first half, a merged paragraph), spans that
+   only border the edit keep theirs, and the rest get fresh ids; removed spans are announced as
+   `ParagraphUpdate{status: "removed"}` so hosts clear them.
+2. Every touched or created span is classified (paragraph / environment / heading) and checked
+   against the allow-list; it must map to exactly one unit of the latest layout whose capture
+   facts are clean (replayable `\everypar`, no direction changes, placed rows, a context). A
+   plain paragraph the layout does not know yet (a split's second half, a paragraph typed fresh)
+   **borrows** the context of the nearest paragraph unit before it (after it when there is none):
+   same parameters, fonts and counters, with the paragraph-start state of a paragraph that follows
+   a paragraph (or a heading when a heading span precedes it). Its rows are placed right after the
+   parent's current rows (exact for consecutive paragraphs with the same baselineskip and no
+   parskip), `approximate` and `context_stale`; the next layout replaces the borrowed context with
+   a captured one.
 3. The request goes straight to the server when it is idle and already holds the unit's context
    (no engine-thread wake-up on the keystroke path); otherwise it is queued, latest per unit. The
    server replays the context, typesets the source in a `\vbox`, restores the counters, checks

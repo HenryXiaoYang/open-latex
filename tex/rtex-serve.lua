@@ -518,7 +518,7 @@ function S.step()
   if not line then log("stdin closed"); S.stop(); return end
   local c = line:byte(1)
   if c == 67 then -- 'C': compile frame
-    local req_id, ctx_id, len = line:match("^C (%d+) (%d+) (%d+)$")
+    local req_id, ctx_id, len = line:match("^C (%d+) (%-?%d+) (%d+)$")
     if not req_id then
       send{ op = "error", message = "bad compile frame: " .. line }
       return

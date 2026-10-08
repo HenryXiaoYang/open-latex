@@ -79,18 +79,76 @@ fn boundary_change_and_preamble_change() {
     let Event::LayoutUpdate { eligible_paragraphs, .. } = wait_layout(&s) else { unreachable!() };
     let doc = s.document_text("main.tex").unwrap();
     let spans = s.spans("main.tex");
-    let body = spans.iter().find(|sp| eligible_paragraphs.contains(&sp.id)).unwrap();
-    // split the paragraph with a blank line
+    // the longest eligible paragraph (several lines, so a split leaves a multi-line second half)
+    let body = spans.iter().filter(|sp| eligible_paragraphs.contains(&sp.id)).max_by_key(|sp| sp.range.len()).unwrap();
+    // split the paragraph with a blank line: the first half keeps its id and context, the
+    // second half borrows one and is placed after the first; both are typeset live
     let pos = body.range.start + doc[body.range.clone()].find(' ').unwrap();
     let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "\n\n".into() }).unwrap();
-    assert_eq!(r.routed, "background");
-    assert_eq!(r.outcome.removed.len(), 1);
-    assert_eq!(r.outcome.added.len(), 2);
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    assert_eq!(r.outcome.touched, vec![body.id]);
+    assert!(r.outcome.removed.is_empty());
+    assert_eq!(r.outcome.added.len(), 1);
+    let second = r.outcome.added[0];
+    let mut seen_first = false;
+    let mut seen_second = false;
+    for _ in 0..2 {
+        let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+        let Some(Event::ParagraphUpdate { par_id, status, fragments, pagination_stale, context_stale, dl, .. }) = ev else { panic!("no update") };
+        assert_eq!(status, "ok");
+        assert!(!fragments.is_empty());
+        if par_id == body.id {
+            seen_first = true;
+            assert_eq!(dl.lines.len(), 1);
+        } else {
+            assert_eq!(par_id, second);
+            seen_second = true;
+            assert!(pagination_stale && context_stale);
+            assert!(fragments[0].approximate);
+            assert!(dl.lines.len() >= 1);
+        }
+    }
+    assert!(seen_first && seen_second);
+    // a keystroke in the new paragraph stays live before the next layout
+    let spans1 = s.spans("main.tex");
+    let newspan = spans1.iter().find(|sp| sp.id == second).unwrap();
+    let p1 = newspan.range.start + 3;
+    let r1 = s.apply_edit("main.tex", Edit { start_byte: p1, end_byte: p1, text: "z".into() }).unwrap();
+    assert_eq!(r1.routed, "fast", "{:?}", r1.reasons);
+    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == second));
+    assert!(ev.is_some());
+    // merge the halves back: the first id survives, the second is announced as removed, the
+    // merged paragraph is live with the first half's context
+    let r2 = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos + 2, text: String::new() }).unwrap();
+    assert_eq!(r2.routed, "fast", "{:?}", r2.reasons);
+    assert_eq!(r2.outcome.touched, vec![body.id]);
+    assert_eq!(r2.outcome.removed, vec![second]);
+    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == second && status == "removed"));
+    assert!(ev.is_some(), "removed update for the merged-away span");
+    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == body.id && status == "ok"));
+    let Some(Event::ParagraphUpdate { dl, .. }) = ev else { panic!("no update for the merged paragraph") };
+    assert!(dl.lines.len() > 1);
+    // a paragraph typed above the first one: the existing paragraph is untouched (it keeps its
+    // id, context and anchor), the new one has no paragraph before it, so it borrows the context
+    // of the paragraph after it and is placed above that paragraph
+    let spans_b = s.spans("main.tex");
+    let first_body = spans_b.iter().find(|sp| sp.kind == rtex_core::document::SpanKind::Body).unwrap();
+    let at = first_body.range.start;
+    let r3 = s.apply_edit("main.tex", Edit { start_byte: at, end_byte: at, text: "Fresh words typed above the first paragraph.\n\n".into() }).unwrap();
+    assert_eq!(r3.routed, "fast", "{:?}", r3.reasons);
+    assert!(r3.outcome.touched.is_empty() && r3.outcome.removed.is_empty(), "{:?}", r3.outcome);
+    assert_eq!(r3.outcome.added.len(), 1);
+    let fresh = r3.outcome.added[0];
+    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == fresh));
+    let Some(Event::ParagraphUpdate { status, fragments, dl, .. }) = ev else { panic!("no update for the fresh paragraph") };
+    assert_eq!(status, "ok");
+    assert_eq!(dl.lines.len(), 1);
+    assert!(!fragments.is_empty() && fragments[0].approximate);
     let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else { unreachable!() };
-    assert_eq!(versions.layout_version, 2);
-    // new spans are eligible again after the pass
+    assert!(versions.layout_version >= 2);
+    // the split-off span is eligible with a captured context after the pass
     let spans2 = s.spans("main.tex");
-    let newspan = spans2.iter().find(|sp| sp.id == r.outcome.added[1]).unwrap();
+    let newspan = spans2.iter().find(|sp| sp.id == fresh).unwrap();
     let p2 = newspan.range.start + 3;
     let r2 = s.apply_edit("main.tex", Edit { start_byte: p2, end_byte: p2, text: "x".into() }).unwrap();
     assert_eq!(r2.routed, "fast", "{:?}", r2.reasons);
@@ -107,7 +165,7 @@ fn boundary_change_and_preamble_change() {
     let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else { unreachable!() };
     assert_eq!(versions.layout_version, 3);
     let spans3 = s.spans("main.tex");
-    let any = spans3.iter().find(|sp| sp.id == r.outcome.added[1]).unwrap();
+    let any = spans3.iter().find(|sp| sp.id == fresh).unwrap();
     let p3 = any.range.start + 3;
     let r4 = s.apply_edit("main.tex", Edit { start_byte: p3, end_byte: p3, text: "y".into() }).unwrap();
     assert_eq!(r4.routed, "fast", "{:?}", r4.reasons);

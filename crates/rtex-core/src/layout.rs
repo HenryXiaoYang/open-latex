@@ -215,6 +215,36 @@ impl LayoutStore {
         Ok((store, fb))
     }
 
+    /// Page positions for the rows of a unit the layout has no placement for, relative to a
+    /// neighbouring unit that has one. `after`: the rows follow the parent's rows, of which the
+    /// parent currently shows `parent_rows` (its last fast result; its placement count when
+    /// unknown) — exact for consecutive paragraphs with the same baselineskip and no parskip;
+    /// otherwise the rows end one baselineskip above the parent's first row. Always approximate.
+    pub fn fragments_relative(&self, parent: ParaId, parent_rows: Option<i64>, after: bool, rows: &[(Sp, Sp)]) -> Option<Vec<Fragment>> {
+        let eu = self.unit(parent)?;
+        let pl = &eu.captured.placements;
+        if pl.is_empty() || rows.is_empty() {
+            return None;
+        }
+        let bs = eu.baselineskip().max(1);
+        let (fx, fy) = rows[0];
+        let (page, ax, ay) = if after {
+            let idx = parent_rows.unwrap_or(pl.len() as i64).max(0) as usize;
+            if idx < pl.len() {
+                (pl[idx].page, pl[idx].x, pl[idx].y)
+            } else {
+                let last = pl.last().unwrap();
+                (last.page, last.x, last.y + (idx as i64 - (pl.len() as i64 - 1)) * bs)
+            }
+        } else {
+            let (_, ly) = rows[rows.len() - 1];
+            (pl[0].page, pl[0].x, pl[0].y - bs - (ly - fy))
+        };
+        let xs: Vec<Sp> = rows.iter().map(|(rx, _)| ax + (rx - fx)).collect();
+        let baselines: Vec<Sp> = rows.iter().map(|(_, ry)| ay + (ry - fy)).collect();
+        Some(vec![Fragment { page, first_line: 1, last_line: rows.len() as i64, x: xs[0], xs, baselines, approximate: true }])
+    }
+
     /// Page positions for the rows of a fast result. `rows` are the (x, baseline) of each row in
     /// the fast box's own coordinates. Within a page the rows keep the fast box's geometry,
     /// anchored at the page's first placed row; rows beyond the cached placements continue on the

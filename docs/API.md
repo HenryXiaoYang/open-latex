@@ -14,7 +14,7 @@ let r = session.apply_edit("main.tex", Edit { start_byte, end_byte, text })?;
 
 for ev in session.poll(std::time::Duration::from_millis(16)) {
     match ev {
-        Event::ParagraphUpdate { par_id, fragments, dl, pagination_stale, context_stale, versions, .. } => { /* draw */ }
+        Event::ParagraphUpdate { par_id, status, fragments, dl, pagination_stale, context_stale, versions, .. } => { /* draw; status "removed": the span is gone, clear it */ }
         Event::LayoutUpdate { versions, convergence, pages_changed, placements, pdf_fallback, .. } => { /* replace pages */ }
         Event::Diagnostics { source, items } => { /* show */ }
         Event::EngineState { engine_generation, state, reason } => { /* status bar */ }

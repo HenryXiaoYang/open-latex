@@ -19,6 +19,8 @@ question is when the *typeset* view catches up.
 | Figures and tables (`figure`/`table` with `\includegraphics`, `tabular`, `booktabs` rules, `\caption`) | content in **real time** at the float's last position; a moved float after the next pass | float unit, float-box state replayed; placement is page-global |
 | Headings (`\chapter`, `\section`, …) | **real time**; TOC and running heads after the next pass | heading unit |
 | A unit that changes its row count (grows/shrinks) | unit in real time (rows placed with its own geometry); following material after the next pass | page breaks are global; `pagination_stale` says so |
+| Splitting a paragraph (Enter + blank line), merging two, typing a new paragraph | **real time**: the known half keeps its context, the new paragraph borrows its neighbour's (counters may lag by one until the next pass) and is placed right after it | borrowed contexts are `context_stale`, placements `approximate` |
+| `tabularx` | background | the environment's trial typesetting leaves the unit without rows in the capture; not allow-listed yet |
 | TikZ/PGF diagrams, `\pdfliteral` drawing | background, and the page renders through the **PDF fallback** | not representable in the display list |
 | `minipage`/`parbox` blocks, `\marginpar`, `\verb`, verbatim | background | not allow-listed |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
