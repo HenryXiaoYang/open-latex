@@ -19,9 +19,20 @@ fn open(name: &str) -> Option<(Session, std::path::PathBuf)> {
     Some((Session::open(cfg).unwrap(), project))
 }
 
+/// `Session::wait_for` hands back the events it skipped; a test that waits for several things in
+/// sequence must requeue them, or a layout that lands while it waits for an engine restart (slow
+/// on CI) is lost.
+fn wait(s: &Session, secs: u64, pred: impl FnMut(&Event) -> bool) -> (Option<Event>, Vec<Event>) {
+    let (ev, others) = s.wait_for(Duration::from_secs(secs), pred);
+    for o in others.iter() {
+        s.requeue(o.clone());
+    }
+    (ev, others)
+}
+
 fn wait_layout(s: &Session) -> Event {
     let t0 = std::time::Instant::now();
-    let (ev, others) = s.wait_for(Duration::from_secs(120), |e| matches!(e, Event::LayoutUpdate { .. }));
+    let (ev, others) = wait(s, 120, |e| matches!(e, Event::LayoutUpdate { .. }));
     eprintln!("[test] wait_layout: {:?} after {:.1}s ({} other events)", ev.as_ref().map(|e| match e { Event::LayoutUpdate { versions, convergence, passes, wall_ms, compile, .. } => format!("layout v{} {:?} {:?} passes {} {} ms", versions.layout_version, compile, convergence, passes, wall_ms), _ => String::new() }), t0.elapsed().as_secs_f64(), others.len());
     if ev.is_none() {
         eprintln!("[test] convergence: {:?}", s.convergence());
@@ -51,7 +62,7 @@ fn fast_path_edit_produces_paragraph_update_with_fragments() {
     let pos = body.range.start + doc[body.range.clone()].find(' ').unwrap();
     let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: " inserted".into() }).unwrap();
     assert_eq!(r.routed, "fast", "{:?}", r.reasons);
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
     let Some(Event::ParagraphUpdate { par_id, status, fragments, dl, versions: v2, edit_id, .. }) = ev else { panic!("no paragraph update") };
     assert_eq!(par_id, body.id);
     assert_eq!(status, "ok");
@@ -75,7 +86,7 @@ fn ineligible_edit_goes_to_background_and_reconverges() {
     let r = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: " \\parbox{3cm}{boxed text}.".into() }).unwrap();
     assert_eq!(r.routed, "background");
     assert!(r.reasons.iter().any(|x| x.contains("parbox")), "{:?}", r.reasons);
-    let (ev, _) = s.wait_for(Duration::from_secs(10), |e| matches!(e, Event::BackgroundScheduled { .. }));
+    let (ev, _) = wait(&s, 10, |e| matches!(e, Event::BackgroundScheduled { .. }));
     assert!(ev.is_some());
     assert!(matches!(s.convergence(), Some(Convergence::Stale { .. })));
     let Event::LayoutUpdate { versions, convergence, compile, .. } = wait_layout(&s) else { unreachable!() };
@@ -106,7 +117,7 @@ fn boundary_change_and_preamble_change() {
     let mut seen_first = false;
     let mut seen_second = false;
     for _ in 0..2 {
-        let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+        let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
         let Some(Event::ParagraphUpdate { par_id, status, fragments, pagination_stale, context_stale, dl, .. }) = ev else { panic!("no update") };
         assert_eq!(status, "ok");
         assert!(!fragments.is_empty());
@@ -129,7 +140,7 @@ fn boundary_change_and_preamble_change() {
     let p1 = newspan.range.start + 3;
     let r1 = s.apply_edit("main.tex", Edit { start_byte: p1, end_byte: p1, text: "z".into() }).unwrap();
     assert_eq!(r1.routed, "fast", "{:?}", r1.reasons);
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == second));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == second));
     assert!(ev.is_some());
     step("merge");
     // merge the halves back: the first id survives, the second is announced as removed, the
@@ -138,9 +149,9 @@ fn boundary_change_and_preamble_change() {
     assert_eq!(r2.routed, "fast", "{:?}", r2.reasons);
     assert_eq!(r2.outcome.touched, vec![body.id]);
     assert_eq!(r2.outcome.removed, vec![second]);
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == second && status == "removed"));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == second && status == "removed"));
     assert!(ev.is_some(), "removed update for the merged-away span");
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == body.id && status == "ok"));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { par_id, status, .. } if *par_id == body.id && status == "ok"));
     let Some(Event::ParagraphUpdate { dl, .. }) = ev else { panic!("no update for the merged paragraph") };
     assert!(dl.lines.len() > 1);
     step("fresh paragraph above the first");
@@ -155,7 +166,7 @@ fn boundary_change_and_preamble_change() {
     assert!(r3.outcome.touched.is_empty() && r3.outcome.removed.is_empty(), "{:?}", r3.outcome);
     assert_eq!(r3.outcome.added.len(), 1);
     let fresh = r3.outcome.added[0];
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == fresh));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == fresh));
     let Some(Event::ParagraphUpdate { status, fragments, dl, .. }) = ev else { panic!("no update for the fresh paragraph") };
     assert_eq!(status, "ok");
     assert_eq!(dl.lines.len(), 1);
@@ -169,7 +180,7 @@ fn boundary_change_and_preamble_change() {
     let p2 = newspan.range.start + 3;
     let r2 = s.apply_edit("main.tex", Edit { start_byte: p2, end_byte: p2, text: "x".into() }).unwrap();
     assert_eq!(r2.routed, "fast", "{:?}", r2.reasons);
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
     assert!(ev.is_some());
     step("preamble change");
     // preamble change: engine generation bumps, server restarts, edits still work afterwards
@@ -178,16 +189,23 @@ fn boundary_change_and_preamble_change() {
     let r3 = s.apply_edit("main.tex", Edit { start_byte: pos, end_byte: pos, text: "\\usepackage{xspace}\n".into() }).unwrap();
     assert_eq!(r3.routed, "preamble");
     assert!(s.versions().engine_generation > gen_before);
-    let (ready, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::EngineState { state, .. } if state == "Ready"));
+    let (ready, _) = wait(&s, 60, |e| matches!(e, Event::EngineState { state, .. } if state == "Ready"));
     assert!(ready.is_some());
-    let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else { unreachable!() };
-    assert_eq!(versions.layout_version, 3);
+    // the layout compiled from a snapshot at or after the preamble edit (earlier passes may
+    // still deliver first)
+    let versions = loop {
+        let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else { unreachable!() };
+        if versions.source_revision >= r3.source_revision {
+            break versions;
+        }
+    };
+    assert!(versions.layout_version >= 3);
     let spans3 = s.spans("main.tex");
     let any = spans3.iter().find(|sp| sp.id == fresh).unwrap();
     let p3 = any.range.start + 3;
     let r4 = s.apply_edit("main.tex", Edit { start_byte: p3, end_byte: p3, text: "y".into() }).unwrap();
     assert_eq!(r4.routed, "fast", "{:?}", r4.reasons);
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
     let Some(Event::ParagraphUpdate { versions, status, .. }) = ev else { panic!("no update after restart") };
     assert_eq!(status, "ok");
     assert_eq!(versions.engine_generation, s.versions().engine_generation);
@@ -209,7 +227,7 @@ fn stale_results_are_discarded() {
     }
     let last = last.unwrap();
     let final_hash = s.spans("main.tex").iter().find(|sp| sp.id == body.id).unwrap().hash;
-    let (ev, _) = s.wait_for(Duration::from_secs(60), |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
     let Some(Event::ParagraphUpdate { edit_id, versions, .. }) = ev else { panic!("no update") };
     // whichever request got through, it was compiled from the final text (coalescing + discard)
     assert!(edit_id <= last.edit_id);

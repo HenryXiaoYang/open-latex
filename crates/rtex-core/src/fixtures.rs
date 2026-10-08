@@ -321,7 +321,7 @@ pub fn generate(pages: u32, variant: Variant, fonts: FontSet, seed: u64, out: &P
     std::fs::write(out.join("main.tex"), main)?;
     if mixed {
         std::fs::create_dir_all(out.join("images"))?;
-    std::fs::write(out.join("images").join("figure.png"), png_placeholder())?;
+        std::fs::write(out.join("images").join("figure.png"), png_placeholder())?;
         std::fs::write(
             out.join("refs.bib"),
             "@article{knuth1981,\n  author = {Donald E. Knuth and Michael F. Plass},\n  title = {Breaking paragraphs into lines},\n  journal = {Software: Practice and Experience},\n  year = {1981},\n  volume = {11},\n  number = {11},\n  pages = {1119--1184}\n}\n",
