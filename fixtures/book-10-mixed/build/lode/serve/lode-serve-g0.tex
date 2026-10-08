@@ -1,6 +1,0 @@
-\input{/home/user/open-latex/fixtures/book-10-mixed/build/lode/serve/lode-preamble.tex}
-\newbox\lodebox\newcount\lodecontinue\lodecontinue=1
-\begin{document}
-\directlua{lode_serve = dofile(kpse.find_file("lode-serve.lua", "lua") or "lode-serve.lua") lode_serve.init(\number\lodebox, \number\allocationnumber)}
-\loop\directlua{lode_serve.step()}\ifnum\lodecontinue>0 \repeat
-\end{document}

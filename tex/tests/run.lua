@@ -6,7 +6,7 @@ local function check(name, cond, detail)
 end
 
 -- JSON round trip
-local json = dofile("tex/lode-json.lua")
+local json = dofile("tex/rtex-json.lua")
 local v = { a = 1, b = { 1, 2, 3 }, c = "x\"y\\z\n", d = true, e = 2.5, f = {} }
 local s = json.encode(v)
 local back = json.decode(s)
@@ -15,7 +15,7 @@ check("json roundtrip arrays", #back.b == 3 and back.b[3] == 3)
 check("json decode unicode escape", json.decode('"\\u00e9\\ud83d\\ude00"') == "é😀")
 check("json decode nested", json.decode('{"x":[{"y":null},{"y":-3e2}]}').x[2].y == -300)
 
--- lode-dl arithmetic (stub the node library enough to load the module)
+-- rtex-dl arithmetic (stub the node library enough to load the module)
 node = node or {}
 node.types = node.types or function() return { [0] = "hlist", [1] = "vlist", [2] = "rule", [29] = "glyph", [12] = "glue", [13] = "kern", [28] = "margin_kern", [7] = "disc", [11] = "math", [8] = "whatsit", [14] = "penalty", [9] = "local_par", [10] = "dir", [3] = "ins", [4] = "mark", [5] = "adjust", [6] = "boundary" } end
 node.whatsits = node.whatsits or function() return { [0] = "open", [1] = "write", [2] = "close", [8] = "late_lua", [22] = "pdf_literal", [28] = "pdf_colorstack", [3] = "special", [6] = "save_pos", [7] = "user_defined", [29] = "pdf_setmatrix", [30] = "pdf_save", [31] = "pdf_restore" } end
@@ -24,7 +24,7 @@ node.direct = node.direct or setmetatable({}, { __index = function() return func
 node.type = node.type or function(id) return node.types()[id] end
 font = font or { getfont = function() return nil end }
 tex = tex or { hoffset = 0, voffset = 0, pagewidth = 0, pageheight = 0 }
-local dl = dofile("tex/lode-dl.lua")
+local dl = dofile("tex/rtex-dl.lua")
 check("tex_round positive", dl.tex_round(2.5) == 3 and dl.tex_round(2.4999) == 2)
 check("tex_round negative", dl.tex_round(-2.5) == -3 and dl.tex_round(-2.4999) == -2)
 -- round_xn_over_d against exact rational rounding

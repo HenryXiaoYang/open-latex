@@ -1,8 +1,8 @@
 -- E10: backend position oracle. Insert zero-width late_lua whatsits before every glyph of the
 -- tagged lines; at shipout the backend executes them and pdf.getpos() reports its cursor.
--- Compare with lode-dl's traversal of the same page box.
-local dl = dofile(kpse.find_file("lode-dl.lua", "lua") or "../lode-dl.lua")
-E10 = { oracle = {}, n = 0, attr = luatexbase.new_attribute("lode_par"), attr_line = luatexbase.new_attribute("lode_line"), seq = 0 }
+-- Compare with rtex-dl's traversal of the same page box.
+local dl = dofile(kpse.find_file("rtex-dl.lua", "lua") or "../rtex-dl.lua")
+E10 = { oracle = {}, n = 0, attr = luatexbase.new_attribute("rtex_par"), attr_line = luatexbase.new_attribute("rtex_line"), seq = 0 }
 function E10.record(id)
   local x, y = pdf.getpos()
   E10.oracle[id] = { x = x, y = y }

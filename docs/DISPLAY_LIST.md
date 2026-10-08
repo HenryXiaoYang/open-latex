@@ -1,6 +1,6 @@
-# Display list format (lode 0.0.2, binary encoding revision 1)
+# Display list format (rtex 0.0.2, binary encoding revision 1)
 
-A display list is what lode hands a host to draw: positioned glyphs, rules, images, color
+A display list is what rtex hands a host to draw: positioned glyphs, rules, images, color
 operations and markers, in scaled points (sp; 65536 sp = 1 pt; 65781.76 sp = 1 bp), y growing
 downward. Two framings exist:
 
@@ -84,8 +84,8 @@ until the next layout (`ParagraphUpdate.reasons` lists `inserts`).
 
 ## JSON mirror
 
-`lode dl2json` / `lode_dl_to_json` convert the binary form to the JSON shape used by
-`lode-dl.lua` and `lode_dl::DisplayList` (`{"kind","unit","fonts","lines":[{"par","i","x","y","w",
+`rtex dl2json` / `rtex_dl_to_json` convert the binary form to the JSON shape used by
+`rtex-dl.lua` and `rtex_dl::DisplayList` (`{"kind","unit","fonts","lines":[{"par","i","x","y","w",
 "h","d","gs","gsign","gorder","items":[["g",font,char,index,x,y,w,ef],["r",x,y_top,w,h],
 ["c",stack,cmd,data],["l",mode,data],["u",kind,detail],["m","on"|"off",x],["i",index,x,y_top,w,h],
 ["M","save"|"set"|"restore",x,y,data]]}],

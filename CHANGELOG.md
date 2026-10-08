@@ -7,7 +7,7 @@
   `apply_edit` when the server is idle, lazy context upload, windowed re-segmentation next to the
   preamble. Short-paragraph round trip through a session: 0.63 ms → 0.40 ms on the reference
   container (docs/BENCHMARKS.md).
-- `lode probe`: latency breakdown of the fast path (direct server, in-engine profile, session).
+- `rtex probe`: latency breakdown of the fast path (direct server, in-engine profile, session).
 - Fast path generalized from paragraphs to **units**: paragraphs with display math (`\[ \]`,
   `equation`, amsmath `align`/`gather`/`multline`), footnote marks, `\ref`/`\eqref`/`\pageref`/
   `\cite`/`\label`; block environments (lists, `quote`, `center`, theorem-like, `figure`/`table`
@@ -18,8 +18,8 @@
   each page's first row. A per-unit fast budget (5 ms) routes slow units to the background path.
 - Display list: `LINE_UNIT`, `IMAGE_INFO` and `MATRIX` records (graphicx scaling is now exact,
   not degraded); unit lists carry an insert count.
-- `lode gen-book --variant units` fixture; `lode verify` works per unit kind with `--units` and
-  `--dump-rows`; `lode bench` categories display-math/footnote/list/figure/table/heading with
+- `rtex gen-book --variant units` fixture; `rtex verify` works per unit kind with `--units` and
+  `--dump-rows`; `rtex bench` categories display-math/footnote/list/figure/table/heading with
   5 ms × h and size-independence gates.
 - Measured on the reference container (100-page book, per keystroke): display-math paragraph
   1.33 ms, footnote paragraph 2.38 ms, list 1.60 ms, figure 1.91 ms, table 1.34 ms, heading

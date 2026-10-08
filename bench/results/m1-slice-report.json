@@ -350,7 +350,7 @@
       }
     ]
   },
-  "project": "/home/user/open-latex/build/fx/book-10-pure",
+  "project": "/home/user/realtime-tex/build/fx/book-10-pure",
   "roundtrip_ms": {
     "amortized_median": 3.52795225,
     "amortized_p95": 3.73164515,

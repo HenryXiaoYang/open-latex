@@ -12,5 +12,5 @@ report("runtoks(fn, grouped=true)", function() tex.runtoks(function() tex.print(
 tex.toks[255] = "\\setbox0\\vbox{" .. src .. "\\par}"
 report("runtoks(toks register)", function() tex.runtoks(255) end, 200)
 report("settoks+runtoks(register)", function() tex.toks[255] = "\\setbox0\\vbox{" .. src .. "\\par}"; tex.runtoks(255) end, 200)
-report("runtoks(macro cs)", function() tex.runtoks("lodeRunMacro") end, 200)
+report("runtoks(macro cs)", function() tex.runtoks("rtexRunMacro") end, 200)
 report("quittoks after print", function() tex.runtoks(function() tex.print("\\setbox0\\vbox{" .. src .. "\\par}") tex.quittoks() end) end, 200)

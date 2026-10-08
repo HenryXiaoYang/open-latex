@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a minimal TeX Live suitable for lode (LuaLaTeX + fontspec + microtype + biber).
+# Install a minimal TeX Live suitable for rtex (LuaLaTeX + fontspec + microtype + biber).
 #
 # Usage: scripts/install-texlive.sh [TEXDIR]
 #   TL_REPO   override the CTAN tlnet mirror (default: a pinned mirror known to work)
@@ -59,7 +59,7 @@ luaotfload-tool --update --force >/dev/null 2>&1 || true
 
 mkdir -p "$REPO_ROOT/build"
 cat > "$REPO_ROOT/build/texlive.env" <<ENV
-export LODE_TEXLIVE_BIN="$BIN"
+export RTEX_TEXLIVE_BIN="$BIN"
 export PATH="$BIN:\$PATH"
 export TEXMFVAR="$TEXDIR/texmf-var"
 export TEXMFCONFIG="$TEXDIR/texmf-config"

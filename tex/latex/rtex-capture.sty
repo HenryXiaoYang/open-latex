@@ -1,0 +1,38 @@
+%% rtex-capture.sty — record unit/paragraph contexts, row placements and page display lists
+%% during a normal LuaLaTeX run. Adds no nodes; output is unchanged (verified by tests).
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{rtex-capture}[2026/10/07 v0.0.2 rtex layout capture]
+\RequirePackage{luatexbase}
+\directlua{
+  rtex_capture = dofile(kpse.find_file("rtex-capture.lua", "lua") or "rtex-capture.lua")
+  rtex_capture.setup{ jobname = tex.jobname }
+}
+\AddToHook{begindocument/end}{\directlua{rtex_capture.begin_document()}}
+\AddToHook{para/begin}{\directlua{rtex_capture.parbegin()}}
+\AddToHook{para/after}{\directlua{rtex_capture.parafter()}}
+\AddToHook{shipout/before}{\directlua{rtex_capture.shipout(\number\ShipoutBox)}}
+\AddToHook{cmd/@outputpage/before}{\directlua{rtex_capture.output_begin()}}
+\AddToHook{cmd/@afterheading/before}{\directlua{rtex_capture.afterheading()}}
+\AddToHook{enddocument/afterlastpage}{\directlua{rtex_capture.finish()}}
+% Unit boundaries: block environments and sectioning commands. Extra block environments
+% (theorem-like) come from $RTEX_UNIT_ENVS, comma separated.
+\directlua{
+  token.set_macro("rtex@blockenvs", table.concat(rtex_capture.BLOCK_ENVS, ","))
+  token.set_macro("rtex@headings", table.concat(rtex_capture.HEADINGS, ","))
+}
+\def\rtex@hookenv#1{%
+  \edef\rtex@tmp{\noexpand\AddToHook{env/#1/begin}{\noexpand\directlua{rtex_capture.envbegin("#1")}}%
+    \noexpand\AddToHook{env/#1/after}{\noexpand\directlua{rtex_capture.envafter("#1")}}}%
+  \rtex@tmp}
+\def\rtex@hookheading#1{%
+  \edef\rtex@tmp{\noexpand\AddToHook{cmd/#1/before}{\noexpand\directlua{rtex_capture.heading("#1")}}}%
+  \rtex@tmp}
+\@for\rtex@n:=\rtex@blockenvs\do{\expandafter\rtex@hookenv\expandafter{\rtex@n}}
+\@for\rtex@n:=\rtex@headings\do{\expandafter\rtex@hookheading\expandafter{\rtex@n}}
+% Map image resource indices to files so IMAGE display-list items can name their source.
+\AddToHook{package/graphicx/after}{%
+  \AddToHook{cmd/Gin@setfile/after}{%
+    \directlua{rtex_capture.image(\number\lastsavedimageresourceindex,
+      "\luaescapestring{\Gin@base\Gin@ext}", "\luaescapestring{\Gin@page}",
+      \number\lastsavedimageresourcepages)}}}
+\endinput

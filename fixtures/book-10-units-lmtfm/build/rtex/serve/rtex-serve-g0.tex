@@ -1,0 +1,7 @@
+\input{/home/user/realtime-tex/fixtures/book-10-units-lmtfm/build/rtex/serve/rtex-preamble.tex}
+\newbox\rtexbox\newcount\rtexcontinue\rtexcontinue=1 \edef\rtexcountnum{\number\allocationnumber}\newcatcodetable\rtexcct{\makeatletter\savecatcodetable\rtexcct}
+\begin{document}
+\directlua{rtex_serve = dofile(kpse.find_file("rtex-serve.lua", "lua") or "rtex-serve.lua") rtex_serve.init(\number\rtexbox, \rtexcountnum, \number\rtexcct)}
+\makeatletter\IfPackageLoadedTF{graphicx}{\AddToHook{cmd/Gin@setfile/after}{\directlua{rtex_serve.image(\number\lastsavedimageresourceindex,"\luaescapestring{\Gin@base\Gin@ext}","\luaescapestring{\Gin@page}",\number\lastsavedimageresourcepages)}}}{}\makeatother
+\loop\rtexstep\ifnum\rtexcontinue>0 \repeat
+\end{document}

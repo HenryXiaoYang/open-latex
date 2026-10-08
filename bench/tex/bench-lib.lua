@@ -6,9 +6,9 @@
 local M = {}
 local gettime = os.gettimeofday
 
-M.INNER   = tonumber(os.getenv("LODE_BENCH_INNER"))   or 100
-M.WARMUP  = tonumber(os.getenv("LODE_BENCH_WARMUP"))  or 5
-M.SAMPLES = tonumber(os.getenv("LODE_BENCH_SAMPLES")) or 30
+M.INNER   = tonumber(os.getenv("RTEX_BENCH_INNER"))   or 100
+M.WARMUP  = tonumber(os.getenv("RTEX_BENCH_WARMUP"))  or 5
+M.SAMPLES = tonumber(os.getenv("RTEX_BENCH_SAMPLES")) or 30
 
 local t0 = 0
 local results = {}   -- name -> list of per-sample ms (incl. warmup)
@@ -82,7 +82,7 @@ end
 
 -- Write machine-readable CSV next to the job.
 function M.write_csv(path)
-  path = os.getenv("LODE_BENCH_CSV") or path
+  path = os.getenv("RTEX_BENCH_CSV") or path
   local f = assert(io.open(path, "w"))
   f:write("category,kind,median_ms,p5_ms,p95_ms,n\n")
   local names = {}

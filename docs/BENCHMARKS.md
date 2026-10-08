@@ -44,21 +44,21 @@ source build/texlive.env
 cd bench/tex
 export max_print_line=100000
 lualatex -interaction=nonstopmode -output-directory=../../build/bench paragraph-benchmark.tex
-LODE_BENCH_CSV=../results/run.csv lualatex -interaction=nonstopmode -output-directory=../../build/bench systematic-benchmark.tex
+RTEX_BENCH_CSV=../results/run.csv lualatex -interaction=nonstopmode -output-directory=../../build/bench systematic-benchmark.tex
 lualatex -interaction=nonstopmode -output-directory=../../build/bench stability-benchmark.tex
 ```
-`LODE_BENCH_INNER`, `LODE_BENCH_WARMUP`, `LODE_BENCH_SAMPLES` override the sample plan.
+`RTEX_BENCH_INNER`, `RTEX_BENCH_WARMUP`, `RTEX_BENCH_SAMPLES` override the sample plan.
 
 ## M1 — vertical slice (warm persistent server, 10-page `pure` fixture)
 
-`lode slice --project build/fx/book-10-pure --edits 300`. Paragraph: 3 typeset lines, 166 glyphs,
+`rtex slice --project build/fx/book-10-pure --edits 300`. Paragraph: 3 typeset lines, 166 glyphs,
 TeX Gyre Pagella 10.95 pt, microtype on, inline math. Host side in Rust (release build), JSON
 display list (provisional format), each edit toggles a trailing word, 2 ms pause between edits.
 
 | Stage | median | P95 |
 |---|---|---|
 | TeX (context replay + macro expansion + line breaking + box) | 1.47 ms | 1.98 ms |
-| Traversal (`lode-dl.lua`) | 0.25 ms | 0.45 ms |
+| Traversal (`rtex-dl.lua`) | 0.25 ms | 0.45 ms |
 | Serialization (JSON, provisional) | 1.21 ms | 1.77 ms |
 | IPC + host-side parse | ≈ 0.54 ms | — |
 | **Round trip, individual edits** | **3.46 ms** | 4.70 ms |
@@ -94,7 +94,7 @@ parameter assignment, `tex.runtoks`), addressed in M6.
 
 ## M6 — where the time goes: the font stack, not the library
 
-Profiling the server (`profile` request, `tex/lode-serve.lua`) shows the replay machinery costs
+Profiling the server (`profile` request, `tex/rtex-serve.lua`) shows the replay machinery costs
 microseconds per request: empty `tex.runtoks` 1 µs, parameter replay 6 µs, group + `\vbox` 12 µs,
 state fingerprint 6 µs. The TeX stage is the paragraph's own typesetting. How long that takes
 depends on how the fonts are set up (`bench/tex/systematic-benchmark.tex` with different
@@ -121,7 +121,7 @@ The fixtures therefore come in three font setups: `*-pure-lmtfm` (paper-like TFM
 
 ## M6 — gates and their rationale
 
-The `lode bench` gates (plan §12), hardware-qualified by `h = max(h_short, h_medium)` from the
+The `rtex bench` gates (plan §12), hardware-qualified by `h = max(h_short, h_medium)` from the
 in-engine replica run on the same machine in the same session:
 
 | Gate | Limit | Why |
@@ -178,7 +178,7 @@ serialization 0.354 ≤ 0.5 ms, IPC + host overhead 0.51 / 0.58 ≤ 0.68 ms. Ove
 
 ## Upstream benchmark (texlode/luatex-benchmark, vendored verbatim in `bench/upstream/`)
 
-The paper's own scripts, run unmodified on this machine (TeX Live 2026). `lode bench` uses this
+The paper's own scripts, run unmodified on this machine (TeX Live 2026). `rtex bench` uses this
 `systematic-benchmark.tex` to derive the hardware factor; our replica in `bench/tex/` remains for
 single-edit timings and CSV output but uses different paragraph texts.
 
@@ -194,9 +194,9 @@ single-edit timings and CSV output but uses different paragraph texts.
 0.119 / 0.115 / 0.113 ms and multi-line 2.545 / 2.543 / 2.545 ms over compiles 1–50 / 226–275 /
 451–500 — no degradation, matching the paper's Table 2 pattern.
 
-## 0.0.2 — latency work (`lode probe`)
+## 0.0.2 — latency work (`rtex probe`)
 
-`lode probe --project fixtures/book-10-pure-lmtfm` prints the breakdown that drove the 0.0.2
+`rtex probe --project fixtures/book-10-pure-lmtfm` prints the breakdown that drove the 0.0.2
 changes: direct server round trips (no session threads), in-engine micro-timings (`profile` op)
 and session round trips with host stages. Before / after, short paragraph (1 line), this
 container:
@@ -221,9 +221,9 @@ coalescing, index lookup and packing a renderer needs. Caching font descriptors 
 keystrokes; the `profile` op shows the same box build running 2–3× faster in a hot loop than in
 the real flow.
 
-## 0.0.2 — units (`lode bench`, `bench/results/roundtrip-20261007-1834.md`)
+## 0.0.2 — units (`rtex bench`, `bench/results/roundtrip-20261007-1834.md`)
 
-Categories added to `lode bench`: `display-math` (paragraph containing a display, 3–8 rows),
+Categories added to `rtex bench`: `display-math` (paragraph containing a display, 3–8 rows),
 `footnote` (paragraph with a footnote mark, 3–8 rows), `list`, `figure`, `table`, `heading`,
 picked by unit kind from the `units` fixtures (`gen-book --variant units --fonts lm-tfm`).
 Hardware factor this run h = 1.30; 300 individual edits per cell, 2 ms apart; the session runs

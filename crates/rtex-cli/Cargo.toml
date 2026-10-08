@@ -1,0 +1,23 @@
+[package]
+name = "rtex-cli"
+description = "Headless driver, benchmarks and verification for rtex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rtex"
+path = "src/main.rs"
+
+[dependencies]
+rtex-core = { path = "../rtex-core" }
+rtex-dl = { path = "../rtex-dl" }
+rtex-verify = { path = "../rtex-verify" }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+env_logger.workspace = true
+log.workspace = true
+regex.workspace = true

@@ -663,66 +663,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lode-cli"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "lode-core",
- "lode-dl",
- "lode-verify",
- "log",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "lode-core"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "clap",
- "crossbeam-channel",
- "hex",
- "libc",
- "lode-dl",
- "log",
- "nix",
- "parking_lot",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
-]
-
-[[package]]
-name = "lode-dl"
-version = "0.0.2"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "lode-verify"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "flate2",
- "lode-dl",
- "lopdf",
- "png",
- "serde",
- "serde_json",
- "tiny-skia",
- "ttf-parser",
-]
-
-[[package]]
 name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1047,6 +987,66 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rtex-cli"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "log",
+ "regex",
+ "rtex-core",
+ "rtex-dl",
+ "rtex-verify",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rtex-core"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossbeam-channel",
+ "hex",
+ "libc",
+ "log",
+ "nix",
+ "parking_lot",
+ "regex",
+ "rtex-dl",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "rtex-dl"
+version = "0.0.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "rtex-verify"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "lopdf",
+ "png",
+ "rtex-dl",
+ "serde",
+ "serde_json",
+ "tiny-skia",
+ "ttf-parser",
+]
 
 [[package]]
 name = "rustversion"

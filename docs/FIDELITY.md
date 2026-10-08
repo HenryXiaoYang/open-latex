@@ -1,6 +1,6 @@
 # Fidelity verification
 
-Three independent layers establish that a lode display list places every glyph exactly where
+Three independent layers establish that a rtex display list places every glyph exactly where
 LuaTeX places it. They are deliberately independent so that a bug shared by two implementations
 of the same idea cannot hide.
 
@@ -8,28 +8,28 @@ of the same idea cannot hide.
 
 `tex/experiments/e10-oracle.tex`: a zero-width `late_lua` whatsit is inserted before every glyph
 after line breaking. At shipout LuaTeX's backend executes it and `pdf.getpos()` returns the
-backend's own cursor. The traversal (`tex/lode-dl.lua`) must agree **to the scaled point** with
+backend's own cursor. The traversal (`tex/rtex-dl.lua`) must agree **to the scaled point** with
 that cursor for every glyph. Current status: 369/369 glyphs, 0 sp, across lines with expansion
 factors −2 %, −0.4 %, 0, +0.3 %, +2 %, with font kerns, inter-word glue, italics and inline math.
 This layer does not depend on PDF parsing at all and does not change the typeset output.
 
 ## Layer 1 — fast path vs shipout extractor (sp-exact)
 
-The persistent server typesets the paragraph from its captured context; `lode-capture` runs the
+The persistent server typesets the paragraph from its captured context; `rtex-capture` runs the
 same traversal on the shipped page of a full compile. For the same paragraph the two display
 lists must be identical after translating each page fragment by its first line's placement
 (book-class margins alternate between odd and even pages, so a paragraph that crosses a page
 break has one offset per page): fonts (by stable font key), glyph indices, x/baseline positions,
 advances, expansion factors, line boxes and glue ratios.
 
-Status (`lode verify`): 10-page `pure` fixture 49/49 paragraphs eligible, 21 396/21 396 glyphs
+Status (`rtex verify`): 10-page `pure` fixture 49/49 paragraphs eligible, 21 396/21 396 glyphs
 identical; 10-page `mixed` fixture 29/104 paragraphs eligible (the rest are background-only
 for the reasons the allow-list reports: `\footnote`, `\ref`, `\cite`, `\label`, list items,
 headings, TOC lines, display math, floats), 12 709/12 709 glyphs identical.
 
 ### Units (0.0.2)
 
-Layer 1 runs per **unit** (`lode verify`, `compare_rows` in `crates/lode-cli/src/verify.rs`): the
+Layer 1 runs per **unit** (`rtex verify`, `compare_rows` in `crates/rtex-cli/src/verify.rs`): the
 fast result of every eligible unit — paragraphs with display math and footnote marks, lists,
 quotes, theorem environments, figures with images and captions, tables, headings — is compared
 row by row with the rows of the same unit on the shipped page(s): row box (width, height, depth,
@@ -43,7 +43,7 @@ with differences; the ineligible ones are the `\tableofcontents` line, the bibli
 
 ## Layer 2 — PDF content stream (independent parser, quantified tolerance)
 
-`crates/lode-verify/src/pdftext.rs` replays the PDF text state machine (`Tm Td TD T* TL Tc Tw Tz
+`crates/rtex-verify/src/pdftext.rs` replays the PDF text state machine (`Tm Td TD T* TL Tc Tw Tz
 Ts Tf Tj TJ ' "`), the CTM (`cm q Q`), fills (`re f`) and stroked rules (`w m l S`) using the
 PDF's own `/W` and `/Widths` tables, and `compare.rs` matches every display-list glyph to a PDF
 glyph by glyph index and position.
@@ -69,7 +69,7 @@ Rust parser (same deltas to 10⁻⁵ bp).
 
 ## Layer 3 — rendered comparison
 
-`crates/lode-verify/src/raster.rs` rasterizes the page display list at 150 dpi with the font
+`crates/rtex-verify/src/raster.rs` rasterizes the page display list at 150 dpi with the font
 files it names (OpenType/TrueType outlines via `ttf-parser`, horizontal scale from the expansion
 factor, `slant`/`extend` honoured) and compares it with PyMuPDF's raster of the PDF page. The
 metric is anti-aliasing tolerant: an ink pixel counts as matched if the other image has ink
@@ -88,11 +88,11 @@ degraded.
 
 When the traversal meets something it cannot represent (non-TLT direction, `\pdfliteral`
 drawing, unknown whatsits, …) the page display list carries flags and the page is *Degraded*:
-`lode verify` reports it separately and the library hands hosts the PDF page as fallback (M4).
+`rtex verify` reports it separately and the library hands hosts the PDF page as fallback (M4).
 Both fixtures currently have 0 degraded pages; TOC dot leaders, images and color stacks are
 represented natively.
 
-## Robustness (crates/lode-core/tests/engine_robustness.rs)
+## Robustness (crates/rtex-core/tests/engine_robustness.rs)
 
 Undefined macros and unbalanced braces produce `error` results with diagnostics and leave the
 engine state fingerprint intact; a `\footnote` yields `ok_degraded` with an `ins` flag; a
@@ -103,6 +103,6 @@ results do not depend on request order.
 
 ```bash
 source build/texlive.env
-cargo run --release -p lode-cli -- slice --project build/fx/book-10-pure --edits 200 --json-out build/slice-report.json
+cargo run --release -p rtex-cli -- slice --project build/fx/book-10-pure --edits 200 --json-out build/slice-report.json
 cd tex/experiments && LUAINPUTS=../../tex//: max_print_line=100000 lualatex -output-directory=../../build/exp e10-oracle.tex && grep ^E10 ../../build/exp/e10-oracle.log
 ```

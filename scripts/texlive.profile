@@ -1,4 +1,4 @@
-# TeX Live installation profile for open-latex (lode).
+# TeX Live installation profile for realtime-tex (rtex).
 # Minimal scheme; the package list lives in scripts/install-texlive.sh.
 selected_scheme scheme-infraonly
 instopt_adjustpath 0

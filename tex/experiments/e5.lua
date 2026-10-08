@@ -1,5 +1,5 @@
 -- E5: FIFO for responses + stdin for requests from inside lualatex.
-local path = os.getenv("LODE_RESP")
+local path = os.getenv("RTEX_RESP")
 local ok, f = pcall(io.open, path, "wb")
 texio.write_nl("term and log", "E5 openout_any=" .. tostring(kpse.var_value("openout_any")) ..
   " fifo_open=" .. tostring(ok and f ~= nil) .. " path=" .. tostring(path))

@@ -1,0 +1,6 @@
+\input{/home/user/realtime-tex/fixtures/book-10-mixed/build/rtex/serve/rtex-preamble.tex}
+\newbox\rtexbox\newcount\rtexcontinue\rtexcontinue=1
+\begin{document}
+\directlua{rtex_serve = dofile(kpse.find_file("rtex-serve.lua", "lua") or "rtex-serve.lua") rtex_serve.init(\number\rtexbox, \number\allocationnumber)}
+\loop\directlua{rtex_serve.step()}\ifnum\rtexcontinue>0 \repeat
+\end{document}

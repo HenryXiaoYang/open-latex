@@ -1,6 +1,6 @@
 # Convergence contract
 
-A background pass runs the instrumented full compile (`lode-capture`) on a snapshot of the
+A background pass runs the instrumented full compile (`rtex-capture`) on a snapshot of the
 buffers, repeating while the aux family changes or the log asks for a rerun, up to
 `max_passes` (default 5). `biber`/`bibtex` run between passes when the document asks for them
 (`.bcf` present or `\bibdata` in the aux; `bib_tool` selects the tool or disables this).

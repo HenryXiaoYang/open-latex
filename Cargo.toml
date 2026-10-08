@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/lode-dl", "crates/lode-core", "crates/lode-cli", "crates/lode-verify"]
+members = ["crates/rtex-dl", "crates/rtex-core", "crates/rtex-cli", "crates/rtex-verify"]
 
 [workspace.package]
 version = "0.0.2"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/HenryXiaoYang/open-latex"
+repository = "https://github.com/HenryXiaoYang/realtime-tex"
 
 [workspace.dependencies]
 anyhow = "1"

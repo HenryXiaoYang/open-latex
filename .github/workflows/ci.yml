@@ -14,7 +14,7 @@ jobs:
       - run: cargo build --workspace --release
       - run: cargo test --workspace --lib
       - run: scripts/check-abi.sh
-      - run: cc -Iinclude examples/c/edit_loop.c -Ltarget/release -llode_core -lpthread -ldl -lm -o /tmp/edit_loop
+      - run: cc -Iinclude examples/c/edit_loop.c -Ltarget/release -lrtex_core -lpthread -ldl -lm -o /tmp/edit_loop
   integration:
     runs-on: ubuntu-24.04
     needs: unit
@@ -38,12 +38,12 @@ jobs:
       - run: cargo test --workspace --release
       - name: Fidelity (pure fixture, all three layers)
         run: |
-          cargo run --release -p lode-cli -- gen-book --pages 10 --out build/fx/book-10-pure
-          cargo run --release -p lode-cli -- verify --project build/fx/book-10-pure --raster --json-out build/verify.json
-          cargo run --release -p lode-cli -- gen-book --pages 10 --variant units --fonts lm-tfm --out build/fx/book-10-units
-          cargo run --release -p lode-cli -- verify --project build/fx/book-10-units --json-out build/verify-units.json
+          cargo run --release -p rtex-cli -- gen-book --pages 10 --out build/fx/book-10-pure
+          cargo run --release -p rtex-cli -- verify --project build/fx/book-10-pure --raster --json-out build/verify.json
+          cargo run --release -p rtex-cli -- gen-book --pages 10 --variant units --fonts lm-tfm --out build/fx/book-10-units
+          cargo run --release -p rtex-cli -- verify --project build/fx/book-10-units --json-out build/verify-units.json
       - name: Export equality
-        run: cargo run --release -p lode-cli -- export --project build/fx/book-10-pure --out build/export.pdf --check
+        run: cargo run --release -p rtex-cli -- export --project build/fx/book-10-pure --out build/export.pdf --check
       - uses: actions/upload-artifact@v4
         with:
           name: verify-report
@@ -65,9 +65,9 @@ jobs:
       - run: scripts/install-texlive.sh > /dev/null && cat build/texlive.env >> "$GITHUB_ENV"
       - name: Benchmarks (smoke; gates are hardware-qualified)
         run: |
-          for n in 10 100 300; do cargo run --release -p lode-cli -- gen-book --pages $n --fonts lm-tfm --out fixtures/book-$n-pure-lmtfm; done
-          for n in 10 100; do cargo run --release -p lode-cli -- gen-book --pages $n --variant units --fonts lm-tfm --out fixtures/book-$n-units-lmtfm; done
-          cargo run --release -p lode-cli -- bench --quick --project fixtures/book-10-pure-lmtfm fixtures/book-100-pure-lmtfm fixtures/book-300-pure-lmtfm fixtures/book-10-units-lmtfm fixtures/book-100-units-lmtfm --categories short,medium,long,inline-math,display-math,footnote,list,figure,table,heading --out build/bench-results || echo "::warning::performance gates failed on this runner"
+          for n in 10 100 300; do cargo run --release -p rtex-cli -- gen-book --pages $n --fonts lm-tfm --out fixtures/book-$n-pure-lmtfm; done
+          for n in 10 100; do cargo run --release -p rtex-cli -- gen-book --pages $n --variant units --fonts lm-tfm --out fixtures/book-$n-units-lmtfm; done
+          cargo run --release -p rtex-cli -- bench --quick --project fixtures/book-10-pure-lmtfm fixtures/book-100-pure-lmtfm fixtures/book-300-pure-lmtfm fixtures/book-10-units-lmtfm fixtures/book-100-units-lmtfm --categories short,medium,long,inline-math,display-math,footnote,list,figure,table,heading --out build/bench-results || echo "::warning::performance gates failed on this runner"
       - uses: actions/upload-artifact@v4
         with:
           name: bench-results

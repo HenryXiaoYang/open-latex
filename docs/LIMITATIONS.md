@@ -1,4 +1,4 @@
-# Limitations (lode 0.0.2)
+# Limitations (rtex 0.0.2)
 
 ## What updates in real time, and what does not
 
@@ -25,7 +25,7 @@ question is when the *typeset* view catches up.
 | Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
 | Any unit whose fast compiles exceed `fast_budget` (5 ms by default) three times in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
 
-Every real-time item above is verified by `lode verify`: the fast result of each eligible unit is
+Every real-time item above is verified by `rtex verify`: the fast result of each eligible unit is
 compared scaled-point-exact with the rows of the same unit on the shipped page
 (`docs/FIDELITY.md`). Timings per unit kind are in `docs/BENCHMARKS.md`.
 
@@ -54,7 +54,7 @@ glossaries do not (documented hook point: `background.rs::run_pass`).
 
 **Determinism of exports.** Export equality with a clean build is byte-exact only when the
 document suppresses optional PDF info (the fixtures set `\pdfvariable suppressoptionalinfo 1023`);
-otherwise `lode pdf-compare` ignores /ID, dates and producer and compares content streams, fonts
+otherwise `rtex pdf-compare` ignores /ID, dates and producer and compares content streams, fonts
 and images.
 
 **Platforms.** Linux/macOS (FIFO transport). Windows named pipes are not implemented.

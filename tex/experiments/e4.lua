@@ -1,6 +1,6 @@
 -- E4: \ShipoutBox traversal inside shipout/before; attributes from post_linebreak_filter survive.
 E4 = { lines = 0, seen = 0, pages = 0 }
-E4.attr = luatexbase.new_attribute("lode_par")
+E4.attr = luatexbase.new_attribute("rtex_par")
 luatexbase.add_to_callback("post_linebreak_filter", function(head)
   for n in node.traverse_id(node.id("hlist"), head) do
     node.set_attribute(n, E4.attr, 42); E4.lines = E4.lines + 1
