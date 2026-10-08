@@ -95,7 +95,7 @@ impl EngineUnit {
             "kind": c.kind, "name": c.name,
             "ints": ints, "dims": dims, "glues": glues, "parshape": parshape,
             "everypar": c.everypar, "nobreak": c.nobreak, "afterindent": c.afterindent, "noskipsec": c.noskipsec,
-            "counters": c.abs_counters,
+            "counters": c.abs_counters, "thefmt": c.abs_thefmt,
             "begin": { "nfss": nfss, "color": color },
         })
     }

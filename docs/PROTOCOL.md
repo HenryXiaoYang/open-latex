@@ -65,13 +65,16 @@ of the latest pass (`EngineUnit::context_json`):
   "parshape": null,
   "everypar": "", "nobreak": false, "afterindent": true, "noskipsec": false,
   "counters": {"chapter":1, "section":2, "equation":3, "footnote":1, "figure":0, "...":0},
+  "thefmt": {"section":"\\@Alph \\c@section ", "...":"..."},
   "begin": { "nfss": {"enc":"TU","family":"TeXGyrePagella(0)","series":"m","shape":"n","size":"10.95","baselineskip":"13.6pt"},
              "color": "0 g 0 G" } }
 ```
 
 `everypar` must be one of the kernel's own patterns (empty, `\leftprotrusion`, the text left by
 `\@afterheading`, `\@doendpe` or `\@setminipage`); the host refuses anything else before the
-server does. `counters` are the LaTeX counters at the unit's start (replayed as local `\c@…=`
+server does. `thefmt` holds the `\the<counter>` bodies in force at the unit (replayed as local
+`\def\the<counter>{…}` when they differ from the server's idle ones: `\appendix`,
+`\renewcommand{\thesection}`). `counters` are the LaTeX counters at the unit's start (replayed as local `\c@…=`
 assignments; `page` is never replayed) so equation, figure, table, footnote and theorem numbers
 come out right; after the compile every counter is restored to the server's idle value.
 

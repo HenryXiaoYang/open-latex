@@ -6,7 +6,7 @@
 //! not explicitly allowed — including every macro defined in the preamble — sends the unit to the
 //! background path. See docs/ARCHITECTURE.md and docs/LIMITATIONS.md.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Why a unit is not fast-eligible.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +323,15 @@ const TEXT_MACROS: &[&str] = &[
 const GROUP_ONLY_DECLARATIONS: &[&str] = &[
     "frenchspacing",
     "nonfrenchspacing",
+    // LaTeX 2.09 font switches (article/report/book define them: \normalfont\rmfamily …)
+    "rm",
+    "bf",
+    "it",
+    "sl",
+    "sc",
+    "sf",
+    "tt",
+    "em",
     "itshape",
     "bfseries",
     "scshape",
@@ -415,6 +424,75 @@ const MATH_MACROS: &[&str] = &[
     "partial",
     "nabla",
     "triangle",
+    "rm",
+    "bf",
+    "it",
+    "sf",
+    "tt",
+    "sc",
+    "cal",
+    "mit",
+    "uparrow",
+    "downarrow",
+    "Uparrow",
+    "Downarrow",
+    "updownarrow",
+    "Updownarrow",
+    "nearrow",
+    "searrow",
+    "swarrow",
+    "nwarrow",
+    "longleftarrow",
+    "Longrightarrow",
+    "Longleftarrow",
+    "longleftrightarrow",
+    "Longleftrightarrow",
+    "longmapsto",
+    "hookrightarrow",
+    "hookleftarrow",
+    "iiiint",
+    "idotsint",
+    "models",
+    "vdash",
+    "dashv",
+    "smile",
+    "frown",
+    "asymp",
+    "doteq",
+    "ll",
+    "gg",
+    "prec",
+    "succ",
+    "preceq",
+    "succeq",
+    "nmid",
+    "diamond",
+    "ominus",
+    "oslash",
+    "bigodot",
+    "bigotimes",
+    "biguplus",
+    "bigsqcup",
+    "bigvee",
+    "bigwedge",
+    "sqcup",
+    "sqcap",
+    "sqsupseteq",
+    "uplus",
+    "amalg",
+    "lhd",
+    "rhd",
+    "unlhd",
+    "unrhd",
+    "varkappa",
+    "digamma",
+    "beth",
+    "gimel",
+    "daleth",
+    "ulcorner",
+    "urcorner",
+    "llcorner",
+    "lrcorner",
     "prime",
     "angle",
     "perp",
@@ -675,6 +753,16 @@ const PKG_MACROS: &[(&str, &[&str])] = &[
         ],
     ),
     ("caption", &["captionof", "captionof*"]),
+    (
+        "graphicx",
+        &[
+            "scalebox",
+            "rotatebox",
+            "resizebox",
+            "resizebox*",
+            "reflectbox",
+        ],
+    ),
     ("xspace", &["xspace"]),
     ("nicefrac", &["nicefrac"]),
     ("units", &["nicefrac"]),
@@ -1072,6 +1160,9 @@ pub struct Policy {
     /// ineligible (structural reasons still do); the fast result is validated against the layout
     /// instead (`rtex verify --permissive`).
     pub permissive: bool,
+    /// User macros whose body starts with a heading command (`\newcommand{\unnumberedsection}[1]{\section*{#1}…}`):
+    /// macro name → heading name. A span starting with one has that heading's shape.
+    pub heading_macros: BTreeMap<String, String>,
     /// Environments defined in the preamble (`\newenvironment`) whose begin/end code is
     /// allow-listed text (font switches, `\noindent`, a label): typeset inside the paragraph
     /// they wrap. Ones whose code opens a block environment are in `theorem_envs` instead.
@@ -1149,12 +1240,25 @@ impl Policy {
             packages,
             trusted_math: BTreeSet::new(),
             permissive: false,
+            heading_macros: BTreeMap::new(),
             user_inner_envs: BTreeSet::new(),
         };
         // Macros defined in the preamble whose bodies are themselves allow-listed are trusted:
         // in text mode, in math mode, or both, depending on how the body classifies. Two rounds
         // let a macro use one defined before it.
         let defs = user_macro_definitions(&text);
+        // heading wrappers: the body starts with a heading command (the rest is bookkeeping:
+        // \phantomsection, \addcontentsline, \markboth); the capture sees the heading
+        for (name, _, body) in &defs {
+            let b = body.trim_start();
+            for h in HEADINGS {
+                if let Some(rest) = b.strip_prefix(&format!("\\{h}")) {
+                    if rest.starts_with('*') || rest.starts_with('{') || rest.starts_with('[') {
+                        policy.heading_macros.insert(name.clone(), (*h).to_string());
+                    }
+                }
+            }
+        }
         for _round in 0..2 {
             for (name, nargs, body) in &defs {
                 let mut b = body.clone();
@@ -1630,15 +1734,17 @@ pub fn classify_source_with(
         if trimmed.ends_with(&end) && policy.is_block_env(&name) {
             shape = UnitShape::Env(name);
         }
-    } else if trimmed.starts_with('\\') {
-        let b = trimmed.as_bytes();
+    } else if trimmed[env_start..].starts_with('\\') {
+        let b = trimmed[env_start..].as_bytes();
         let mut j = 1;
         while j < b.len() && is_letter(b[j]) {
             j += 1;
         }
-        let name = &trimmed[1..j];
+        let name = &trimmed[env_start + 1..env_start + j];
         if HEADINGS.contains(&name) {
             shape = UnitShape::Heading(name.to_string());
+        } else if let Some(h) = policy.heading_macros.get(name) {
+            shape = UnitShape::Heading(h.clone());
         }
     }
     for (pat, r) in HARD_STOPS {
@@ -2021,10 +2127,17 @@ pub fn classify_source_with(
                     );
                 }
                 true
-            } else if HEADINGS.contains(&name.as_str()) {
-                // only as the unit's own heading command
-                matches!(&shape, UnitShape::Heading(h) if *h == name)
-                    && i <= name.len() + 2 + text.len() - trimmed.len()
+            } else if HEADINGS.contains(&name.as_str()) || policy.heading_macros.contains_key(&name)
+            {
+                // only as the unit's own heading command (possibly after leading vertical
+                // material such as \newpage), or a user macro wrapping one
+                let h = policy
+                    .heading_macros
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone());
+                matches!(&shape, UnitShape::Heading(sh) if *sh == h)
+                    && i <= env_start + name.len() + 2 + text.len() - trimmed.len()
             } else if name == "item" {
                 let in_list = stack.iter().any(|f| {
                     f.env
@@ -2271,6 +2384,7 @@ mod tests {
             tabularx: true,
             cite_ok: true,
             permissive: false,
+            heading_macros: BTreeMap::new(),
             packages: [
                 "hyperref", "url", "natbib", "siunitx", "ulem", "listings", "multirow", "colortbl",
                 "cancel", "bm", "amssymb",
@@ -2504,6 +2618,36 @@ mod tests {
             .contains(&Reason::TextAfterEnvironment));
         let (_, strict) = classify_source_with("\\foo{x}", &p, false);
         assert!(strict.iter().all(is_vocabulary_reason) && !strict.is_empty());
+    }
+    #[test]
+    fn heading_macros_and_old_font_switches() {
+        let p = Policy::from_preamble(
+            "\\usepackage{hyperref,graphicx}\n\\newcommand{\\unnumberedsection}[1]{\\section*{#1}\\phantomsection\\addcontentsline{toc}{section}{#1}\\markboth{\\MakeUppercase{#1}}{}}\n",
+            &[],
+            &[],
+        );
+        assert_eq!(
+            p.heading_macros
+                .get("unnumberedsection")
+                .map(String::as_str),
+            Some("section")
+        );
+        let (shape, r) = classify_source(
+            "\\newpage\n\\unnumberedsection{\\texorpdfstring{0\\quad Premises}{0 Premises}}",
+            &p,
+        );
+        assert!(r.is_empty(), "{r:?}");
+        assert_eq!(shape, UnitShape::Heading("section".into()));
+        let (shape, r) = classify_source("\\newpage\n\\subsection{After a page break}", &p);
+        assert!(r.is_empty(), "{r:?}");
+        assert_eq!(shape, UnitShape::Heading("subsection".into()));
+        let r = check_source(
+            "Text {\\rm roman} and $\\rm x \\uparrow \\iint$ and \\scalebox{2}{big}",
+            &p,
+        );
+        assert!(r.is_empty(), "{r:?}");
+        assert!(check_source("\\rm leaks out", &p)
+            .contains(&Reason::SizeDeclarationOutsideGroup("rm".into())));
     }
     #[test]
     fn setup_spans() {

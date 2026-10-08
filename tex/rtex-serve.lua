@@ -106,6 +106,7 @@ local FLOAT_ENVS = { figure = "columnwidth", table = "columnwidth", ["figure*"] 
 -- LaTeX counters (c@<name>) known at start-up; replayed per unit and restored after each compile
 S.counter_names = {}
 S.counter_base = {}
+S.the_base = {}
 
 -- Contexts are preprocessed when installed: parameter tables become flat arrays, and the
 -- NFSS selection string is built once.
@@ -138,6 +139,13 @@ local function install_context(id, ctx)
   end
   table.sort(names)
   for _, k in ipairs(names) do extra[#extra + 1] = format("\\c@%s=%d ", k, ctx.counters[k]) end
+  -- \the<counter> formats that differ from the idle ones (\appendix, \renewcommand{\thesection})
+  local fnames = {}
+  for k, v in pairs(ctx.thefmt or {}) do
+    if S.the_base[k] ~= nil and S.the_base[k] ~= v and k:match("^[%a@]+$") then fnames[#fnames + 1] = k end
+  end
+  table.sort(fnames)
+  for _, k in ipairs(fnames) do extra[#extra + 1] = format("\\def\\the%s{%s}", k, ctx.thefmt[k]) end
   extra[#extra + 1] = ctx.nobreak and "\\@nobreaktrue " or "\\@nobreakfalse "
   extra[#extra + 1] = ctx.afterindent and "\\@afterindenttrue " or "\\@afterindentfalse "
   extra[#extra + 1] = ctx.noskipsec and "\\@noskipsectrue " or "\\@noskipsecfalse "
@@ -527,7 +535,11 @@ function S.init(boxnum, countnum, cctnum)
   local ck = token.get_macro("cl@@ckpt") or ""
   for name in ck:gmatch("\\@elt%s*{([^}]*)}") do
     local ok, v = pcall(getcount, "c@" .. name)
-    if ok then S.counter_names[#S.counter_names + 1] = name; S.counter_base[name] = v end
+    if ok then
+      S.counter_names[#S.counter_names + 1] = name; S.counter_base[name] = v
+      local okm, body = pcall(token.get_macro, "the" .. name)
+      S.the_base[name] = okm and body or nil
+    end
   end
   local nobreak_idle = ifmode("if@nobreak") == IFTRUE_MODE
   -- Not \globaldefs=-1 inside the box (tried as a universal leak barrier): LaTeX's own

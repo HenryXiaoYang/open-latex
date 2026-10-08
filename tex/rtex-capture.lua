@@ -58,6 +58,18 @@ local function counter_delta()
   prev_counters = now
   return d
 end
+-- \the<counter> formats (\thesection …): \appendix, \renewcommand{\thesection}{…} and
+-- \pagenumbering change them mid-document; the server replays them per unit like the counters.
+local prev_thefmt = {}
+local function thefmt_delta()
+  local d = {}
+  for i = 1, #counter_names do
+    local n = counter_names[i]
+    local ok, body = pcall(token.get_macro, "the" .. n)
+    if ok and body and prev_thefmt[n] ~= body then d[n] = body; prev_thefmt[n] = body end
+  end
+  return d
+end
 
 local function params()
   local ints, dims, glues = {}, {}, {}
@@ -96,6 +108,7 @@ function C.begin_document()
   local ck = macro("cl@@ckpt") or ""
   for n in ck:gmatch("\\@elt%s*{([^}]*)}") do counter_names[#counter_names + 1] = n end
   prev_counters = {}
+  prev_thefmt = {}
   C.outer = snapshot_outer()
 end
 
@@ -104,7 +117,7 @@ local function unit_open(kind, name, set_attr)
   C.uid = C.uid + 1
   local ints, dims, glues = params()
   local u = { uid = C.uid, kind = kind, name = name, file = status.filename, begin_line = tex.inputlineno,
-              nest = tex.nest.ptr, seqs = {}, placements = {}, counters = counter_delta(),
+              nest = tex.nest.ptr, seqs = {}, placements = {}, counters = counter_delta(), thefmt = thefmt_delta(),
               everypar = tex.gettoks("everypar"), nobreak = iftrue("if@nobreak"),
               afterindent = iftrue("if@afterindent"), noskipsec = iftrue("if@noskipsec"),
               nfss = nfss(), color = macro("current@color"),
@@ -140,7 +153,7 @@ function C.parbegin()
   local cur = C.cur
   -- a top-level paragraph starting inside a group: font and color from outside the group
   local outer = (nest == 1 and C.outer and tex.currentgrouplevel > C.outer.level) and C.outer or nil
-  if nest == 1 then
+  if nest == 1 and not C.in_output then
     if not cur then
       cur = unit_open("par", nil, true)
       if outer then cur.nfss = outer.nfss; cur.color = outer.color end
@@ -165,6 +178,13 @@ function C.parafter()
   local cur = C.cur
   if not cur or tex.nest.ptr ~= 0 or C.env_depth > 0 then return end
   if cur.kind == "par" or (cur.kind == "heading" and not TWO_PAR_HEADINGS[cur.name]) then unit_close() end
+  -- a heading command that ended this paragraph (no blank line before \section): its unit
+  -- opens now, after the paragraph's last lines were built and attributed
+  local pending = C.pending_heading
+  if pending and not C.cur then
+    C.pending_heading = nil
+    unit_open("heading", pending, true)
+  end
 end
 
 -- env/<block>/begin and /after hooks (inside and after the environment group).
@@ -186,10 +206,12 @@ end
 -- cmd/@outputpage/before hook: header and footer boxes are built inside the output routine's
 -- group while a unit may still be open; without the unit attribute they are not unit rows.
 function C.output_begin()
+  C.in_output = true
   tex.setattribute("global", C.attr_unit, UNSET)
 end
 -- cmd/@outputpage/after hook: back to the open unit (the attribute is global).
 function C.output_end()
+  C.in_output = false
   local cur = C.cur
   tex.setattribute("global", C.attr_unit, cur and cur.uid or UNSET)
 end
@@ -200,6 +222,13 @@ function C.heading(name)
   -- a heading an environment produces (thebibliography's \section*{\refname}) is part of
   -- that unit
   if cur and cur.kind == "env" and C.env_depth > 0 then return end
+  -- a heading right after a paragraph's last line (no blank line): the paragraph is still
+  -- open and \@startsection's own \par will end it. Closing the unit now would leave the
+  -- paragraph's last lines without a unit, so the heading unit opens in parafter instead.
+  if cur and cur.kind == "par" and tex.nest.ptr > 0 then
+    C.pending_heading = name
+    return
+  end
   if cur then unit_close() end
   unit_open("heading", name, true)
 end
@@ -246,7 +275,9 @@ function C.pre_linebreak(head, groupcode)
     b[#b] = nil
   end
   local cur = C.cur
-  if cur then
+  -- paragraphs built inside the output routine (fancyhdr's running head and foot are
+  -- paragraphs in boxes) belong to the page, not to the unit that happened to be open
+  if cur and not C.in_output then
     p.unit = cur.uid
     cur.seqs[#cur.seqs + 1] = seq
   end

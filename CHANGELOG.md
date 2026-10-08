@@ -115,6 +115,16 @@
   C ABI `"eligibility"`, `rtex serve --eligibility`; `rtex verify --permissive --max-differing`
   gates it in CI (`--expect-differing`: the known state-dependent units must be caught
   exactly). Paragraph units reported on the blank line before a span map to that span.
+- Fixes from a 111-page real-world document (TikZ, pgfplots, circuitikz, fancyhdr, xeCJK):
+  a heading right after a paragraph's last line no longer loses that paragraph's last rows
+  (the capture closes the unit after the heading's own `\par`); running heads and feet built
+  inside the output routine are never attributed to the unit that happened to be open (page-top
+  lists and `center` blocks carried the header rows); `\the<counter>` formats are captured per
+  unit and replayed by the server (`\appendix` headings now number as the pass does); user
+  macros wrapping a heading command have that heading's shape; `\rm`/`\bf`/… in groups and
+  math, graphicx `\scalebox`/`\rotatebox`/`\resizebox`, and a batch of math arrows,
+  integrals and symbols are allow-listed. Snapshots skip the build tree by canonical path.
+  The install script gains pgfplots, circuitikz, xecjk, xypic, gensymb, regexpatch, haranoaji.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 
