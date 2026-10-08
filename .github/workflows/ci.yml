@@ -32,7 +32,12 @@ jobs:
         if: steps.tl.outputs.cache-hit != 'true'
         run: scripts/install-texlive.sh
       - name: Write env
-        run: scripts/install-texlive.sh > /dev/null && cat build/texlive.env >> "$GITHUB_ENV" && echo "$PWD/build/texlive/bin/x86_64-linux" >> "$GITHUB_PATH"
+        # texlive.env is a shell file (`export NAME="value"`); GITHUB_ENV wants bare NAME=value
+        # lines and does not expand $PATH, so the PATH line goes through GITHUB_PATH instead.
+        run: |
+          scripts/install-texlive.sh > /dev/null
+          grep -v '^export PATH=' build/texlive.env | sed -e 's/^export //' -e 's/"//g' >> "$GITHUB_ENV"
+          echo "$PWD/build/texlive/bin/x86_64-linux" >> "$GITHUB_PATH"
       - name: Install PyMuPDF for the interpreter the verifier runs
         run: python3 -m pip install --user --break-system-packages pymupdf && python3 -c "import pymupdf; print(pymupdf.__doc__)"
       - run: texlua tex/tests/run.lua
@@ -63,7 +68,13 @@ jobs:
         with:
           path: build/texlive
           key: texlive-${{ runner.os }}-${{ hashFiles('scripts/install-texlive.sh', 'scripts/texlive.profile') }}
-      - run: scripts/install-texlive.sh > /dev/null && cat build/texlive.env >> "$GITHUB_ENV"
+      - name: Write env
+        # texlive.env is a shell file (`export NAME="value"`); GITHUB_ENV wants bare NAME=value
+        # lines and does not expand $PATH, so the PATH line goes through GITHUB_PATH instead.
+        run: |
+          scripts/install-texlive.sh > /dev/null
+          grep -v '^export PATH=' build/texlive.env | sed -e 's/^export //' -e 's/"//g' >> "$GITHUB_ENV"
+          echo "$PWD/build/texlive/bin/x86_64-linux" >> "$GITHUB_PATH"
       - name: Benchmarks (smoke; gates are hardware-qualified)
         run: |
           for n in 10 100 300; do cargo run --release -p rtex-cli -- gen-book --pages $n --fonts lm-tfm --out fixtures/book-$n-pure-lmtfm; done
