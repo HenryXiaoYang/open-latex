@@ -116,6 +116,8 @@ impl FastServer {
             format!(
                 concat!(
                     "\\input{{{}}}\n\\newbox\\rtexbox\\newcount\\rtexcontinue\\rtexcontinue=1 \\edef\\rtexcountnum{{\\number\\allocationnumber}}\\newcatcodetable\\rtexcct{{\\makeatletter\\savecatcodetable\\rtexcct}}\n\\begin{{document}}\n",
+                    // server-only shortcuts (tex/latex/rtex-serve-patches.tex): marks, math font memo, graphics probes
+                    "\\input{{rtex-serve-patches}}\n",
                     "\\directlua{{rtex_serve = dofile(kpse.find_file(\"rtex-serve.lua\", \"lua\") or \"rtex-serve.lua\") rtex_serve.init(\\number\\rtexbox, \\rtexcountnum, \\number\\rtexcct)}}\n",
                     // image resource index -> file mapping for IMAGE display-list items
                     "\\makeatletter\\IfPackageLoadedTF{{graphicx}}{{\\AddToHook{{cmd/Gin@setfile/after}}{{\\directlua{{rtex_serve.image(\\number\\lastsavedimageresourceindex,\"\\luaescapestring{{\\Gin@base\\Gin@ext}}\",\"\\luaescapestring{{\\Gin@page}}\",\\number\\lastsavedimageresourcepages)}}}}}}{{}}\\makeatother\n",

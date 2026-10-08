@@ -1,0 +1,121 @@
+% rtex-serve-patches.tex: kernel/package shortcuts installed in the fast server only, after
+% \begin{document} and before the serve loop starts. Each one removes work whose result can
+% never be observed in a unit box (running-head marks, log-only messages) or memoizes a
+% deterministic computation. Every patch checks that the macro it replaces still has the
+% definition it was written against and is skipped otherwise. Row-exactness against the
+% background pass is checked by `rtex verify` (docs/FIDELITY.md).
+\makeatletter
+%
+% 1. Running-head marks. \markright/\markboth insert \marks nodes that only the output routine
+%    reads; the unit box is never shipped. Keep the one typesetting side effect (a \nobreak
+%    penalty in vertical mode after a heading).
+\ifcsname markright \endcsname
+  \expandafter\def\csname markright \endcsname#1{\if@nobreak\ifvmode\nobreak\fi\fi}%
+  \expandafter\def\csname markboth \endcsname#1#2{\if@nobreak\ifvmode\nobreak\fi\fi}%
+\fi
+%
+% 2. Math font setup. \glb@settings rebuilds \math@fonts (3 \pickup@font per math group, ~40
+%    per call, each through microtype's font hook) every time math is entered at a size other
+%    than the last one, e.g. for every footnote mark. The result only depends on the math
+%    version, the size and the \mv@<version> list, so it is memoized per (version, size) and
+%    reused while \mv@<version> is unchanged (\ifx on the token list).
+\def\rtex@glb@settings@expected{%
+     \expandafter\ifx\csname S@\f@size\endcsname\relax
+       \calculate@math@sizes
+     \fi
+     \csname S@\f@size\endcsname
+     \ifmath@fonts
+       \begingroup
+         \escapechar\m@ne
+         \csname mv@\math@version \endcsname
+         \globaldefs\@ne
+         \math@fonts
+         \let \glb@currsize \f@size
+       \endgroup
+        \the\every@math@size
+     \fi
+}
+\ifx\rtex@glb@settings@expected\glb@settings
+  \def\glb@settings{%
+     \expandafter\ifx\csname S@\f@size\endcsname\relax
+       \calculate@math@sizes
+     \fi
+     \csname S@\f@size\endcsname
+     \ifmath@fonts
+       \begingroup
+         \escapechar\m@ne
+         \expandafter\ifx\csname rtex@mv@\math@version/\f@size\expandafter\endcsname
+                         \csname mv@\math@version\endcsname
+           \expandafter\let\expandafter\math@fonts\csname rtex@mf@\math@version/\f@size\endcsname
+         \else
+           \csname mv@\math@version \endcsname
+           \global\expandafter\let\csname rtex@mf@\math@version/\f@size\endcsname\math@fonts
+           \global\expandafter\let\csname rtex@mv@\math@version/\f@size\expandafter\endcsname
+                                  \csname mv@\math@version\endcsname
+         \fi
+         \globaldefs\@ne
+         \math@fonts
+         \let \glb@currsize \f@size
+       \endgroup
+        \the\every@math@size
+     \fi
+  }%
+\fi
+%
+% 3. graphics: the two file-existence probes per \includegraphics (\IfFileExists in
+%    \Gin@getbase, \openin in \Gread@pdftex) are remembered for files that were found; the
+%    image resource itself is already cached by luatex.def. Log-only messages are dropped.
+\IfPackageLoadedTF{graphics}{%
+  \let\Gin@log\@gobble
+  \ifcsname Gread@@pdftex\endcsname
+    \let\rtex@Gread@pdftex\Gread@pdftex
+    \def\Gread@pdftex#1{%
+      \ifcsname rtex@seen@#1\endcsname
+        \Gread@@pdftex{#1}%
+      \else
+        \rtex@Gread@pdftex{#1}%
+        \ifcsname #1 image\Gin@attr@hash\endcsname
+          \global\expandafter\let\csname rtex@seen@#1\endcsname\@empty
+        \fi
+      \fi}%
+  \fi
+  \def\rtex@Gin@getbase@expected#1{%
+    \edef\Gin@tempa{%
+      \def\noexpand\@tempa####1#1\space{%
+        \def\noexpand\Gin@base{####1}}}%
+    \IfFileExists{\filename@area\filename@base#1}%
+      {\Gin@tempa
+       \edef\uq@filef@und{\expandafter\unquote@name
+                          \expandafter{\@filef@und}}%
+       \expandafter\@tempa\uq@filef@und
+       \edef\Gin@ext{#1}}{}}%
+  \ifx\rtex@Gin@getbase@expected\Gin@getbase
+    \def\rtex@IfFileExists#1#2#3{%
+      \ifcsname rtex@ff@#1\endcsname
+        \edef\@filef@und{\csname rtex@ff@#1\endcsname}%
+        \expandafter\rtex@IfFileExists@hit
+      \else
+        \expandafter\rtex@IfFileExists@i
+      \fi{#2}{#3}{#1}}%
+    \def\rtex@IfFileExists@hit#1#2#3{#1}%
+    \def\rtex@IfFileExists@i#1#2#3{%
+      \IfFileExists{#3}%
+        {\global\expandafter\let\csname rtex@ff@#3\expandafter\endcsname\csname @filef@und\endcsname#1}%
+        {#2}}%
+    \def\Gin@getbase#1{%
+      \edef\Gin@tempa{%
+        \def\noexpand\@tempa####1#1\space{%
+          \def\noexpand\Gin@base{####1}}}%
+      \rtex@IfFileExists{\filename@area\filename@base#1}%
+        {\Gin@tempa
+         \edef\uq@filef@und{\expandafter\unquote@name
+                            \expandafter{\@filef@und}}%
+         \expandafter\@tempa\uq@filef@und
+         \edef\Gin@ext{#1}}{}}%
+  \fi
+}{}
+%
+% 4. Package/class info messages only reach the log, which the server does not keep.
+\let\GenericInfo\@gobbletwo
+%
+\makeatother
