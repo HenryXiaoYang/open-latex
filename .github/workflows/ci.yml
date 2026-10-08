@@ -50,7 +50,7 @@ jobs:
           cargo run --release -p rtex-cli -- verify --project build/fx/book-10-units --json-out build/verify-units.json
       - name: Corpus (realistic documents, eligibility gate + row-exactness)
         run: |
-          for d in cs:17 math:10 report:10 layout:9 code:8 multi:14 counters:9; do
+          for d in cs:17 math:10 report:10 layout:10 code:8 multi:14 counters:9; do
             cargo run --release -p rtex-cli -- verify --project fixtures/corpus/${d%%:*} --build build/corpus/${d%%:*} --min-eligible ${d##*:}
           done
       - name: Export equality

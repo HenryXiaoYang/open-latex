@@ -97,6 +97,10 @@
   span. Also allowed: `\S`, `\P`, `\dag`, `\ddag`, `\pounds`, guillemets, `\protect`,
   `\selectfont`, `\fontsize`/`\frenchspacing` inside groups, `\triangle`; with their packages
   `\xspace`, `\nicefrac`, `\ce` (mhchem), `\enquote` (csquotes), `\ding`, `\subfloat`.
+- Setup after `\begin{document}` reaches the fast path: a body span made only of definitions
+  and settings (`\newcommand`, `\def`, `\setlength`, `\renewcommand{\arraystretch}`,
+  `\pagestyle`, `\lstset`, … `eligibility::SETUP_MACROS`) is loaded with the server's preamble,
+  macros it defines are trusted, and editing it is a preamble change.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

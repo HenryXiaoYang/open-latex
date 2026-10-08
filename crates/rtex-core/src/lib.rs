@@ -20,11 +20,31 @@ pub fn split_preamble(main_tex: &str) -> Option<(&str, &str)> {
     Some((&main_tex[..idx], &main_tex[idx..]))
 }
 
-/// The preamble of `project/main` with `\input`ted preamble files inlined (what `Policy` scans
-/// and the fast server loads).
+/// The preamble the fast server loads and `Policy` scans: `main`'s preamble with `\input`ted
+/// files inlined, followed by the setup statements found in the document body (macros defined
+/// after `\begin{document}`, `\renewcommand{\arraystretch}` …; see
+/// `eligibility::setup_statements`).
+pub fn server_preamble(texts: &std::collections::BTreeMap<String, String>, main: &str) -> String {
+    let mut pre = texts
+        .get(main)
+        .and_then(|t| split_preamble(t))
+        .map(|(p, _)| document::expand_inputs(p, texts))
+        .unwrap_or_default();
+    let setup = document::body_setup_statements(texts, main);
+    if !setup.is_empty() {
+        pre.push_str("\n% rtex: document setup found after \\begin{document}\n");
+        for st in setup {
+            pre.push_str(&st);
+            pre.push('\n');
+        }
+    }
+    pre
+}
+
+/// `server_preamble` of `project/main` read from disk (offline tools).
 pub fn project_preamble(project: &std::path::Path, main: &str) -> anyhow::Result<String> {
     let files = document::load_project_files(project, main)?;
-    let (pre, _) = split_preamble(&files[main])
+    split_preamble(&files[main])
         .ok_or_else(|| anyhow::anyhow!("no \\begin{{document}} in {main}"))?;
-    Ok(document::expand_inputs(pre, &files))
+    Ok(server_preamble(&files, main))
 }

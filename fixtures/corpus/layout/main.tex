@@ -8,6 +8,10 @@
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{6pt}
 \begin{document}
+% setup after \begin{document}: the fast server loads these with the preamble
+\newcommand{\reading}[1]{\textbf{#1}\,V}
+\renewcommand{\arraystretch}{1.3}
+
 \begin{center}
 {\LARGE\bfseries Lab Report 3}\\[4pt]
 {\large Measuring Resistance}\\
@@ -23,7 +27,15 @@ Henry Yang \quad\textbar\quad 1 October 2026
 
 \fbox{\parbox{0.9\textwidth}{\textbf{Safety.} Switch off the supply before changing the circuit. \underline{Never} exceed 2\,A.}}
 
-\colorbox{yellow!20}{\textcolor{red}{Important:} record every reading twice.} Values that were \sout{wrong} corrected are marked \uline{like this}.
+\colorbox{yellow!20}{\textcolor{red}{Important:} record every reading twice, e.g. \reading{1.5} and \reading{1.6}.} Values that were \sout{wrong} corrected are marked \uline{like this}.
+
+\begin{center}
+\begin{tabular}{lrr}
+Length (m) & Current (A) & Voltage (V) \\
+0.5 & 0.40 & 1.1 \\
+1.0 & 0.40 & 2.2 \\
+\end{tabular}
+\end{center}
 
 \begin{quote}
 Resistance is futile only when the wire is superconducting. --- \textit{Anonymous}

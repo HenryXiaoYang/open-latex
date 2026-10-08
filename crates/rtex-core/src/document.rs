@@ -301,6 +301,40 @@ pub fn expand_inputs(text: &str, files: &std::collections::BTreeMap<String, Stri
     go(text, files, 0)
 }
 
+/// Setup statements found in the document body (see `eligibility::setup_statements`), in
+/// document order: the main file's body, then the other files. Chunks are separated by blank
+/// lines, like the segmenter's paragraph spans.
+pub fn body_setup_statements(
+    texts: &std::collections::BTreeMap<String, String>,
+    main: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut scan = |text: &str| {
+        for chunk in text.split("\n\n") {
+            let stripped = crate::eligibility::strip_comments(chunk);
+            if let Some(st) = crate::eligibility::setup_statements(&stripped) {
+                out.push(st);
+            }
+        }
+    };
+    if let Some(t) = texts.get(main) {
+        let body = crate::split_preamble(t).map(|(_, b)| b).unwrap_or("");
+        let body = body
+            .strip_prefix("\\begin{document}")
+            .unwrap_or(body)
+            .split("\\end{document}")
+            .next()
+            .unwrap_or("");
+        scan(body);
+    }
+    for (name, t) in texts {
+        if name != main {
+            scan(t);
+        }
+    }
+    out
+}
+
 /// The file buffers of a project (offline tools): spans are found across files by id.
 #[derive(Default)]
 pub struct FileSet {

@@ -955,3 +955,83 @@ fn title_block_is_live() {
     assert!(glyphs[1] > glyphs[0], "{glyphs:?}");
     s.close();
 }
+
+/// Definitions and settings after \begin{document} reach the fast server (loaded with the
+/// preamble); editing them is a preamble change.
+#[test]
+fn body_setup_statements_reach_the_server() {
+    if rtex_core::texlive::TexLive::discover().is_err() {
+        eprintln!("SKIP: no lualatex");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("rtex-session-{}-setup", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\\newcommand{\\kw}[1]{\\textbf{#1}}\n\\renewcommand{\\arraystretch}{1.5}\n\nA paragraph using \\kw{a macro} defined after the document started, long enough for two lines of text in the page.\n\n\\begin{tabular}{ll}\na & b \\\\\nc & d \\\\\n\\end{tabular}\n\\end{document}\n",
+    )
+    .unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.debounce = Duration::from_millis(50);
+    let s = Session::open(cfg).unwrap();
+    let Event::LayoutUpdate {
+        eligible_paragraphs,
+        ..
+    } = wait_layout(&s)
+    else {
+        unreachable!()
+    };
+    let doc = s.document_text("main.tex").unwrap();
+    let spans = s.spans("main.tex");
+    let setup = spans
+        .iter()
+        .find(|sp| doc[sp.range.clone()].starts_with("\\newcommand"))
+        .unwrap();
+    let par = spans
+        .iter()
+        .find(|sp| doc[sp.range.clone()].starts_with("A paragraph"))
+        .unwrap();
+    assert!(
+        eligible_paragraphs.contains(&par.id),
+        "paragraph using the body macro"
+    );
+    assert!(!eligible_paragraphs.contains(&setup.id));
+    let pos = par.range.start + "A paragraph".len();
+    let r = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " \\kw{again}".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let Some(Event::ParagraphUpdate { status, dl, .. }) = ev else {
+        panic!("no update")
+    };
+    assert_eq!(status, "ok");
+    assert!(dl.glyph_count() > 10);
+    // editing the definition restarts the server with the new preamble
+    let gen_before = s.versions().engine_generation;
+    let pos = setup.range.start + "\\newcommand{\\kw}[1]{".len();
+    let r2 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: "\\emph{".into(),
+            },
+        )
+        .unwrap();
+    // (the brace is unbalanced now: still a preamble change, the server reports the error)
+    assert_eq!(r2.routed, "preamble", "{:?}", r2.reasons);
+    assert!(s.versions().engine_generation > gen_before);
+    s.close();
+}

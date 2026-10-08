@@ -31,6 +31,9 @@ pub enum Reason {
     /// A counter command before the unit's first text runs in vertical mode, before the point
     /// where the unit's counters are captured; replaying it would count twice.
     LeadingCounter(String),
+    /// The span is document setup (`\newcommand`, `\setlength`, `\renewcommand{\arraystretch}`
+    /// … after `\begin{document}`): it draws nothing, and the server loads it with the preamble.
+    SetupStatement,
     SizeDeclarationOutsideGroup(String),
     EngineFlag(String),
     NoContext,
@@ -66,6 +69,10 @@ impl std::fmt::Display for Reason {
                 "\\{m} outside a brace group would leak past the paragraph"
             ),
             Reason::EngineFlag(s) => write!(f, "engine saw {s} in this unit"),
+            Reason::SetupStatement => write!(
+                f,
+                "document setup (definitions, lengths): loaded with the preamble, draws nothing"
+            ),
             Reason::LeadingCounter(m) => write!(
                 f,
                 "\\{m} before the unit's text runs before its counters are captured; put it inside the paragraph or environment, or on its own line"
@@ -758,6 +765,163 @@ const PKG_MACROS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Commands that set up the document rather than typeset: a body span made only of them (and
+/// their arguments) is loaded with the preamble by the fast server, so macros defined after
+/// `\begin{document}` and global settings (`\renewcommand{\arraystretch}`) reach the fast path.
+pub const SETUP_MACROS: &[&str] = &[
+    "newcommand",
+    "renewcommand",
+    "providecommand",
+    "newenvironment",
+    "renewenvironment",
+    "def",
+    "edef",
+    "gdef",
+    "let",
+    "newif",
+    "newlength",
+    "newcounter",
+    "newtheorem",
+    "theoremstyle",
+    "DeclareMathOperator",
+    "newcolumntype",
+    "setlength",
+    "addtolength",
+    "linespread",
+    "setstretch",
+    "selectfont",
+    "pagestyle",
+    "pagenumbering",
+    "graphicspath",
+    "lstset",
+    "captionsetup",
+    "hypersetup",
+    "setlist",
+    "definecolor",
+    "colorlet",
+    "numberwithin",
+    "allowdisplaybreaks",
+    "raggedbottom",
+    "flushbottom",
+    "sloppy",
+    "fussy",
+    "bibliographystyle",
+    "frenchspacing",
+    "nonfrenchspacing",
+    "sisetup",
+    "fancyhf",
+    "fancyhead",
+    "fancyfoot",
+    "lhead",
+    "chead",
+    "rhead",
+    "lfoot",
+    "cfoot",
+    "rfoot",
+    "setmainfont",
+    "setsansfont",
+    "setmonofont",
+    "setmathfont",
+    "newfontfamily",
+    "DeclareRobustCommand",
+    "NewDocumentCommand",
+    "RenewDocumentCommand",
+    "ProvideDocumentCommand",
+    "NewDocumentEnvironment",
+    "RenewDocumentEnvironment",
+];
+
+/// `Some(text)` when `text` (comments stripped) consists only of setup statements: each
+/// statement a `SETUP_MACROS` command with its arguments (`*`, `[…]`, `{…}`, control-sequence
+/// and `#n` parameters, `=`).
+pub fn setup_statements(text: &str) -> Option<String> {
+    let b = text.as_bytes();
+    let mut i = 0;
+    let mut any = false;
+    while i < b.len() {
+        if b[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if b[i] != b'\\' {
+            return None;
+        }
+        let mut j = i + 1;
+        while j < b.len() && is_letter(b[j]) {
+            j += 1;
+        }
+        if j == i + 1 || !SETUP_MACROS.contains(&&text[i + 1..j]) {
+            return None;
+        }
+        any = true;
+        i = j;
+        // arguments
+        loop {
+            while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+                i += 1;
+            }
+            if i >= b.len() {
+                break;
+            }
+            match b[i] {
+                b'*' | b'=' => i += 1,
+                b'[' => match text[i..].find(']') {
+                    Some(k) => i += k + 1,
+                    None => return None,
+                },
+                b'{' => {
+                    let mut depth = 0i32;
+                    let mut k = i;
+                    let mut closed = None;
+                    while k < b.len() {
+                        match b[k] {
+                            b'\\' => k += 1,
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    closed = Some(k);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                    i = closed? + 1;
+                }
+                b'#' => {
+                    i += 1;
+                    while i < b.len() && b[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+                b'\\' => {
+                    // a control-sequence argument (\def\foo, \setlength\parindent); a setup
+                    // command starts the next statement instead
+                    let mut k = i + 1;
+                    while k < b.len() && is_letter(b[k]) {
+                        k += 1;
+                    }
+                    if k == i + 1 {
+                        k += 1; // control symbol
+                    } else if SETUP_MACROS.contains(&&text[i + 1..k]) {
+                        break;
+                    }
+                    i = k;
+                }
+                b'\n' => break,
+                _ => return None,
+            }
+        }
+    }
+    if any {
+        Some(text.trim().to_string())
+    } else {
+        None
+    }
+}
+
 /// Is `name` a package macro? `Some(Ok(()))` when one of the packages providing it is loaded,
 /// `Some(Err(first provider))` when none is, `None` for macros no package list names.
 fn package_macro(name: &str, policy: &Policy) -> Option<Result<(), &'static str>> {
@@ -1384,6 +1548,9 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
     };
     if text.trim().is_empty() {
         return (UnitShape::Par, vec![Reason::Blank]);
+    }
+    if setup_statements(&text).is_some() {
+        return (UnitShape::Par, vec![Reason::SetupStatement]);
     }
     let trimmed = text.trim();
     // shape: a block/float/theorem environment spanning the whole unit (possibly after vertical
@@ -2291,6 +2458,26 @@ mod tests {
         assert!(p2.trusted_macros.contains("eg"));
         assert!(check_source("\\enquote{quoted} and \\ce{H2O + CO2} \\eg", &p2).is_empty());
         assert!(!reasons("\\enquote{x}").is_empty());
+    }
+    #[test]
+    fn setup_spans() {
+        assert!(setup_statements(
+            "\\newcommand{\\kw}[1]{\\textbf{#1}}\n\\renewcommand{\\arraystretch}{1.3}"
+        )
+        .is_some());
+        assert!(setup_statements(
+            "\\setlength\\parindent{0pt}\\def\\foo#1{x #1}\\let\\a=\\b\n\\pagestyle{empty}"
+        )
+        .is_some());
+        assert!(setup_statements("\\newcommand{\\kw}{x} Text after it").is_none());
+        assert!(setup_statements("Text \\newcommand{\\kw}{x}").is_none());
+        assert!(setup_statements("\\setcounter{page}{3}").is_none());
+        assert!(setup_statements("\\newcommand{\\kw}{x").is_none());
+        let p = pol();
+        assert_eq!(
+            check_source("\\newcommand{\\kw}[1]{\\textbf{#1}}", &p),
+            vec![Reason::SetupStatement]
+        );
     }
     #[test]
     fn trusted() {

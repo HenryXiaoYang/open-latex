@@ -482,14 +482,31 @@ impl Session {
         let t_start = Instant::now();
         let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut outcome = {
+        let is_setup = |text: &str| {
+            crate::eligibility::setup_statements(&crate::eligibility::strip_comments(text))
+                .is_some()
+        };
+        let (mut outcome, setup_span) = {
             let mut files = self.shared.files.lock();
             let fb = files
                 .get_mut(rel_path)
                 .ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
-            fb.apply(&edit, &mut self.shared.ids.lock(), rev)
+            // a setup span (definitions, lengths after \begin{document}) before or after the
+            // edit: the server's preamble changes
+            let was_setup = fb.spans.iter().any(|sp| {
+                sp.range.start <= edit.end_byte
+                    && edit.start_byte <= sp.range.end
+                    && is_setup(&fb.text[sp.range.clone()])
+            });
+            let outcome = fb.apply(&edit, &mut self.shared.ids.lock(), rev);
+            let now_setup = outcome
+                .touched
+                .iter()
+                .chain(outcome.added.iter())
+                .any(|id| fb.span_text(*id).map(is_setup).unwrap_or(false));
+            (outcome, was_setup || now_setup)
         };
-        if self.shared.preamble_inputs.lock().contains(rel_path) {
+        if setup_span || self.shared.preamble_inputs.lock().contains(rel_path) {
             outcome.preamble_changed = true;
         }
         if outcome.preamble_changed {
@@ -1622,14 +1639,9 @@ fn prepare_standby(s: &Shared) {
         return;
     }
     let (texts, _, _) = snapshot(s);
-    if !texts
-        .get(&s.cfg.main_file)
-        .map(|t| t.contains("\\begin{document}"))
-        .unwrap_or(false)
-    {
+    let Some(pre_hash) = standby_preamble_hash(&texts, &s.cfg.main_file) else {
         return;
-    }
-    let pre_hash = crate::document::hash_str(&effective_preamble(&texts, &s.cfg.main_file));
+    };
     let mut slot = s.standby.lock();
     if let Some(w) = slot.as_mut() {
         if w.preamble_hash == pre_hash && w.is_alive() {
@@ -1675,13 +1687,19 @@ fn texts_of(files: &BTreeMap<String, FileBuf>) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The main file's preamble with `\input`ted files inlined from the buffers.
+/// The preamble the fast server loads: the main file's preamble with `\input`ted files inlined
+/// from the buffers, plus the document's body setup statements (`crate::server_preamble`).
 fn effective_preamble(texts: &BTreeMap<String, String>, main: &str) -> String {
+    crate::server_preamble(texts, main)
+}
+
+/// The preamble as the standby engine hashes it (`write_body_snapshot`): inputs inlined, no
+/// body setup (the standby compiles the whole body itself).
+fn standby_preamble_hash(texts: &BTreeMap<String, String>, main: &str) -> Option<u64> {
     texts
         .get(main)
         .and_then(|t| crate::split_preamble(t))
-        .map(|(p, _)| crate::document::expand_inputs(p, texts))
-        .unwrap_or_default()
+        .map(|(p, _)| crate::document::hash_str(&crate::document::expand_inputs(p, texts)))
 }
 
 fn preamble_input_set(
