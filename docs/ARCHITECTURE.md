@@ -53,6 +53,30 @@ exactly one unit.
    a row leaves the fast path until the next layout (`OverBudget`; the first slow compiles are
    forgiven because they may be loading fonts).
 
+### Server-only shortcuts (`tex/latex/rtex-serve-patches.tex`)
+
+The server inputs a small patch file after `\begin{document}`. Each patch removes work whose
+result cannot be observed in a unit box, or memoizes a deterministic computation, and each one
+checks that the macro it replaces still has the definition it was written against (`\ifx`
+against a copy of the expected body) and is skipped otherwise:
+
+- `\markright`/`\markboth` keep only their typesetting side effect (a `\nobreak` after a
+  heading in vertical mode) and insert no `\marks` nodes: the box is never shipped, so running
+  heads never read them. Saves ≈ 150 µs per `\section`, ≈ 225 µs per `\chapter` (two or three
+  `\mark_insert:nn` calls).
+- `\glb@settings` memoizes the math font assignments per (math version, size), reused while the
+  `\mv@<version>` list is token-identical. The kernel rebuilds them (three `\pickup@font` per
+  math group, about forty per call, each running microtype's font hook) every time math is
+  entered at a size other than the last one, which is what a footnote mark does twice. Saves
+  ≈ 0.7 ms per footnote paragraph with microtype loaded.
+- graphics: the two file-existence probes per `\includegraphics` (`\IfFileExists` in
+  `\Gin@getbase`, `\openin` in `\Gread@pdftex`) are remembered for files that were found; the
+  image resource itself was already cached by `luatex.def`. `\Gin@log` and `\GenericInfo`
+  (log-only messages) are dropped. Saves ≈ 170 µs per figure.
+
+`rtex verify` compares every unit kind row-exactly against a background pass that runs without
+these patches, which is the evidence that they do not change typesetting (FIDELITY.md).
+
 ## Background path
 
 Debounced passes on a snapshot copy; `rtex-capture` records per unit the context and the rows,

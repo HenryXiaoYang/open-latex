@@ -221,6 +221,56 @@ coalescing, index lookup and packing a renderer needs. Caching font descriptors 
 keystrokes; the `profile` op shows the same box build running 2–3× faster in a hot loop than in
 the real flow.
 
+## 0.0.2 — where the unit kinds spend their TeX time, and the engine shortcuts
+
+`rtex probe` now also times one unit of every kind. The TeX stage of a heading, list, figure or
+table was 5–10× that of a paragraph with the same number of glyphs, so each construct was timed
+in isolation (`\setbox\vbox{…}` 200×, LuaTeX, book class, lmodern, microtype; this container):
+
+| Construct | Cost | Where it goes |
+|---|---|---|
+| plain one-line paragraph | 35 µs | reference |
+| `\section` | 350–380 µs | two `\mark_insert:nn` (kernel marks) ≈ 150 µs; three font selections through microtype's hook ≈ 75 µs; `\@startsection`, counters, `\addcontentsline` |
+| `\chapter` | 440 µs | as above with three mark insertions |
+| paragraph with `\footnote` | 1.14–1.24 ms | 40 `\pickup@font` (≈ 25 µs each under microtype): `\glb@settings` rebuilds the math fonts whenever math is entered at a new size, which the footnote mark does at 9 pt and the next body math undoes; `\@footnotetext` and the mark ≈ 350 µs |
+| `itemize`, 3 items | 570 µs | `\list`/`\@item` machinery ≈ 100 µs per item, two font selections per `\textbullet`, microtype's left protrusion at each item start |
+| `quote` | 150–190 µs | `\list` + `\endlist`; microtype's `\leftprotrusion` ≈ 60 µs |
+| `\includegraphics` (PNG) | 410–440 µs | `\IfFileExists` ≈ 120 µs, `\openin` probe ≈ 40 µs, `\Gin@log` + `\PackageInfo` ≈ 30 µs, scaling arithmetic and key parsing; the image resource is already cached by `luatex.def` |
+| figure (float-box reset, image, caption) | 690–790 µs | the above plus `\@floatboxreset` (two font selections) and `\caption` |
+| `tabular` 2×2 | 160 µs | `\@mkpream` ≈ 90 µs, `\halign` ≈ 40 µs |
+| `\MakeUppercase{…}` in text | 1.1 ms | expl3 case mapping (not used by the fixtures; `\sectionmark`'s copy is never expanded) |
+
+The server-only shortcuts (ARCHITECTURE.md) remove the parts that cannot be observed in a unit
+box: marks, the math font rebuild (memoized per size), the two file probes and the log messages.
+Same harness, stock → with the shortcuts: `\section` 379 → 198 µs, `\chapter` 438 → 315 µs,
+footnote paragraph 1140 → 396 µs, figure 787 → 502 µs, theorem 350 → 271 µs; paragraphs, lists,
+quotes, tables and display math unchanged within noise.
+
+Engine-side changes in the same round: the traversal caches the advance width per (font, char,
+expansion factor) instead of reading and expanding every glyph, and collects glyph runs in flat
+integer arrays packed once per run (output byte-identical, 995 → 700 µs for a 17-line, 1017-glyph
+paragraph in isolation); the state fingerprint reuses its token objects and compares arrays
+(27 → 12 µs); contexts replay only the integer and dimen parameters that differ from the server's
+idle values (`apply` 15 → 5 µs).
+
+`rtex probe --project fixtures/book-10-units-lmtfm`, direct round trips, medians of 200, this
+container, before → after (total / TeX / traversal, ms):
+
+| Unit | before | after |
+|---|---|---|
+| short paragraph (1 row) | 0.308 / 0.128 / 0.056 | 0.279 / 0.120 / 0.057 |
+| medium paragraph (5 rows) | 1.093 / 0.616 / 0.316 | 1.041 / 0.608 / 0.279 |
+| long paragraph (10 rows) | 2.343 / 1.401 / 0.740 | 2.154 / 1.410 / 0.564 |
+| heading (`\section`) | 0.741 / 0.552 / 0.053 | 0.578 / 0.393 / 0.056 |
+| list (`itemize`, 3 rows) | 1.414 / 1.034 / 0.224 | 1.269 / 0.918 / 0.192 |
+| figure (image + caption, 3 rows) | 1.772 / 1.375 / 0.189 | 1.395 / 1.065 / 0.164 |
+| table (booktabs + caption, 2 rows) | 1.201 / 0.855 / 0.184 | 1.091 / 0.789 / 0.162 |
+| `quote` (2 rows) | 1.071 / 0.525 / 0.348 | 0.893 / 0.423 / 0.269 |
+| footnote paragraph, through a session (TeX stage) | 0.571 | 0.397 |
+
+What is left in the TeX stage is LaTeX's own macro work (font selection ≈ 30 µs each, ≈ 55 µs
+with microtype's hook; list, array and sectioning machinery) and the line breaking itself.
+
 ## 0.0.2 — units (`rtex bench`, `bench/results/roundtrip-20261007-1834.md`)
 
 Categories added to `rtex bench`: `display-math` (paragraph containing a display, 3–8 rows),
@@ -267,3 +317,31 @@ failed in this run: inline-math size independence 300p/10p = 1.33 (limit 1.25); 
 different paragraphs (139 glyphs with fractions vs 170 glyphs) whose ratio was 1.10 and 1.22 in
 the two preceding runs of the day, so this is run-to-run noise on a 1 ms figure in a shared VM,
 not a size dependence (100p/10p is 1.08 and the medium/long ratios are 0.96–1.17).
+
+## 0.0.2 — after the engine shortcuts (`rtex bench`, `bench/results/roundtrip-20261008-0318.md`)
+
+Same method as the previous section, h = 1.34 this run (the VM was slower than for the 1834 run:
+in-engine medium 0.94 ms vs 0.70 ms paper), after the server-only shortcuts, the traversal and
+fingerprint changes. Individual-keystroke medians / amortized:
+
+| Pages | Short (1 line) | Medium (4–5 lines) | Long (10–12 lines) | Inline math (2–3 lines) |
+|---|---|---|---|---|
+| 10 | 0.424 / 0.187 ms | 0.796 / 0.599 ms | — | 0.687 / 0.509 ms |
+| 100 | 0.344 / 0.169 ms | 1.039 / 0.813 ms | 1.785 / 1.976 ms | 0.641 / 0.498 ms |
+| 300 | 0.461 / 0.220 ms | 0.992 / 0.834 ms | 1.784 / 1.608 ms | 0.813 / 0.671 ms |
+| previous run (300) | 0.521 / 0.238 ms | 1.162 / 0.888 ms | 2.117 / 1.751 ms | 0.997 / 0.708 ms |
+
+| Unit | 10 pages | 100 pages | previous run (100 p) | TeX stage (100 p) |
+|---|---|---|---|---|
+| paragraph with display math | 1.136 (P95 1.29) ms | 1.162 (1.36) ms | 1.330 ms | 0.66 ms |
+| paragraph with a footnote | 1.675 (1.97) ms | 1.447 (1.86) ms | 2.376 ms | 0.92 ms |
+| list (3 items) | 1.202 (1.42) ms | 1.321 (1.97) ms | 1.597 ms | 0.91 ms |
+| figure (image + caption) | 1.322 (1.72) ms | 1.568 (1.84) ms | 1.914 ms | 1.12 ms |
+| table (booktabs, caption) | 1.095 (1.23) ms | 1.317 (1.98) ms | 1.337 ms | 0.87 ms |
+| heading (`\section`) | 0.523 (0.70) ms | 0.673 (0.79) ms | 0.954 ms | 0.40 ms |
+
+All absolute gates pass. Two size-independence ratios miss the 1.25 band (medium 100 p/10 p
+1.31, heading 1.29): the categories are picked by line count from different books, so they
+compare different paragraphs (215 vs 263 glyphs; 13 vs 15 glyphs), and for a 0.5 ms heading
+0.1 ms of VM jitter is 20 %. The ratio gates would need an identical probe paragraph planted in
+every fixture size to be strict; until then CI reports them as warnings.

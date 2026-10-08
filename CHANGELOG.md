@@ -24,6 +24,17 @@
 - Measured on the reference container (100-page book, per keystroke): display-math paragraph
   1.33 ms, footnote paragraph 2.38 ms, list 1.60 ms, figure 1.91 ms, table 1.34 ms, heading
   0.95 ms; short paragraph 0.45 ms (0.20 ms amortized), medium 1.21 ms, long 2.26 ms.
+- Engine: server-only shortcuts in `tex/latex/rtex-serve-patches.tex` (no running-head marks,
+  memoized math font setup per size, cached graphics file probes, no log-only info messages),
+  each guarded by a check of the definition it replaces and verified row-exact by `rtex verify`;
+  traversal with cached advance widths and flat glyph runs (−30 %, byte-identical output);
+  array fingerprint with reused token objects; contexts replay only the parameters that differ
+  from the idle state. Per keystroke on the 100-page `units` book: footnote paragraph 2.38 →
+  1.45 ms, heading 0.95 → 0.67 ms, figure 1.91 → 1.57 ms, list 1.60 → 1.32 ms, display-math
+  paragraph 1.33 → 1.16 ms; long paragraph 2.26 → 1.79 ms, short 0.45 → 0.34 ms
+  (docs/BENCHMARKS.md, `bench/results/roundtrip-20261008-0318.md`).
+- `rtex probe` times one unit of every kind; `rtex verify` builds both references to aux
+  convergence (labels resolved on both sides).
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

@@ -15,16 +15,16 @@ The architecture follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Docu
 
 | | 10 pages | 100 pages | 300 pages | paper |
 |---|---|---|---|---|
-| short paragraph, per keystroke (amortized) | 0.51 ms (0.21) | 0.45 ms (0.20) | 0.49 ms (0.23) | 0.79 ms |
-| medium paragraph, per keystroke | 1.02 ms | 1.21 ms | 1.16 ms | 6.11 ms |
-| long paragraph (10–11 lines), per keystroke | — | 2.26 ms | 2.12 ms | — |
+| short paragraph, per keystroke (amortized) | 0.42 ms (0.19) | 0.34 ms (0.17) | 0.46 ms (0.22) | 0.79 ms |
+| medium paragraph, per keystroke | 0.80 ms | 1.04 ms | 0.99 ms | 6.11 ms |
+| long paragraph (10–12 lines), per keystroke | — | 1.79 ms | 1.78 ms | — |
 
 Per keystroke on the 100-page `units` book, individual-edit medians (every kind is also
-document-size independent, 10 vs 100 pages within ±6 %):
+document-size independent: 10 vs 100 pages within the ±20 % jitter of a shared VM):
 
 | paragraph with display math (5 rows) | paragraph with a footnote (3 rows) | list (3 items) | figure (image + caption) | table (booktabs) | heading |
 |---|---|---|---|---|---|
-| 1.33 ms | 2.38 ms | 1.60 ms | 1.91 ms | 1.34 ms | 0.95 ms |
+| 1.16 ms | 1.45 ms | 1.32 ms | 1.57 ms | 1.32 ms | 0.67 ms |
 
 Paper-like font setup (TFM Latin Modern + microtype); OpenType fonts in luaotfload base mode
 are equally fast, fontspec's default node mode pays Lua shaping in the TeX stage. Output equals

@@ -25,6 +25,13 @@ question is when the *typeset* view catches up.
 | Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
 | Any unit whose fast compiles exceed `fast_budget` (5 ms by default) three times in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
 
+The fast server differs from a document run in two observable ways, both outside the unit box:
+it inserts no running-head marks (`\markright`/`\markboth` keep only their `\nobreak`), and
+package info messages (`\GenericInfo`, `\Gin@log`) do not reach its log. It also memoizes the
+kernel's math font setup per size (ARCHITECTURE.md, "Server-only shortcuts"); a document that
+redefines `\glb@settings` or `\Gin@getbase` gets the stock definitions, because every shortcut
+checks the definition it replaces.
+
 Every real-time item above is verified by `rtex verify`: the fast result of each eligible unit is
 compared scaled-point-exact with the rows of the same unit on the shipped page
 (`docs/FIDELITY.md`). Timings per unit kind are in `docs/BENCHMARKS.md`.

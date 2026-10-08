@@ -22,10 +22,11 @@ lists must be identical after translating each page fragment by its first line's
 break has one offset per page): fonts (by stable font key), glyph indices, x/baseline positions,
 advances, expansion factors, line boxes and glue ratios.
 
-Status (`rtex verify`): 10-page `pure` fixture 49/49 paragraphs eligible, 21 396/21 396 glyphs
-identical; 10-page `mixed` fixture 29/104 paragraphs eligible (the rest are background-only
-for the reasons the allow-list reports: `\footnote`, `\ref`, `\cite`, `\label`, list items,
-headings, TOC lines, display math, floats), 12 709/12 709 glyphs identical.
+Status (`rtex verify`, 0.0.2): 10-page `pure` fixture 54/54 units eligible, 23 060/23 060 glyphs
+identical; 10-page `mixed` fixture 28/39 units eligible (the rest are the TOC line and biblatex
+`\cite`), 10 194/10 194 glyphs identical; `units` fixture below. Both reference builds (the
+instrumented capture and the clean build) run to aux convergence like the background compiler,
+so `\ref`/`\pageref`/`\eqref` carry their final values on both sides of the comparison.
 
 ### Units (0.0.2)
 
@@ -36,10 +37,12 @@ row by row with the rows of the same unit on the shipped page(s): row box (width
 glue set), every glyph (font identity, char, glyph index, x, baseline, advance, expansion), rule
 and image counts. Each row gets its own offset from its placement, so the comparison is of each
 row's content, not of the page builder's vertical arrangement. On the `units` fixture
-(`fixtures/book-10-units-lmtfm`): 33 eligible units of 46, 9331/9331 glyphs identical, 0 units
-with differences; the ineligible ones are the `\tableofcontents` line, the bibliography and
-`\cite` under biblatex (documented in LIMITATIONS.md). `--units` restricts the run and
-`--dump-rows` prints both sides as text for a differing unit.
+(`fixtures/book-10-units-lmtfm`): 36 eligible units of 46, 10 057/10 057 glyphs identical, 0 units
+with differences; the ineligible ones are the `\tableofcontents` line and the chapter units it
+shares a span with (documented in LIMITATIONS.md). `--units` restricts the run and
+`--dump-rows` prints both sides as text for a differing unit. The fast side runs with the
+server-only shortcuts of `tex/latex/rtex-serve-patches.tex` (ARCHITECTURE.md), the reference
+side without them, so the comparison also covers those.
 
 ## Layer 2 — PDF content stream (independent parser, quantified tolerance)
 
@@ -103,6 +106,8 @@ results do not depend on request order.
 
 ```bash
 source build/texlive.env
+cargo run --release -p rtex-cli -- verify --project fixtures/book-10-units-lmtfm --dump-rows   # layers 1–2
+cargo run --release -p rtex-cli -- verify --project fixtures/book-10-pure --raster             # + layer 3
 cargo run --release -p rtex-cli -- slice --project build/fx/book-10-pure --edits 200 --json-out build/slice-report.json
 cd tex/experiments && LUAINPUTS=../../tex//: max_print_line=100000 lualatex -output-directory=../../build/exp e10-oracle.tex && grep ^E10 ../../build/exp/e10-oracle.log
 ```
