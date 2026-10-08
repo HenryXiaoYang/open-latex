@@ -8,6 +8,7 @@ pub mod engine;
 pub mod ffi;
 pub mod fixtures;
 pub mod layout;
+pub mod piccache;
 pub mod session;
 pub mod texlive;
 

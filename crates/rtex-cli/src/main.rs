@@ -75,6 +75,10 @@ enum Cmd {
         /// units must be caught, neither more nor fewer).
         #[arg(long)]
         expect_differing: Option<usize>,
+        /// Picture cache check: a second capture pass takes the pictures from the first pass's
+        /// PDF; units, placements (and with --raster the rendered pages) must be identical.
+        #[arg(long)]
+        pic_cache: bool,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -91,6 +95,10 @@ enum Cmd {
         /// How units qualify for the fast path: probe (default) or allowlist.
         #[arg(long, default_value = "probe")]
         eligibility: String,
+        /// Draw every picture environment on every background pass instead of reusing the
+        /// unchanged ones from an earlier pass's PDF.
+        #[arg(long)]
+        no_picture_cache: bool,
     },
     /// Open a session, apply one edit, print the resulting paragraph update.
     Edit {
@@ -208,6 +216,7 @@ fn main() -> anyhow::Result<()> {
             permissive,
             max_differing,
             expect_differing,
+            pic_cache,
         } => {
             let r = verify::run(verify::VerifyOpts {
                 project,
@@ -223,11 +232,13 @@ fn main() -> anyhow::Result<()> {
                 permissive,
                 max_differing,
                 expect_differing,
+                pic_cache,
             })?;
             if !(r.layer1_pass
                 && r.layer2_pass
                 && r.layer3_pass.unwrap_or(true)
-                && r.capture_pdf_equals_clean)
+                && r.capture_pdf_equals_clean
+                && r.pic_cache.as_ref().map(|p| p.pass).unwrap_or(true))
             {
                 std::process::exit(1);
             }
@@ -238,7 +249,15 @@ fn main() -> anyhow::Result<()> {
             build,
             fast_budget_ms,
             eligibility,
-        } => serve::run(project, main, build, fast_budget_ms, &eligibility)?,
+            no_picture_cache,
+        } => serve::run(
+            project,
+            main,
+            build,
+            fast_budget_ms,
+            &eligibility,
+            !no_picture_cache,
+        )?,
         Cmd::Edit {
             project,
             main,

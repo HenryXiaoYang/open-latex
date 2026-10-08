@@ -607,6 +607,32 @@ pub fn compare_unit_rows(
             .map(|(_, d)| *d)
             .unwrap();
         let (ox, oy) = (rl.x - fl.x, rl.y - fl.y);
+        // a row holding a cached picture (an image standing in for the drawing the fast path
+        // typesets) is judged by its box alone: the glyphs of the picture's labels are inside
+        // the image
+        let cached_row = rl.items.iter().any(|i| match i {
+            Item::Image { index, .. } => page
+                .images
+                .get(&index.to_string())
+                .map(|inf| inf.cached_picture)
+                .unwrap_or(false),
+            _ => false,
+        });
+        if cached_row {
+            if fl.w != rl.w || fl.h != rl.h || fl.d != rl.d {
+                notes.push(format!(
+                    "row {} box differs (cached picture): fast ({},{},{}) capture ({},{},{})",
+                    k + 1,
+                    fl.w,
+                    fl.h,
+                    fl.d,
+                    rl.w,
+                    rl.h,
+                    rl.d
+                ));
+            }
+            continue;
+        }
         if fl.w != rl.w || fl.h != rl.h || fl.d != rl.d || (fl.gs - rl.gs).abs() > 1e-12 {
             notes.push(format!(
                 "row {} box/glue differs: fast ({},{},{} gs {}) capture ({},{},{} gs {})",

@@ -309,6 +309,12 @@ pub struct ImageInfo {
     pub page: i64,
     #[serde(default)]
     pub pages: i64,
+    /// Region of the page shown (PDF user space, llx lly urx ury, in sp of a bp); None = whole page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bbox: Option<[i64; 4]>,
+    /// A picture the background pass took from an earlier pass's PDF (picture cache).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached_picture: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

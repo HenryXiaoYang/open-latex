@@ -110,6 +110,29 @@ units to spans by snapshot line ranges, diffs page hashes, extracts the aux labe
 server's `\ref`/`\cite`, and emits `LayoutUpdate` with the convergence state (CONVERGENCE.md).
 Degraded pages carry a PDF fallback path.
 
+**Picture cache.** Drawings (`tikzpicture`, `circuitikz`) dominate a pass over a document that
+has many of them, and almost none of them change between two passes. Each pass records where
+every picture environment landed (`pics` in the capture JSON: `file:line` → page, position, box;
+the capture's wrapper of the environment's begin macro tags the picture's output boxes with an
+attribute and `rtex-dl.lua` reports their union at shipout). After a pass the session copies the
+pass PDF into `build/bg/pic-cache/` and indexes each picture by a hash of its text, the preamble
+and the definitions (`\def`, `\newcommand`, `\tikzset`, `\pgfplotsset`, …) made before it in the
+body. Before the next pass it writes `pic-manifest.json`: every current picture whose hash the
+cache holds. The capture then **gobbles the body** of such a picture (scanning to its `\end`) and
+puts an `img.node` of the recorded region of the earlier PDF in its place, an image of exactly the
+picture's width, height and depth, so every placement is identical to a pass that draws it; the
+page is degraded (`pic_cache` flag) and the host renders it from the pass PDF, where the region is
+embedded as a form. What the picture inherits from its surroundings without showing it in its
+text, the current font (by name and size), color, `\hsize` and `\linewidth`, is recorded with the
+picture and compared before a cached copy is used: a picture inside `{\small …}` is drawn again
+when that becomes `\Large`, and the new drawing replaces the cached one. A picture that mentions `\ref`, `\cite`, `\label`, counters, `\today`,
+`remember picture`/`overlay`, `\includegraphics`, `\input`, `\verb` or tabular data from files is
+never cached, nor is one whose output spans lines or pages, one that begins and ends on a line
+with text around it, or anything when the sources contain `remember picture`. Entries unused for
+four passes are evicted. `rtex verify --pic-cache` builds a cache from a converged pass, runs one
+more pass on it and checks units, placements and (with `--raster`) the rendered pages. On the
+reference container a 111-page document with 120 pictures passes in 24 s instead of 45 s.
+
 ## Guarantees and their evidence
 
 - Display lists equal the engine's own output positions: `docs/FIDELITY.md` (backend oracle,

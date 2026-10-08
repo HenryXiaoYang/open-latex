@@ -2,6 +2,12 @@
 
 ## 0.0.2 (in progress)
 
+- **Picture cache**: background passes reuse unchanged `tikzpicture`/`circuitikz` drawings from
+  an earlier pass's PDF (`SessionConfig.picture_cache`, default on; `rtex verify --pic-cache`;
+  `fixtures/corpus/pictures`). A 111-page document with 120 pictures: 45 s → 24 s per pass.
+  Inline pictures stay in their paragraph (segmenter and eligibility); setup statements before a
+  block environment no longer hide the environment's shape; the verification rasterizer rounds
+  page sizes like MuPDF.
 - Fast-path latency: raw-framed compile requests, `\luafunction` dispatch in the server, one
   state fingerprint per compile, bounded busy-poll for replies, direct submission from
   `apply_edit` when the server is idle, lazy context upload, windowed re-segmentation next to the

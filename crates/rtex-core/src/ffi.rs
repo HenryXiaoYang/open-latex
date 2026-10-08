@@ -36,7 +36,7 @@ pub extern "C" fn rtex_version() -> *const c_char {
 
 /// Open a session. `config_json`: {"project_root": "...", "main_file": "main.tex",
 /// "build_dir": "...", "debounce_ms": 300, "max_passes": 5, "trusted_macros": [...],
-/// "fast_on_stale_context": true, "compile_timeout_ms": 5000, "fast_budget_ms": 5, "unit_envs": [...], "warm_background": true, "eligibility": "probe"|"allowlist"}. On failure returns null and
+/// "fast_on_stale_context": true, "compile_timeout_ms": 5000, "fast_budget_ms": 5, "unit_envs": [...], "warm_background": true, "eligibility": "probe"|"allowlist", "picture_cache": true}. On failure returns null and
 /// writes an error message to `*err_out` (free with rtex_string_free).
 #[no_mangle]
 pub unsafe extern "C" fn rtex_session_open(
@@ -81,6 +81,9 @@ pub unsafe extern "C" fn rtex_session_open(
     }
     if let Some(b) = v.get("warm_background").and_then(|x| x.as_bool()) {
         cfg.warm_background = b;
+    }
+    if let Some(b) = v.get("picture_cache").and_then(|x| x.as_bool()) {
+        cfg.picture_cache = b;
     }
     if let Some(m) = v.get("eligibility").and_then(|x| x.as_str()) {
         match crate::session::EligibilityMode::parse(m) {

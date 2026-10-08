@@ -923,6 +923,17 @@ pub const SETUP_MACROS: &[&str] = &[
 /// statement a `SETUP_MACROS` command with its arguments (`*`, `[…]`, `{…}`, control-sequence
 /// and `#n` parameters, `=`).
 pub fn setup_statements(text: &str) -> Option<String> {
+    let (end, any) = setup_prefix(text);
+    if any && text[end..].trim().is_empty() {
+        Some(text.trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// The leading run of setup statements of `text`: the offset where the first other content
+/// starts (the text's length when it is setup statements only) and whether there was any.
+pub fn setup_prefix(text: &str) -> (usize, bool) {
     let b = text.as_bytes();
     let mut i = 0;
     let mut any = false;
@@ -931,17 +942,17 @@ pub fn setup_statements(text: &str) -> Option<String> {
             i += 1;
             continue;
         }
+        let stmt = i; // start of the statement being scanned
         if b[i] != b'\\' {
-            return None;
+            return (stmt, any);
         }
         let mut j = i + 1;
         while j < b.len() && is_letter(b[j]) {
             j += 1;
         }
         if j == i + 1 || !SETUP_MACROS.contains(&&text[i + 1..j]) {
-            return None;
+            return (stmt, any);
         }
-        any = true;
         i = j;
         // arguments
         loop {
@@ -955,7 +966,7 @@ pub fn setup_statements(text: &str) -> Option<String> {
                 b'*' | b'=' => i += 1,
                 b'[' => match text[i..].find(']') {
                     Some(k) => i += k + 1,
-                    None => return None,
+                    None => return (stmt, any),
                 },
                 b'{' => {
                     let mut depth = 0i32;
@@ -976,7 +987,10 @@ pub fn setup_statements(text: &str) -> Option<String> {
                         }
                         k += 1;
                     }
-                    i = closed? + 1;
+                    let Some(c) = closed else {
+                        return (stmt, any);
+                    };
+                    i = c + 1;
                 }
                 b'#' => {
                     i += 1;
@@ -999,15 +1013,12 @@ pub fn setup_statements(text: &str) -> Option<String> {
                     i = k;
                 }
                 b'\n' => break,
-                _ => return None,
+                _ => return (stmt, any),
             }
         }
+        any = true;
     }
-    if any {
-        Some(text.trim().to_string())
-    } else {
-        None
-    }
+    (text.len(), any)
 }
 
 /// Is `name` a package macro? `Some(Ok(()))` when one of the packages providing it is loaded,
@@ -1691,9 +1702,10 @@ pub fn classify_source_with(
     if setup_statements(&text).is_some() {
         return (UnitShape::Par, vec![Reason::SetupStatement]);
     }
-    let trimmed = text.trim();
-    // shape: a block/float/theorem environment spanning the whole unit (possibly after vertical
-    // material such as \vspace or \noindent, which the unit box absorbs), a heading, or a paragraph
+    // shape: a block/float/theorem environment spanning the whole unit (possibly after setup
+    // statements and vertical material such as \vspace or \noindent, which the unit box
+    // absorbs), a heading, or a paragraph
+    let trimmed = text[setup_prefix(&text).0..].trim();
     let mut shape = UnitShape::Par;
     let env_start = {
         let mut k = 0;
@@ -1792,6 +1804,7 @@ pub fn classify_source_with(
     }];
     let mut env_depth = 0; // block environments open
     let mut block_env_closed_at: Option<usize> = None; // index after the last `\end{block}` at env_depth 0
+    let mut inline_picture = false; // a picture environment inside the paragraph's text is open
     let mut text_group_pending = false; // next brace group is text mode (\text{...} in math)
     let mut line_start = 0usize;
     while i < b.len() {
@@ -1904,7 +1917,8 @@ pub fn classify_source_with(
             }
             // environments
             if name == "begin" {
-                let Some((env, after)) = env_name(&text, i - 6, "\\begin") else {
+                let begin_pos = i - 6;
+                let Some((env, after)) = env_name(&text, begin_pos, "\\begin") else {
                     push(&mut reasons, Reason::UnbalancedEnvironment);
                     continue;
                 };
@@ -1951,6 +1965,14 @@ pub fn classify_source_with(
                         // a unit of its own (block), but its drawing commands are not
                         // allow-listed: probe mode compiles and compares it
                         push(&mut reasons, Reason::DisallowedEnvironment(env.clone()));
+                        // inside a paragraph's text it is an inline box: the paragraph goes on
+                        // after it (the capture keeps one unit)
+                        if env_depth == 0
+                            && shape == UnitShape::Par
+                            && !text[..begin_pos].trim().is_empty()
+                        {
+                            inline_picture = true;
+                        }
                     }
                     if block_env_closed_at.is_some() && env_depth == 0 && shape == UnitShape::Par {
                         // text (or another environment) after a block environment: the capture
@@ -2015,7 +2037,11 @@ pub fn classify_source_with(
                         if policy.is_block_env(&env) {
                             env_depth -= 1;
                             if env_depth == 0 {
-                                block_env_closed_at = Some(i);
+                                if inline_picture {
+                                    inline_picture = false;
+                                } else {
+                                    block_env_closed_at = Some(i);
+                                }
                             }
                         }
                     }
@@ -2598,6 +2624,33 @@ mod tests {
         assert!(r.is_empty(), "{r:?}");
         assert_eq!(shape, UnitShape::Env("hint".into()));
         assert!(!check_source("\\begin{bad}x\\end{bad}", &p).is_empty());
+    }
+    #[test]
+    fn pictures_and_setup_prefix() {
+        let p = pol();
+        // an inline picture does not end the paragraph unit
+        let (shape, r) = classify_source(
+            "Text \\begin{tikzpicture}\\draw (0,0)--(1,0);\\end{tikzpicture} goes on.",
+            &p,
+        );
+        assert_eq!(shape, UnitShape::Par);
+        assert!(!r.contains(&Reason::TextAfterEnvironment), "{r:?}");
+        assert!(r.contains(&Reason::DisallowedEnvironment("tikzpicture".into())));
+        // a block picture followed by text still is
+        let (_, r) = classify_source(
+            "\\begin{tikzpicture}\\draw (0,0)--(1,0);\\end{tikzpicture}\nText after.",
+            &p,
+        );
+        assert!(r.contains(&Reason::TextAfterEnvironment), "{r:?}");
+        // setup statements before a block environment: the unit's shape is the environment
+        let (shape, r) = classify_source("\\def\\R{1.2}\n\\begin{center}\nx\n\\end{center}", &p);
+        assert_eq!(shape, UnitShape::Env("center".into()));
+        assert!(!r.contains(&Reason::SetupStatement), "{r:?}");
+        assert_eq!(setup_prefix("\\def\\R{1.2}\n\\begin{center}"), (12, true));
+        assert_eq!(setup_prefix("Text \\def\\R{1}"), (0, false));
+        assert_eq!(setup_prefix("\\def\\R{1.2"), (0, false));
+        assert!(setup_statements("\\def\\R{1.2}\n\\setlength\\parindent{0pt}").is_some());
+        assert!(setup_statements("\\def\\R{1.2}\nText").is_none());
     }
     #[test]
     fn title_block_and_symbols() {

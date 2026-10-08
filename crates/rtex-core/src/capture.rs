@@ -187,9 +187,18 @@ pub struct CaptureJson {
     /// LaTeX counter names known to the document (from `\cl@@ckpt`).
     #[serde(default)]
     pub counters: Vec<String>,
+    /// Where this pass drew each picture environment (`file:line` → position), for the
+    /// picture cache. An empty Lua table arrives as `[]`, hence the loose type.
+    #[serde(default)]
+    pub pics: serde_json::Value,
 }
 
 impl CaptureJson {
+    /// `pics` as a map (empty when the pass recorded none).
+    pub fn recorded_pics(&self) -> BTreeMap<String, crate::piccache::RecordedPic> {
+        serde_json::from_value(self.pics.clone()).unwrap_or_default()
+    }
+
     /// Reconstruct absolute counter values from the per-unit deltas (units are in document order).
     pub fn finalize(&mut self) {
         let mut acc: BTreeMap<String, i64> = BTreeMap::new();

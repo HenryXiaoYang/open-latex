@@ -84,8 +84,10 @@ pub fn rasterize(
     cache: &mut FontCache,
 ) -> Result<(Vec<u8>, usize, usize, RasterStats)> {
     let scale = dpi / 72.0; // px per bp
-    let w = (page_w_bp * scale).round() as usize;
-    let h = (page_h_bp * scale).round() as usize;
+                            // MuPDF (the reference renderer) rounds the page box outwards: A4 at 150 dpi is 1241 px
+                            // wide (595.276 bp × 150/72 = 1240.16), not 1240
+    let w = (page_w_bp * scale - 1e-3).ceil() as usize;
+    let h = (page_h_bp * scale - 1e-3).ceil() as usize;
     let mut pix = Pixmap::new(w as u32, h as u32).ok_or_else(|| anyhow!("pixmap"))?;
     pix.fill(tiny_skia::Color::WHITE);
     let mut paint = Paint::default();

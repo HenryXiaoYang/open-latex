@@ -49,6 +49,9 @@ pub struct FileBuf {
 
 /// Block environments after whose `\end` a span ends (the capture closes the unit there); the
 /// session adds theorem-like environments from the preamble through `FileBuf::extra_block_envs`.
+/// Picture environments: blocks when they start a line, inline boxes after text on it.
+pub const PICTURE_ENVS: &[&str] = &["tikzpicture", "circuitikz", "pgfpicture"];
+
 pub const BLOCK_ENVS: &[&str] = &[
     "itemize",
     "enumerate",
@@ -429,6 +432,7 @@ fn segment_body(
     };
     let mut cur_start: Option<usize> = None;
     let mut env_stack: Vec<String> = Vec::new();
+    let mut env_inline: Vec<bool> = Vec::new(); // parallel to env_stack: an inline picture
     let mut cur_kind = SpanKind::Body;
     // the current span ends before the next non-blank line: after a heading's braces closed or
     // after a block environment closed (the capture closes the unit at those points)
@@ -450,6 +454,18 @@ fn segment_body(
             Vec::new()
         };
         let heading = HEADING_CMDS.iter().any(|h| stripped.starts_with(h));
+        // a picture environment after text on its line is an inline box of the paragraph
+        // (the capture keeps one paragraph unit), not a block of its own
+        let inline_picture = begins.iter().any(|b| PICTURE_ENVS.contains(&b.as_str()))
+            && PICTURE_ENVS.iter().any(|e| {
+                stripped
+                    .find(&format!("\\begin{{{e}}}"))
+                    .map(|k| {
+                        let before = stripped[..k].trim();
+                        !before.is_empty() && !before.contains("\\begin{")
+                    })
+                    .unwrap_or(false)
+            });
         if env_stack.is_empty() {
             if is_blank && trimmed.is_empty() {
                 if let Some(s) = cur_start.take() {
@@ -480,7 +496,10 @@ fn segment_body(
                 heading_balance = 0;
                 split_pending = false;
             }
-            if !begins.is_empty() {
+            if begins
+                .iter()
+                .any(|b| !(inline_picture && PICTURE_ENVS.contains(&b.as_str())))
+            {
                 cur_kind = SpanKind::Env;
             }
             if cur_kind == SpanKind::Heading {
@@ -491,12 +510,16 @@ fn segment_body(
             }
         }
         for b in begins {
+            let inline = inline_picture && PICTURE_ENVS.contains(&b.as_str());
             env_stack.push(b);
+            env_inline.push(inline);
         }
         for e in ends {
             if let Some(idx) = env_stack.iter().rposition(|x| *x == e) {
+                let inline = env_inline[idx];
                 env_stack.truncate(idx);
-                if env_stack.is_empty() && is_block(&e) {
+                env_inline.truncate(idx);
+                if env_stack.is_empty() && is_block(&e) && !inline {
                     split_pending = true;
                 }
             }
@@ -1078,6 +1101,33 @@ mod tests {
             )
         );
         assert_eq!(fb.spans.len(), 7);
+    }
+
+    #[test]
+    fn inline_picture_stays_in_its_paragraph() {
+        let mut ids = IdAllocator(0);
+        let text = "\\documentclass{article}\n\\begin{document}\nAn inline \\begin{tikzpicture}\\draw (0,0)--(1,0);\\end{tikzpicture} picture\nand more text.\n\n\\begin{tikzpicture}\n\\draw (0,0)--(1,0);\n\\end{tikzpicture}\nText after a block picture.\n\\end{document}\n";
+        let fb = FileBuf::new(text, &mut ids, 1);
+        let texts: Vec<(&str, SpanKind)> = fb
+            .spans
+            .iter()
+            .map(|s| (fb.text[s.range.clone()].trim_end(), s.kind))
+            .collect();
+        assert_eq!(
+            texts[1],
+            (
+                "An inline \\begin{tikzpicture}\\draw (0,0)--(1,0);\\end{tikzpicture} picture\nand more text.",
+                SpanKind::Body
+            )
+        );
+        assert_eq!(
+            texts[2],
+            (
+                "\\begin{tikzpicture}\n\\draw (0,0)--(1,0);\n\\end{tikzpicture}",
+                SpanKind::Env
+            )
+        );
+        assert_eq!(texts[3], ("Text after a block picture.", SpanKind::Body));
     }
 
     #[test]

@@ -150,8 +150,34 @@ local function new_state(opts)
     attr_par = opts and opts.attr_par, attr_line = opts and opts.attr_line,
     attr_unit = opts and opts.attr_unit, is_insert = opts and opts.is_insert,
     glyph_attr = opts and opts.glyph_attr,
+    -- picture cache: boxes tagged with attr_pic are reported with their page position
+    -- (outermost box per id); images in pic_images are cached pictures (page degraded for
+    -- hosts, which then use the PDF)
+    attr_pic = opts and opts.attr_pic, pic_images = opts and opts.pic_images, pics = {}, pic_seen = {},
     glyphs = 0, images = 0, inserts = 0,
   }, State)
+end
+-- Record a box carrying the picture attribute: the picture's output is the union of its
+-- top-level boxes (page coordinates; one baseline, else `multi`).
+local function note_pic(st, n, x, baseline, w, h, d)
+  if not st.attr_pic then return end
+  local id = getattribute(n, st.attr_pic)
+  if not id or id < 0 then return end
+  local r = st.pic_seen[id]
+  if not r then
+    r = { id = id, x = x, y = baseline, right = x + w, top = baseline - h, bottom = baseline + d, multi = false }
+    st.pic_seen[id] = r
+    st.pics[#st.pics + 1] = r
+  else
+    if baseline ~= r.y then r.multi = true end
+    if x < r.x then r.x = x end
+    if x + w > r.right then r.right = x + w end
+    if baseline - h < r.top then r.top = baseline - h end
+    if baseline + d > r.bottom then r.bottom = baseline + d end
+  end
+  r.w = r.right - r.x
+  r.h = r.y - r.top
+  r.d = r.bottom - r.y
 end
 
 local function bstr(s)
@@ -417,6 +443,8 @@ hlist_out = function(st, box, left, base_v)
         local par = st.attr_par and getattribute(n, st.attr_par)
         local line = par and st.attr_line and getattribute(n, st.attr_line)
         sync_out()
+        -- a raised/lowered box (TikZ `baseline`): extents relative to the line's baseline
+        note_pic(st, n, cur_h, base_v, w, h - sh, d + sh)
         if par and par >= 0 and id == hlist_id and not st.cur then
           st:begin_line(n, par, line, cur_h, base_v + sh, w, h, d)
           hlist_out(st, n, cur_h, base_v + sh)
@@ -436,7 +464,9 @@ hlist_out = function(st, box, left, base_v)
         if w == RUNNING then w = 0 end
         sync_out()
         if sub == RULE_IMAGE then
-          st:emit({ "i", getfield(n, "index"), cur_h, base_v - h, w, h + d }); st.images = st.images + 1
+          local idx = getfield(n, "index")
+          st:emit({ "i", idx, cur_h, base_v - h, w, h + d }); st.images = st.images + 1
+          if st.pic_images and st.pic_images[idx] then st:flag("pic_cache") end
         elseif sub == RULE_EMPTY then
           -- \nullfont / empty rule: occupies space, draws nothing
         elseif sub == RULE_USER or sub == RULE_OUTLINE then
@@ -517,6 +547,7 @@ vlist_out = function(st, box, left, top)
       local par = st.attr_par and getattribute(n, st.attr_par)
       local line = par and st.attr_line and getattribute(n, st.attr_line)
       if id == hlist_id then
+        note_pic(st, n, left + s, cur_v, w, h, d)
         -- Rows: hlists reached from the traversal root through vlists only. Paragraph mode
         -- (fast path) takes every such hlist; page mode takes those tagged with a paragraph
         -- or a unit attribute, except lines of insert material (footnote text).
@@ -545,6 +576,7 @@ vlist_out = function(st, box, left, top)
           hlist_out(st, n, left + s, cur_v)
         end
       else
+        note_pic(st, n, left + s, cur_v, w, h, d)
         vlist_out(st, n, left + s, cur_v - h)
       end
       cur_v = cur_v + d
@@ -555,7 +587,9 @@ vlist_out = function(st, box, left, top)
       if h == RUNNING then h = 0 end
       if d == RUNNING then d = 0 end
       if sub == RULE_IMAGE then
-        st:emit({ "i", getfield(n, "index"), left, cur_v, w, h + d }); st.images = st.images + 1
+        local idx = getfield(n, "index")
+        st:emit({ "i", idx, left, cur_v, w, h + d }); st.images = st.images + 1
+        if st.pic_images and st.pic_images[idx] then st:flag("pic_cache") end
       elseif sub == RULE_EMPTY then
       elseif sub == RULE_USER or sub == RULE_OUTLINE then
         st:emit({ "u", "rule_subtype", sub }); st:flag("rule_subtype", sub)
@@ -788,17 +822,18 @@ end
 
 -- Shipped page box. `attr_par`/`attr_line` identify tagged lines. Origin: page top-left;
 -- the box is offset by (1in + \hoffset, 1in + \voffset) like the PDF backend does.
-function M.page(boxnode, attr_par, attr_line, page_no, glyph_attr, attr_unit, is_insert)
+function M.page(boxnode, attr_par, attr_line, page_no, glyph_attr, attr_unit, is_insert, extra)
   local box = todirect(boxnode)
   local st = new_state({ attr_par = attr_par, attr_line = attr_line, glyph_attr = glyph_attr,
-                         attr_unit = attr_unit, is_insert = is_insert })
+                         attr_unit = attr_unit, is_insert = is_insert,
+                         attr_pic = extra and extra.attr_pic, pic_images = extra and extra.pic_images })
   local one_inch = 4736286  -- 72.27pt in sp
   local ox = one_inch + tex.hoffset
   local oy = one_inch + tex.voffset
   local w, h, d = getwhd(box)
   vlist_out(st, box, ox, oy)
   return result(st, "page", { page = page_no, width = w, height = h, depth = d,
-    page_width = tex.pagewidth, page_height = tex.pageheight, origin = { ox, oy } })
+    page_width = tex.pagewidth, page_height = tex.pageheight, origin = { ox, oy }, pics = st.pics })
 end
 
 return M

@@ -44,6 +44,9 @@ pub struct SessionConfig {
     pub warm_background: bool,
     /// How a unit qualifies for the fast path (default `Probe`).
     pub eligibility: EligibilityMode,
+    /// Background passes reuse unchanged pictures (tikzpicture, circuitikz) from an earlier
+    /// pass's PDF instead of drawing them again (default true; `docs/ARCHITECTURE.md`).
+    pub picture_cache: bool,
 }
 
 /// Diagnostic view of one layout unit (`Session::layout_units`, `rtex serve` `units`).
@@ -111,6 +114,7 @@ impl SessionConfig {
             unit_envs: Vec::new(),
             warm_background: true,
             eligibility: EligibilityMode::Probe,
+            picture_cache: true,
         }
     }
 }
@@ -2065,6 +2069,45 @@ fn run_background_pass_inner(s: &Shared) {
     }
     let out_dir = s.cfg.build_dir.join("bg");
     let unit_envs = s.policy.lock().unit_envs_env();
+    // picture cache: pictures whose source and surroundings are unchanged come from an earlier
+    // pass's PDF; the manifest is refreshed before every pass of the run (a pass's own
+    // drawings serve the next one)
+    let manifest = out_dir.join("pic-manifest.json");
+    let _ = std::fs::create_dir_all(&out_dir);
+    let pics: Vec<crate::piccache::PictureRef> = if s.cfg.picture_cache {
+        let pre_hash = texts
+            .get(&s.cfg.main_file)
+            .and_then(|t| crate::split_preamble(t))
+            .map(|(p, _)| crate::document::hash_str(&crate::document::expand_inputs(p, &texts)))
+            .unwrap_or(0);
+        crate::piccache::scan_pictures(&texts, &s.cfg.main_file, pre_hash)
+    } else {
+        Vec::new()
+    };
+    let pic_cache =
+        std::sync::Mutex::new(crate::piccache::PicCache::open(&out_dir.join("pic-cache")));
+    let refresh_manifest = || {
+        if pics.is_empty() {
+            let _ = std::fs::remove_file(&manifest);
+            return;
+        }
+        if let Err(e) = pic_cache.lock().unwrap().write_manifest(&pics, &manifest) {
+            log::warn!("picture cache manifest: {e:#}");
+        }
+    };
+    let absorb = |cap: &crate::capture::CaptureResult| {
+        if pics.is_empty() {
+            return;
+        }
+        if let Err(e) = pic_cache
+            .lock()
+            .unwrap()
+            .absorb(&pics, &cap.json.recorded_pics(), &cap.pdf)
+        {
+            log::warn!("picture cache: {e:#}");
+        }
+    };
+    refresh_manifest();
     let result = if s.cfg.warm_background {
         // Every pass of the loop runs in a standby engine: the one prepared while the user
         // typed, then the one started when the previous pass was released (its preamble loads
@@ -2125,6 +2168,8 @@ fn run_background_pass_inner(s: &Shared) {
         let spans_for_provisional = spans.clone();
         let mut pass_started = Instant::now();
         let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
+            absorb(cap);
+            refresh_manifest();
             if pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
                 deliver_layout(
                     s,
@@ -2168,6 +2213,7 @@ fn run_background_pass_inner(s: &Shared) {
             return;
         }
     };
+    absorb(&outcome.capture);
     let outcome_cap = outcome.capture;
     deliver_layout(
         s,

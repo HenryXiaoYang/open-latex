@@ -30,6 +30,33 @@
   \rtex@tmp}
 \@for\rtex@n:=\rtex@blockenvs\do{\expandafter\rtex@hookenv\expandafter{\rtex@n}}
 \@for\rtex@n:=\rtex@headings\do{\expandafter\rtex@hookheading\expandafter{\rtex@n}}
+% Picture cache (see rtex-capture.lua): the begin macro of each picture environment is wrapped
+% so a picture the session's manifest lists is replaced by the cached region of an earlier
+% pass's PDF, and every other one is tagged so its page position is recorded.
+\newcatcodetable\rtexcapturecct
+{\makeatletter\savecatcodetable\rtexcapturecct}
+\directlua{rtex_capture.set_cct(\number\rtexcapturecct)}
+\def\rtex@picreplace{\leavevmode\lower\rtex@picdepth\hbox{\directlua{rtex_capture.pic_write()}}}
+% Gobble the environment body: scan \end<arg> by \end<arg> (a `{` may not appear in a macro's
+% delimiter) until the argument is the environment's own name, then put the cached box in
+% its place and end the environment properly (\long: picture bodies contain blank lines).
+\long\def\rtex@gobbleto#1\end#2{%
+  \def\rtex@tmpa{#2}%
+  \ifx\rtex@tmpa\rtex@gobbleenv
+    \expandafter\rtex@gobbledone
+  \else
+    \expandafter\rtex@gobbleto
+  \fi}
+\def\rtex@gobblesetup#1{%
+  \def\rtex@gobbleenv{#1}%
+  \def\rtex@gobbledone{\rtex@picreplace\expandafter\let\csname end#1\endcsname\relax\end{#1}}%
+  \rtex@gobbleto}
+\def\rtex@wrappic#1{%
+  \ifcsname #1\endcsname
+    \expandafter\let\csname rtex@orig@#1\expandafter\endcsname\csname #1\endcsname
+    \expandafter\def\csname #1\endcsname{\directlua{rtex_capture.pic_begin("#1")}}%
+  \fi}
+\AddToHook{begindocument/end}{\rtex@wrappic{tikzpicture}\rtex@wrappic{circuitikz}}
 % Map image resource indices to files so IMAGE display-list items can name their source.
 \AddToHook{package/graphicx/after}{%
   \AddToHook{cmd/Gin@setfile/after}{%

@@ -8,6 +8,7 @@ cfg.debounce = std::time::Duration::from_millis(300);
 cfg.fast_budget = std::time::Duration::from_millis(5);   // per-unit fast budget (C ABI: "fast_budget_ms", CLI: --fast-budget-ms)
 cfg.eligibility = EligibilityMode::Probe;                // default; AllowList = only allow-listed vocabulary (docs/ELIGIBILITY.md)
 cfg.trusted_macros = vec!["mymacro".into()];       // host-vouched pure macros (optional)
+cfg.picture_cache = true;                          // reuse unchanged TikZ pictures across passes (C ABI: "picture_cache", CLI: --no-picture-cache)
 let session = Session::open(cfg)?;                 // loads main.tex and the files it \inputs, spawns the server, first pass
 
 let r = session.apply_edit("main.tex", Edit { start_byte, end_byte, text })?;  // or "chapters/one.tex"; paths are

@@ -73,7 +73,11 @@ until the next layout (`ParagraphUpdate.reasons` lists `inserts`).
 - **Images** reference the engine's image resource index; `IMAGE_INFO` records (page lists and
   fast results alike) give the file, page and page count. graphicx draws bitmap images at their
   natural size inside a `MATRIX save` / `set` / `restore` group: apply the matrix about its
-  point to the image rectangle (`verify.rs` shows the composition).
+  point to the image rectangle (`verify.rs` shows the composition). A picture the background
+  pass took from the picture cache is an image too: the JSON capture marks it in `images_info`
+  (`cached_picture: true`, `bbox` = the region of the earlier pass PDF, in sp of PDF user space)
+  and the page carries the `pic_cache` flag, so it is degraded and hosts render it from the pass
+  PDF; the binary `IMAGE_INFO` record does not carry these two fields.
 - **Color** records are LuaTeX `pdf_colorstack` operations with the raw PDF color operators in
   `data` (e.g. `1 0 0 rg 1 0 0 RG`); `set` replaces the stack top, `push`/`pop` nest. A paragraph
   display list starts with a `set` of the color in force at its start when it is not black.
