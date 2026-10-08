@@ -90,6 +90,13 @@
   (`thebibliography`, `\bibitem`, `\newblock`) are block units. A macro several packages
   provide (`\citeauthor`, `\mathbb` via amsfonts/unicode-math) is allowed when any of them is
   loaded.
+- Title block on the fast path (article/report without titlepage): `\title`/`\author`/`\date`/
+  `\thanks`/`\and`/`\maketitle` are allowed, the span maps to the `center` unit the class
+  builds, and the server restores the kernel's title macros after every compile. A unit that
+  begins on the blank line after a span (hyperref's `\maketitle` reads ahead) maps to that
+  span. Also allowed: `\S`, `\P`, `\dag`, `\ddag`, `\pounds`, guillemets, `\protect`,
+  `\selectfont`, `\fontsize`/`\frenchspacing` inside groups, `\triangle`; with their packages
+  `\xspace`, `\nicefrac`, `\ce` (mhchem), `\enquote` (csquotes), `\ding`, `\subfloat`.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

@@ -273,6 +273,24 @@ const TEXT_MACROS: &[&str] = &[
     // manual bibliographies (thebibliography is a block environment)
     "bibitem",
     "newblock",
+    // title block (article/report without titlepage: a center environment; the server keeps
+    // the kernel macros usable between compiles)
+    "title",
+    "author",
+    "date",
+    "thanks",
+    "and",
+    "maketitle",
+    // symbols
+    "S",
+    "P",
+    "dag",
+    "ddag",
+    "pounds",
+    "guillemotleft",
+    "guillemotright",
+    "protect",
+    "selectfont",
     "footnote",
     "footnotemark",
     "footnotetext",
@@ -296,6 +314,8 @@ const TEXT_MACROS: &[&str] = &[
 /// Declarations that are only allowed *inside* a brace group or an environment (they would
 /// otherwise leak).
 const GROUP_ONLY_DECLARATIONS: &[&str] = &[
+    "frenchspacing",
+    "nonfrenchspacing",
     "itshape",
     "bfseries",
     "scshape",
@@ -387,6 +407,7 @@ const MATH_MACROS: &[&str] = &[
     "vee",
     "partial",
     "nabla",
+    "triangle",
     "prime",
     "angle",
     "perp",
@@ -647,6 +668,13 @@ const PKG_MACROS: &[(&str, &[&str])] = &[
         ],
     ),
     ("caption", &["captionof", "captionof*"]),
+    ("xspace", &["xspace"]),
+    ("nicefrac", &["nicefrac"]),
+    ("units", &["nicefrac"]),
+    ("mhchem", &["ce"]),
+    ("csquotes", &["enquote", "textquote", "foreignquote"]),
+    ("pifont", &["ding"]),
+    ("subfig", &["subfloat"]),
     (
         "biblatex",
         &[
@@ -748,6 +776,7 @@ fn package_macro(name: &str, policy: &Policy) -> Option<Result<(), &'static str>
 /// Macros whose argument(s) are opaque (URLs, units, verbatim): skipped, not classified.
 /// (name, brace arguments to skip; 0 = delimited like \verb|…|).
 const OPAQUE_ARGS: &[(&str, usize)] = &[
+    ("ce", 1),
     ("url", 1),
     ("href", 1),
     ("nolinkurl", 1),
@@ -773,7 +802,13 @@ const OPAQUE_ENVS: &[&str] = &["verbatim", "verbatim*", "lstlisting", "Verbatim"
 
 /// Settings that are fine inside a group or environment (local), not at a unit's top level,
 /// where they would change the document state the next units are typeset in.
-const GROUP_ONLY_SETTERS: &[&str] = &["setlength", "addtolength", "setstretch", "linespread"];
+const GROUP_ONLY_SETTERS: &[&str] = &[
+    "setlength",
+    "addtolength",
+    "setstretch",
+    "linespread",
+    "fontsize",
+];
 
 /// Block environments that form units (or end a paragraph unit) and may nest.
 pub use crate::document::BLOCK_ENVS;
@@ -1932,6 +1967,10 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
     }
     let _ = Reason::EnvironmentBoundary;
     let _ = Reason::DisplayMath;
+    // the title block is a center environment in the capture (article's \@maketitle)
+    if shape == UnitShape::Par && text.contains("\\maketitle") {
+        shape = UnitShape::Env("center".into());
+    }
     (shape, reasons)
 }
 
@@ -2234,6 +2273,24 @@ mod tests {
         assert!(r.is_empty(), "{r:?}");
         assert_eq!(shape, UnitShape::Env("hint".into()));
         assert!(!check_source("\\begin{bad}x\\end{bad}", &p).is_empty());
+    }
+    #[test]
+    fn title_block_and_symbols() {
+        let p = pol();
+        let (shape, r) = classify_source("\\title{A Report}\n\\author{Henry Yang \\and A. Reader\\thanks{Supported.}}\n\\date{\\today}\n\\maketitle", &p);
+        assert!(r.is_empty(), "{r:?}");
+        assert_eq!(shape, UnitShape::Env("center".into()));
+        assert!(ok("\\S~3, \\P, \\dag, \\pounds 5, {\\fontsize{10}{12}\\selectfont x}, {\\frenchspacing y.} \\protect\\cite{k}"));
+        assert!(reasons("\\frenchspacing x")
+            .contains(&Reason::SizeDeclarationOutsideGroup("frenchspacing".into())));
+        let p2 = Policy::from_preamble(
+            "\\usepackage{xspace,csquotes,mhchem}\n\\newcommand{\\eg}{e.g.\\xspace}\n",
+            &[],
+            &[],
+        );
+        assert!(p2.trusted_macros.contains("eg"));
+        assert!(check_source("\\enquote{quoted} and \\ce{H2O + CO2} \\eg", &p2).is_empty());
+        assert!(!reasons("\\enquote{x}").is_empty());
     }
     #[test]
     fn trusted() {

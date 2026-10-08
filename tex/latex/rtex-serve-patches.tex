@@ -118,4 +118,72 @@
 % 4. Package/class info messages only reach the log, which the server does not keep.
 \let\GenericInfo\@gobbletwo
 %
+% 5. Title block. article/report (no titlepage) build it as a center environment, then make
+%    \maketitle, \title, \author, \date, \thanks and \and unusable (\global\let ...\relax) and
+%    empty \@title & co. The server must typeset the block again after every edit, so the
+%    kernel definitions are saved here and restored after each compile (\rtex@restoretitle,
+%    appended to the compile's tail tokens). \@maketitle loses its page-level material
+%    (\newpage, \null, the \vskips outside the center environment): the capture's unit is the
+%    environment, and the vertical glue around it comes from the placements.
+\def\rtex@maketitle@expected{%
+  \newpage
+  \null
+  \vskip 2em%
+  \begin{center}%
+  \let \footnote \thanks
+    {\LARGE \@title \par}%
+    \vskip 1.5em%
+    {\large
+      \lineskip .5em%
+      \begin{tabular}[t]{c}%
+        \@author
+      \end{tabular}\par}%
+    \vskip 1em%
+    {\large \@date}%
+  \end{center}%
+  \par
+  \vskip 1.5em}
+\ifx\rtex@maketitle@expected\@maketitle
+  \def\@maketitle{%
+    \begin{center}%
+    \let \footnote \thanks
+      {\LARGE \@title \par}%
+      \vskip 1.5em%
+      {\large
+        \lineskip .5em%
+        \begin{tabular}[t]{c}%
+          \@author
+        \end{tabular}\par}%
+      \vskip 1em%
+      {\large \@date}%
+    \end{center}%
+    \par}%
+  \let\rtex@save@maketitle\maketitle
+  \let\rtex@save@@maketitle\@maketitle
+  \let\rtex@save@title\title
+  \let\rtex@save@author\author
+  \let\rtex@save@date\date
+  \let\rtex@save@thanks\thanks
+  \let\rtex@save@and\and
+  \let\rtex@save@@title\@title
+  \let\rtex@save@@author\@author
+  \let\rtex@save@@date\@date
+  \let\rtex@save@@thanks\@thanks
+  \edef\rtex@save@topnum{\the\@topnum}%
+  \def\rtex@restoretitle{%
+    \global\let\maketitle\rtex@save@maketitle
+    \global\let\@maketitle\rtex@save@@maketitle
+    \global\let\title\rtex@save@title
+    \global\let\author\rtex@save@author
+    \global\let\date\rtex@save@date
+    \global\let\thanks\rtex@save@thanks
+    \global\let\and\rtex@save@and
+    \global\let\@title\rtex@save@@title
+    \global\let\@author\rtex@save@@author
+    \global\let\@date\rtex@save@@date
+    \global\let\@thanks\rtex@save@@thanks
+    \global\@topnum\rtex@save@topnum\relax
+    \global\@specialpagefalse}%
+\fi
+%
 \makeatother

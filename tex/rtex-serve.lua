@@ -490,7 +490,9 @@ function S.init(boxnum, countnum, cctnum)
   end
   local nobreak_idle = ifmode("if@nobreak") == IFTRUE_MODE
   head_tokens = "\\luafunction" .. S.fn_mark .. " \\begingroup\\global\\setbox\\rtexbox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " "
-  tail_tokens = "\\par\\egroup\\endgroup" .. (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. "\\luafunction" .. S.fn_finish .. " "
+  -- the title block's kernel macros (rtex-serve-patches.tex, 5) come back after every compile
+  local restore_title = token.is_defined("rtex@restoretitle") and "\\rtex@restoretitle " or ""
+  tail_tokens = "\\par\\egroup\\endgroup" .. (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,

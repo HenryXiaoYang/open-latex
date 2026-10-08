@@ -888,3 +888,70 @@ fn user_environments_are_live() {
     }
     s.close();
 }
+
+/// The title block is a live unit, and stays one after the first compile (the server restores
+/// \maketitle and friends, which the class disables after use).
+#[test]
+fn title_block_is_live() {
+    if rtex_core::texlive::TexLive::discover().is_err() {
+        eprintln!("SKIP: no lualatex");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("rtex-session-{}-title", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\usepackage{hyperref}\n\\begin{document}\n\\title{A Title}\n\\author{Henry Yang \\and A. Reader\\thanks{With thanks.}}\n\\date{1 January 2026}\n\\maketitle\n\nBody text after the title block.\n\\end{document}\n",
+    )
+    .unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.debounce = Duration::from_millis(50);
+    let s = Session::open(cfg).unwrap();
+    let Event::LayoutUpdate {
+        eligible_paragraphs,
+        ..
+    } = wait_layout(&s)
+    else {
+        unreachable!()
+    };
+    let doc = s.document_text("main.tex").unwrap();
+    let spans = s.spans("main.tex");
+    let title = spans
+        .iter()
+        .find(|sp| doc[sp.range.clone()].starts_with("\\title"))
+        .unwrap();
+    assert!(eligible_paragraphs.contains(&title.id), "title block unit");
+    let mut glyphs = Vec::new();
+    for word in ["Title", "Reader"] {
+        let doc = s.document_text("main.tex").unwrap();
+        let pos = title.range.start + doc[title.range.clone()].find(word).unwrap() + word.len();
+        let r = s
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: pos,
+                    end_byte: pos,
+                    text: " Longer".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+        let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
+        let Some(Event::ParagraphUpdate {
+            par_id, status, dl, ..
+        }) = ev
+        else {
+            panic!("no update")
+        };
+        assert_eq!(par_id, title.id);
+        // \thanks is a footnote: an insert, so the result is ok_degraded (placed by the layout)
+        assert!(status.starts_with("ok"), "{status}");
+        glyphs.push(dl.glyph_count());
+    }
+    // the second compile typeset the block again (not \relax'ed away), with more text
+    assert!(glyphs[1] > glyphs[0], "{glyphs:?}");
+    s.close();
+}

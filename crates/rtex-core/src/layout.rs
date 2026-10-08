@@ -170,6 +170,15 @@ impl LayoutStore {
                     break;
                 }
             }
+            if span.is_none() {
+                // a unit that begins on the blank line after a span comes from that span: a
+                // macro at the end of its last line read ahead before producing the unit
+                // (hyperref's \maketitle wrapper)
+                span = snapshot
+                    .iter()
+                    .find(|s| s.file == file && s.last_line + 1 == u.begin_line)
+                    .map(|s| s.id);
+            }
             if let Some(id) = span {
                 *per_span_count.entry(id).or_default() += 1;
             }
