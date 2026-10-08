@@ -272,6 +272,7 @@ pub fn capture_command(
 ) -> Result<(Command, String, std::path::PathBuf)> {
     std::fs::create_dir_all(out_dir)?;
     let out_dir = out_dir.canonicalize()?;
+    crate::background::mirror_dirs(src_dir, &out_dir, 0)?;
     let jobname = Path::new(main)
         .file_stem()
         .and_then(|s| s.to_str())

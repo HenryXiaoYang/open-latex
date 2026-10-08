@@ -163,9 +163,8 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
         clean.exit_ok
     );
 
-    let main_text = std::fs::read_to_string(project.join(&opts.main))?;
-    let (preamble, _) = rtex_core::split_preamble(&main_text).context("no \\begin{document}")?;
-    let policy = rtex_core::eligibility::Policy::from_preamble(preamble, &[], &[]);
+    let preamble = rtex_core::project_preamble(&project, &opts.main)?;
+    let policy = rtex_core::eligibility::Policy::from_preamble(&preamble, &[], &[]);
     let (store, fb) = rtex_core::layout::LayoutStore::offline(&cap, &project, &opts.main, &policy)?;
     let candidates: Vec<(&rtex_core::layout::EngineUnit, rtex_core::ParaId)> = store
         .mapped_units()
@@ -187,11 +186,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
         .unwrap_or(candidates.len() / 2)
         .min(candidates.len() - 1);
     let (para, span_id) = candidates[pick];
-    let source = fb
-        .span_text(span_id)
-        .unwrap_or("")
-        .trim_end_matches('\n')
-        .to_string();
+    let source = fb.fast_source(span_id).unwrap_or_default();
     let placements = para.captured.placements.clone();
     let page_no = placements[0].page;
     println!(
@@ -205,7 +200,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     );
 
     // 3. persistent server
-    let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), preamble, 1, None)?;
+    let mut server = FastServer::spawn(&tl, &project, &build.join("serve"), &preamble, 1, None)?;
     println!(
         "server ready in {:.2}s: {}",
         server.startup.as_secs_f64(),

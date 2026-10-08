@@ -55,13 +55,18 @@ placements, labels and page glyphs as a fresh run.
 
 ### Corpus (0.0.2)
 
-`fixtures/corpus/` holds five realistic documents (a CS homework with enumitem lists, listings,
+`fixtures/corpus/` holds six realistic documents (a CS homework with enumitem lists, listings,
 hyperref and tabularx; analysis notes with amsthm, mathtools and user macros; a report with
 natbib, subfigures, multirow and colortbl tables; a lab report with minipages, boxes and ulem;
-a code/units document with verbatim, listings, siunitx and cancel). CI runs `rtex verify` on
-each with an eligibility gate (`--min-eligible`): cs 15/16 units (the lone `\newpage` line
-draws nothing), math 9/9, layout 9/9, code 8/8, report 9/17 (the rest is the title block, TOC
-entries and bibliography, generated material), every eligible unit glyph-identical.
+a code/units document with verbatim, listings, siunitx and cancel; a project split over files
+with a preamble `\input`, an `\input` chapter and an `\include` chapter). CI runs `rtex verify`
+on each with an eligibility gate (`--min-eligible`): cs 15/16 units (the lone `\newpage` line
+draws nothing), math 9/9, layout 9/9, code 8/8, multi 14/14, report 9/17 (the rest is the title
+block, TOC entries and bibliography, generated material), every eligible unit glyph-identical.
+
+A paragraph that ends an `\input`ted file keeps one interword space before `\parfillskip`
+(TeX reads the parent's end of line after the file, and `\par` drops only the last glue); the
+fast path reproduces it (`document::fast_source`), so the last row's glue set is exact too.
 
 ## Layer 2 — PDF content stream (independent parser, quantified tolerance)
 

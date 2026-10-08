@@ -1,0 +1,12 @@
+\section{First chapter}\label{sec:one}
+The first chapter is read with \verb|\input|. Its paragraphs are ordinary body text, so every one of them should be typeset live while the user edits this file. The \project{} server keeps the preamble, with the macros file inlined, loaded between keystrokes.
+
+A second paragraph with inline math $f(x) = \sum_{i=1}^{n} a_i x^i$ and an emphasised \emph{phrase}; the line breaks here depend only on the paragraph itself and the font, never on which file holds the text.
+
+\begin{itemize}
+  \item A list inside an input file.
+  \item Its items borrow the \keyword{everypar} state the capture recorded.
+\end{itemize}
+
+\subsection{A subsection}
+Headings in input files are units of their own, exactly like headings in the main file.

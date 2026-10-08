@@ -3,7 +3,7 @@
 //!   layer 2: every page's display list vs the clean PDF's content stream (independent parser)
 //!   layer 3: every page rasterized from the display list vs PyMuPDF's raster of the PDF
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rtex_core::background::{run_pass_with, BibTool};
 use rtex_core::eligibility::{check_engine_unit, classify_source, Policy, UnitShape};
 use rtex_core::engine::FastServer;
@@ -238,12 +238,8 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     std::fs::create_dir_all(&opts.build)?;
     println!("== verify {} ({})", project.display(), opts.main);
     // bibliography support for mixed fixtures: run biber when a .bcf shows up after the first pass
-    let policy = {
-        let main_text = std::fs::read_to_string(project.join(&opts.main))?;
-        let (preamble, _) =
-            rtex_core::split_preamble(&main_text).context("no \\begin{document}")?;
-        Policy::from_preamble(preamble, &[], &[])
-    };
+    let preamble = rtex_core::project_preamble(&project, &opts.main)?;
+    let policy = Policy::from_preamble(&preamble, &[], &[]);
     let unit_envs = policy.unit_envs_env();
     // Both builds run to aux convergence (labels, TOC, bibliography) exactly like the
     // background compiler does: a single first pass would leave every \ref as "??" while
@@ -303,8 +299,6 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     );
 
     // ---- eligibility + layer 1 (per unit) ----
-    let main_text = std::fs::read_to_string(project.join(&opts.main))?;
-    let (preamble, _) = rtex_core::split_preamble(&main_text).context("no \\begin{document}")?;
     let (store, fb) = LayoutStore::offline(&cap, &project, &opts.main, &policy)?;
     let mut server: Option<FastServer> = None;
     let mut page_cache: std::collections::BTreeMap<i64, DisplayList> =
@@ -313,11 +307,7 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     report.paragraphs_total = cap.json.units.len();
     for (eu, span_id) in store.mapped_units() {
         let c = &eu.captured;
-        let src = fb
-            .span_text(span_id)
-            .unwrap_or("")
-            .trim_end_matches('\n')
-            .to_string();
+        let src = fb.fast_source(span_id).unwrap_or_default();
         let (shape, mut reasons) = classify_source(&src, &policy);
         let has_ctx = c.kind != "par"
             || eu
@@ -390,7 +380,7 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
                 &tl,
                 &project,
                 &opts.build.join("serve"),
-                preamble,
+                &preamble,
                 1,
                 Some(&cap.out_dir.join(format!("{}.aux", cap.jobname))),
             )?;

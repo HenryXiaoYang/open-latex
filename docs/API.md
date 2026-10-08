@@ -6,9 +6,9 @@ use rtex_core::{Session, SessionConfig, Edit, Event};
 let mut cfg = SessionConfig::new("/path/to/project", "main.tex");
 cfg.debounce = std::time::Duration::from_millis(300);
 cfg.trusted_macros = vec!["mymacro".into()];       // host-vouched pure macros (optional)
-let session = Session::open(cfg)?;                 // spawns the server and the first background pass
+let session = Session::open(cfg)?;                 // loads main.tex and the files it \inputs, spawns the server, first pass
 
-let r = session.apply_edit("main.tex", Edit { start_byte, end_byte, text })?;
+let r = session.apply_edit("main.tex", Edit { start_byte, end_byte, text })?;  // or "chapters/one.tex"
 // r.routed ∈ {"fast", "background", "preamble"}, r.reasons explains background routing,
 // r.outcome lists touched/added/removed ParaIds, r.edit_id / r.source_revision tag the edit
 

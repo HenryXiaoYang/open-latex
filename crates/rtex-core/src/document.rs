@@ -107,6 +107,222 @@ pub fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
+/// `\input{…}`, `\include{…}` and `\subfile{…}` commands in `text` (outside comments), as
+/// (byte range of the command, project-relative target with a `.tex` extension). Absolute
+/// paths, `..`, and names built from macros are skipped.
+fn find_inputs(text: &str) -> Vec<(Range<usize>, String, &'static str)> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' => {
+                i += text[i..].find('\n').map(|k| k + 1).unwrap_or(b.len() - i);
+            }
+            b'\\' => {
+                let start = i;
+                i += 1;
+                let name_end = i + text[i..]
+                    .bytes()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .count();
+                if name_end == i {
+                    // escaped character (\%, \\ …): skip it so the next byte is not a comment start
+                    i = (i + 1).min(b.len());
+                    continue;
+                }
+                let name = &text[i..name_end];
+                i = name_end;
+                if !matches!(name, "input" | "include" | "subfile") {
+                    continue;
+                }
+                let mut j = name_end;
+                while j < b.len() && b[j] == b' ' {
+                    j += 1;
+                }
+                let (arg, end) = if j < b.len() && b[j] == b'{' {
+                    let Some(close) = text[j..].find('}') else {
+                        break;
+                    };
+                    (&text[j + 1..j + close], j + close + 1)
+                } else if name == "input" && j < b.len() {
+                    // plain TeX form: \input file
+                    let k = j + text[j..]
+                        .bytes()
+                        .take_while(|c| {
+                            !c.is_ascii_whitespace() && *c != b'\\' && *c != b'{' && *c != b'}'
+                        })
+                        .count();
+                    (&text[j..k], k)
+                } else {
+                    continue;
+                };
+                i = end.max(i);
+                if let Some(t) = normalize_input_target(arg) {
+                    let kind = match name {
+                        "input" => "input",
+                        "include" => "include",
+                        _ => "subfile",
+                    };
+                    out.push((start..end, t, kind));
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+fn normalize_input_target(arg: &str) -> Option<String> {
+    let t = arg.trim().trim_matches('"');
+    let t = t.strip_prefix("./").unwrap_or(t);
+    if t.is_empty()
+        || t.starts_with('/')
+        || t.contains("..")
+        || t.contains('\\')
+        || t.contains('#')
+        || t.contains(',')
+    {
+        return None;
+    }
+    let last = t.rsplit('/').next().unwrap_or(t);
+    Some(if last.contains('.') {
+        t.to_string()
+    } else {
+        format!("{t}.tex")
+    })
+}
+
+/// Files `text` pulls in with `\input`/`\include`/`\subfile`, normalised to project-relative
+/// paths with a `.tex` extension, in order of appearance.
+pub fn input_targets(text: &str) -> Vec<String> {
+    find_inputs(text).into_iter().map(|(_, t, _)| t).collect()
+}
+
+/// Files read with `\input` (not `\include`) by any of `texts`: LaTeX reads the rest of the
+/// `\input` line after the file, so a paragraph that ends at such a file's end keeps one
+/// interword space before `\parfillskip` (see `fast_source`).
+pub fn inputted_files(
+    texts: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeSet<String> {
+    texts
+        .values()
+        .flat_map(|t| find_inputs(t))
+        .filter(|(_, _, kind)| *kind == "input" || *kind == "subfile")
+        .map(|(_, t, _)| t)
+        .collect()
+}
+
+/// The source the fast path typesets for a span: its text without the trailing newline, plus
+/// `\n{}` when the span ends a file read with `\input` without a final blank line. At that
+/// point TeX produces a second end-of-line space (the parent's `\input` line), and `\par`
+/// removes only the last glue, so the paragraph keeps one trailing space; `{}` on a new line
+/// reproduces that space token exactly (same space factor), and nothing else.
+pub fn fast_source(fb: &FileBuf, span: &Span, file_is_inputted: bool) -> String {
+    let text = fb.text[span.range.clone()].trim_end_matches('\n');
+    let mut src = text.to_string();
+    if file_is_inputted && span.kind != SpanKind::Trailer && !text.trim().is_empty() {
+        let rest = &fb.text[span.range.end..];
+        let own = &fb.text[span.range.clone()];
+        let own_tail = &own[own.trim_end().len()..];
+        let ends_file = rest.trim().is_empty()
+            && own_tail.matches('\n').count() + rest.matches('\n').count() <= 1;
+        if ends_file {
+            src.push_str("\n{}");
+        }
+    }
+    src
+}
+
+/// `main` plus, transitively, every file it inputs that exists under `root` (missing files are
+/// left to the compiler to report), keyed by project-relative path.
+pub fn load_project_files(
+    root: &std::path::Path,
+    main: &str,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    use anyhow::Context;
+    let mut files = std::collections::BTreeMap::new();
+    let main_text =
+        std::fs::read_to_string(root.join(main)).with_context(|| format!("reading {main}"))?;
+    let mut queue = input_targets(&main_text);
+    files.insert(main.to_string(), main_text);
+    while let Some(rel) = queue.pop() {
+        if files.contains_key(&rel) || files.len() > 256 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(&rel)) else {
+            continue;
+        };
+        queue.extend(input_targets(&text));
+        files.insert(rel, text);
+    }
+    Ok(files)
+}
+
+/// Files reachable from `text` through `\input`/`\include` chains, restricted to `files`.
+pub fn transitive_inputs(
+    text: &str,
+    files: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeSet<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut queue = input_targets(text);
+    while let Some(rel) = queue.pop() {
+        if !files.contains_key(&rel) || !seen.insert(rel.clone()) {
+            continue;
+        }
+        queue.extend(input_targets(&files[&rel]));
+    }
+    seen
+}
+
+/// `text` with every `\input{f}`/`\include{f}` whose target is in `files` replaced by that
+/// file's text (recursively, bounded depth): the preamble the fast server loads, so it sees the
+/// host's buffers of preamble files rather than what is on disk.
+pub fn expand_inputs(text: &str, files: &std::collections::BTreeMap<String, String>) -> String {
+    fn go(text: &str, files: &std::collections::BTreeMap<String, String>, depth: u32) -> String {
+        if depth > 8 {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for (range, target, _) in find_inputs(text) {
+            if let Some(t) = files.get(&target) {
+                out.push_str(&text[last..range.start]);
+                out.push_str(&go(t, files, depth + 1));
+                out.push('\n');
+                last = range.end;
+            }
+        }
+        out.push_str(&text[last..]);
+        out
+    }
+    go(text, files, 0)
+}
+
+/// The file buffers of a project (offline tools): spans are found across files by id.
+#[derive(Default)]
+pub struct FileSet {
+    pub files: std::collections::BTreeMap<String, FileBuf>,
+    /// Files read with `\input` (see `fast_source`).
+    pub inputted: std::collections::BTreeSet<String>,
+}
+
+impl FileSet {
+    pub fn span_text(&self, id: ParaId) -> Option<&str> {
+        self.files.values().find_map(|fb| fb.span_text(id))
+    }
+    /// What the fast path compiles for span `id` (see `fast_source`).
+    pub fn fast_source(&self, id: ParaId) -> Option<String> {
+        self.files.iter().find_map(|(name, fb)| {
+            fb.span(id)
+                .map(|sp| fast_source(fb, sp, self.inputted.contains(name)))
+        })
+    }
+    pub fn get(&self, rel: &str) -> Option<&FileBuf> {
+        self.files.get(rel)
+    }
+}
+
 fn compute_line_starts(text: &str) -> Vec<usize> {
     let mut v = vec![0];
     for (i, b) in text.bytes().enumerate() {
@@ -585,6 +801,36 @@ impl FileBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_scanning_and_expansion() {
+        let text = "\\input{chapters/one}\n% \\input{nope}\n\\include{chapters/two.tex}\n\\input three\n\\input{../x}\n\\input{\\jobname}\n";
+        assert_eq!(
+            input_targets(text),
+            vec!["chapters/one.tex", "chapters/two.tex", "three.tex"]
+        );
+        let mut files = std::collections::BTreeMap::new();
+        files.insert("a.tex".to_string(), "A\\input{b}".to_string());
+        files.insert("b.tex".to_string(), "B".to_string());
+        assert_eq!(
+            expand_inputs("x \\input{a} y \\input{c}", &files),
+            "x AB\n\n y \\input{c}"
+        );
+        assert_eq!(
+            transitive_inputs("\\input{a}", &files)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["a.tex", "b.tex"]
+        );
+        let mut ids = IdAllocator(0);
+        let fb = FileBuf::new("First.\n\nLast one.\n", &mut ids, 1);
+        let last = fb.spans.last().unwrap();
+        assert_eq!(fast_source(&fb, last, false), "Last one.");
+        assert_eq!(fast_source(&fb, last, true), "Last one.\n{}");
+        assert_eq!(fast_source(&fb, &fb.spans[0], true), "First.");
+        let fb2 = FileBuf::new("Only.\n\n", &mut ids, 1);
+        assert_eq!(fast_source(&fb2, &fb2.spans[0], true), "Only.");
+    }
     const DOC: &str = "\\documentclass{book}\n\\usepackage{microtype}\n\\begin{document}\n\\chapter{One}\n\nFirst paragraph\nspanning two lines.\n\nSecond paragraph.\n\n\\begin{itemize}\n\\item a\n\n\\item b\n\\end{itemize}\n\nThird.\n\\end{document}\n";
 
     #[test]

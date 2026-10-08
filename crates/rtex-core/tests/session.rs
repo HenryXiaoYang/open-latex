@@ -576,3 +576,169 @@ fn multi_paragraph_span_is_one_live_unit() {
     assert_eq!(fragments[0].baselines.len(), 2);
     s.close();
 }
+
+/// A project split over files: paragraphs in an `\input`ted chapter are live, an edit to a
+/// preamble file restarts the engine, and a new `\input` line loads its file.
+#[test]
+fn input_files_are_tracked() {
+    if rtex_core::texlive::TexLive::discover().is_err() {
+        eprintln!("SKIP: no lualatex");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("rtex-session-{}-multi", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(project.join("chapters")).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\input{macros}\n\\begin{document}\n\\section{A}\nMain text with a \\kw{word}.\n\n\\input{chapters/one}\n\n\\end{document}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("macros.tex"),
+        "\\newcommand{\\kw}[1]{\\textbf{#1}}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("chapters/one.tex"),
+        "\\section{One}\nFirst paragraph of the chapter, with a \\kw{keyword} and some more words so that it wraps onto a second line of text.\n\nSecond paragraph of the chapter.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("chapters/two.tex"),
+        "Paragraph from the second chapter file.\n",
+    )
+    .unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.debounce = Duration::from_millis(50);
+    let s = Session::open(cfg).unwrap();
+    // all three files are tracked from the start; the preamble file is one
+    assert!(!s.spans("chapters/one.tex").is_empty());
+    assert!(!s.spans("macros.tex").is_empty());
+    assert!(s.spans("chapters/two.tex").is_empty(), "not referenced yet");
+    let Event::LayoutUpdate {
+        eligible_paragraphs,
+        ..
+    } = wait_layout(&s)
+    else {
+        unreachable!()
+    };
+    let ch = s.spans("chapters/one.tex");
+    let text = s.document_text("chapters/one.tex").unwrap();
+    let first = ch
+        .iter()
+        .find(|sp| text[sp.range.clone()].starts_with("First paragraph"))
+        .unwrap();
+    assert!(
+        eligible_paragraphs.contains(&first.id),
+        "chapter paragraph has a context"
+    );
+    step("edit in the input file");
+    let pos = first.range.start + "First".len();
+    let r = s
+        .apply_edit(
+            "chapters/one.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " edited".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
+    let Some(Event::ParagraphUpdate {
+        par_id, status, dl, ..
+    }) = ev
+    else {
+        panic!("no update")
+    };
+    assert_eq!(par_id, first.id);
+    assert_eq!(status, "ok");
+    assert!(dl.glyph_count() > 10);
+    step("edit the preamble file");
+    let gen_before = s.versions().engine_generation;
+    let r2 = s
+        .apply_edit(
+            "macros.tex",
+            Edit {
+                start_byte: 0,
+                end_byte: 0,
+                text: "\\newcommand{\\kwb}[1]{\\emph{#1}}\n".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r2.routed, "preamble", "{:?}", r2.reasons);
+    assert!(s.versions().engine_generation > gen_before);
+    let (ready, _) = wait(
+        &s,
+        60,
+        |e| matches!(e, Event::EngineState { state, .. } if state == "Ready"),
+    );
+    assert!(ready.is_some());
+    loop {
+        let Event::LayoutUpdate { versions, .. } = wait_layout(&s) else {
+            unreachable!()
+        };
+        if versions.source_revision >= r2.source_revision {
+            break;
+        }
+    }
+    // the new macro is known to the policy: using it is still fast
+    let ch = s.spans("chapters/one.tex");
+    let text = s.document_text("chapters/one.tex").unwrap();
+    let second = ch
+        .iter()
+        .find(|sp| text[sp.range.clone()].starts_with("Second"))
+        .unwrap();
+    let pos = second.range.start + "Second".len();
+    let r3 = s
+        .apply_edit(
+            "chapters/one.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: " \\kwb{new}".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r3.routed, "fast", "{:?}", r3.reasons);
+    step("new \\input line");
+    let main = s.document_text("main.tex").unwrap();
+    let pos = main.find("\\end{document}").unwrap();
+    let r4 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: "\\input{chapters/two}\n\n".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r4.routed, "background", "{:?}", r4.reasons);
+    assert!(
+        !s.spans("chapters/two.tex").is_empty(),
+        "the new file is loaded"
+    );
+    loop {
+        let Event::LayoutUpdate {
+            versions,
+            eligible_paragraphs,
+            ..
+        } = wait_layout(&s)
+        else {
+            unreachable!()
+        };
+        if versions.source_revision >= r4.source_revision {
+            let two = s.spans("chapters/two.tex");
+            assert!(
+                two.iter().any(|sp| eligible_paragraphs.contains(&sp.id)),
+                "paragraph of the new file has a context"
+            );
+            break;
+        }
+    }
+    s.close();
+}

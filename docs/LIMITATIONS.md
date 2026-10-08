@@ -51,8 +51,12 @@ background path and arrives with the next `LayoutUpdate` (seconds, not milliseco
 continues after a block environment inside the same span, and headings sharing a span with text,
 are background-only (the capture closes the unit at the environment's end).
 
-**Documents.** One main file is tracked by the session today; `\input`/`\include`d files are
-compiled (the project directory is snapshotted) but edits to them are not routed to the fast path.
+**Documents.** The session tracks the main file and, transitively, every file it `\input`s,
+`\include`s or `\subfile`s (loaded from disk at open and when a new `\input` line appears;
+hosts hand over unsaved buffers with `set_document`). Paragraphs in those files are fast-path
+units like any other; an edit to a file the preamble `\input`s is a preamble change (engine
+restart). Files named through macros (`\input{\chapterdir/x}`), `\includeonly` and
+`\import` are not followed.
 LaTeX only (the paragraph hooks `para/begin` and `shipout/before` are LaTeX kernel hooks, 2021+).
 LuaTeX only; no pdfTeX/XeTeX.
 

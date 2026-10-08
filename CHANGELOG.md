@@ -69,6 +69,12 @@
   `\newpage` and friends; `\setlength`/`\renewcommand{\arraystretch}` inside groups. The fast
   server reads the last pass's aux at `\begin{document}` (natbib's mode, hyperref), and
   hyperref's link/destination whatsits no longer degrade a unit.
+- Multi-file projects: the session loads the main file and, transitively, every file it
+  `\input`s/`\include`s (at open and when a new `\input` line appears); their paragraphs are
+  fast-path units, an edit to a preamble `\input` file restarts the engine, the server's
+  preamble has those files inlined, `\include` works with the output directory (its
+  subdirectories are mirrored) and partial `.aux` files count towards convergence. Corpus
+  fixture `multi` (14/14 live).
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

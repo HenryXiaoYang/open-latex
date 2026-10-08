@@ -1,0 +1,18 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\input{macros}
+\begin{document}
+
+\section{Overview}
+This project is split over several files. The preamble pulls its macros from a separate file, and each chapter lives under \texttt{chapters/}. A term like \keyword{cache line} is set by a macro defined there, and $\norm{v} \leq \norm{u} + \norm{v-u}$ uses another.
+
+\input{chapters/one}
+
+\include{chapters/two}
+
+\section{Closing}
+The last paragraph is back in the main file. It mentions Section~\ref{sec:one} and Section~\ref{sec:two}, both of which live in other files.
+
+\end{document}

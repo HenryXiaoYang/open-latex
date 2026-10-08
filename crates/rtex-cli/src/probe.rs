@@ -24,9 +24,8 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     let project = project.canonicalize()?;
     std::fs::create_dir_all(&build)?;
     let cap = run_capture(&tl, &project, &main, &build.join("capture"), true)?;
-    let main_text = std::fs::read_to_string(project.join(&main))?;
-    let (preamble, _) = rtex_core::split_preamble(&main_text).unwrap();
-    let policy = rtex_core::eligibility::Policy::from_preamble(preamble, &[], &[]);
+    let preamble = rtex_core::project_preamble(&project, &main)?;
+    let policy = rtex_core::eligibility::Policy::from_preamble(&preamble, &[], &[]);
     let (store, fb) = rtex_core::layout::LayoutStore::offline(&cap, &project, &main, &policy)?;
     let mut cands: Vec<(&rtex_core::layout::EngineUnit, rtex_core::ParaId)> = store
         .mapped_units()
@@ -51,7 +50,7 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
         &tl,
         &project,
         &build.join("serve"),
-        preamble,
+        &preamble,
         1,
         Some(&cap.out_dir.join(format!("{}.aux", cap.jobname))),
     )?;
@@ -66,11 +65,7 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
     );
     for (name, p) in [("short", short), ("medium", medium), ("long", long)] {
         let Some((p, span_id)) = p else { continue };
-        let src = fb
-            .span_text(span_id)
-            .unwrap_or("")
-            .trim_end_matches('\n')
-            .to_string();
+        let src = fb.fast_source(span_id).unwrap_or_default();
         server.set_context(p.uid, &p.context_json())?;
         for _ in 0..5 {
             server.compile(p.uid, &src)?;
@@ -124,11 +119,7 @@ pub fn run(project: PathBuf, main: String, n: usize, build: PathBuf) -> Result<(
         if !seen.insert(key.clone()) {
             continue;
         }
-        let src = fb
-            .span_text(span_id)
-            .unwrap_or("")
-            .trim_end_matches('\n')
-            .to_string();
+        let src = fb.fast_source(span_id).unwrap_or_default();
         let (_shape, reasons) = rtex_core::eligibility::classify_source(&src, &policy);
         if !reasons.is_empty() {
             continue;

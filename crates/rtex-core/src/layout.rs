@@ -318,25 +318,38 @@ impl LayoutStore {
     }
 
     /// Build a store from a capture of `project/main` without a session (verification tools,
-    /// tests): the main file is segmented like the session would, and the capture installed.
+    /// tests): the main file and the files it inputs are segmented like the session would, and
+    /// the capture installed.
     pub fn offline(
         cap: &CaptureResult,
         project: &std::path::Path,
         main: &str,
         policy: &crate::eligibility::Policy,
-    ) -> anyhow::Result<(LayoutStore, crate::document::FileBuf)> {
-        let text = std::fs::read_to_string(project.join(main))?;
+    ) -> anyhow::Result<(LayoutStore, crate::document::FileSet)> {
+        let texts = crate::document::load_project_files(project, main)?;
         let mut ids = crate::document::IdAllocator(0);
-        let fb = crate::document::FileBuf::with_block_envs(
-            &text,
-            &mut ids,
-            1,
-            policy.theorem_envs.iter().cloned().collect(),
-        );
-        let spans = snapshot_spans_of(&fb, main, policy);
+        let mut set = crate::document::FileSet::default();
+        let mut spans = Vec::new();
+        // the main file first so its ids come first (tools pick "the middle paragraph" by id)
+        for (name, text) in std::iter::once((main, texts[main].as_str())).chain(
+            texts
+                .iter()
+                .filter(|(n, _)| n.as_str() != main)
+                .map(|(n, t)| (n.as_str(), t.as_str())),
+        ) {
+            let fb = crate::document::FileBuf::with_block_envs(
+                text,
+                &mut ids,
+                1,
+                policy.theorem_envs.iter().cloned().collect(),
+            );
+            spans.extend(snapshot_spans_of(&fb, name, policy));
+            set.files.insert(name.to_string(), fb);
+        }
+        set.inputted = crate::document::inputted_files(&texts);
         let mut store = LayoutStore::default();
         store.install(cap, spans, 1)?;
-        Ok((store, fb))
+        Ok((store, set))
     }
 
     /// Page positions for the rows of a unit the layout has no placement for, relative to a

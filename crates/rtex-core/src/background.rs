@@ -101,6 +101,28 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
     Ok(())
 }
 
+/// Create under `out` every directory of `src` (skipping hidden, build and target), so
+/// `\include{chapters/x}` can open `chapters/x.aux` in the output directory.
+pub fn mirror_dirs(src: &Path, out: &Path, depth: usize) -> Result<()> {
+    if depth > 8 {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_s = name.to_string_lossy();
+        if name_s.starts_with('.') || name_s == "build" || name_s == "target" {
+            continue;
+        }
+        if entry.path().is_dir() {
+            let sub = out.join(&name);
+            std::fs::create_dir_all(&sub)?;
+            mirror_dirs(&entry.path(), &sub, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
 fn aux_signature(out_dir: &Path, jobname: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     use std::hash::{Hash, Hasher};
@@ -108,6 +130,19 @@ fn aux_signature(out_dir: &Path, jobname: &str) -> u64 {
         if let Ok(b) = std::fs::read(out_dir.join(format!("{jobname}.{ext}"))) {
             ext.hash(&mut h);
             b.hash(&mut h);
+            if ext == "aux" {
+                // partial aux files of \include'd chapters (\@input{chapters/x.aux})
+                let text = String::from_utf8_lossy(&b);
+                for part in text.split("\\@input{").skip(1) {
+                    let Some(name) = part.split('}').next() else {
+                        continue;
+                    };
+                    if let Ok(pb) = std::fs::read(out_dir.join(name)) {
+                        name.hash(&mut h);
+                        pb.hash(&mut h);
+                    }
+                }
+            }
         }
     }
     h.finish()
@@ -406,7 +441,9 @@ pub fn write_body_snapshot(
     files2.insert(main.to_string(), padded);
     files2.insert("rtex-preamble.tex".to_string(), pre.to_string());
     write_snapshot(project, &files2, dir)?;
-    Ok(crate::document::hash_str(pre))
+    Ok(crate::document::hash_str(&crate::document::expand_inputs(
+        pre, files,
+    )))
 }
 
 pub struct WarmEngine {

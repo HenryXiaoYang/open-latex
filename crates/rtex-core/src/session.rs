@@ -247,6 +247,10 @@ struct Shared {
     cfg: SessionConfig,
     tl: TexLive,
     policy: Mutex<Policy>,
+    /// Files the preamble `\input`s: an edit to one of them is a preamble change.
+    preamble_inputs: Mutex<std::collections::BTreeSet<String>>,
+    /// Files read with `\input` anywhere (see `document::fast_source`).
+    inputted: Mutex<std::collections::BTreeSet<String>>,
     /// Units over the fast budget: par id → (layout_version when measured, ms).
     slow_units: Mutex<HashMap<ParaId, (u64, u64)>>,
     /// Consecutive over-budget compiles per unit (the first ones may be loading fonts).
@@ -289,23 +293,26 @@ impl Session {
             build_dir: cfg.build_dir.canonicalize()?,
             ..cfg
         };
-        let main_text = std::fs::read_to_string(cfg.project_root.join(&cfg.main_file))
+        // the main file and, transitively, every file it \input/\includes
+        let texts = crate::document::load_project_files(&cfg.project_root, &cfg.main_file)
             .with_context(|| format!("reading {}", cfg.main_file))?;
         let mut ids = IdAllocator(0);
         let mut files = BTreeMap::new();
-        let preamble = crate::split_preamble(&main_text)
-            .map(|(p, _)| p.to_string())
-            .unwrap_or_default();
+        let preamble = effective_preamble(&texts, &cfg.main_file);
+        let preamble_inputs = preamble_input_set(&texts, &cfg.main_file);
         let policy = Policy::from_preamble(&preamble, &cfg.trusted_macros, &cfg.unit_envs);
+        let envs: Vec<String> = policy.theorem_envs.iter().cloned().collect();
+        // the main file first so its span ids come first
         files.insert(
             cfg.main_file.clone(),
-            FileBuf::with_block_envs(
-                &main_text,
-                &mut ids,
-                1,
-                policy.theorem_envs.iter().cloned().collect(),
-            ),
+            FileBuf::with_block_envs(&texts[&cfg.main_file], &mut ids, 1, envs.clone()),
         );
+        for (name, text) in texts.iter().filter(|(n, _)| **n != cfg.main_file) {
+            files.insert(
+                name.clone(),
+                FileBuf::with_block_envs(text, &mut ids, 1, envs.clone()),
+            );
+        }
         let (tx, rx) = unbounded();
         let shared = Arc::new(Shared {
             link: Mutex::new(EngineLink {
@@ -329,6 +336,8 @@ impl Session {
             cfg,
             tl,
             policy: Mutex::new(policy),
+            preamble_inputs: Mutex::new(preamble_inputs),
+            inputted: Mutex::new(crate::document::inputted_files(&texts)),
             slow_units: Mutex::new(HashMap::new()),
             slow_candidates: Mutex::new(HashMap::new()),
             edit_counter: AtomicU64::new(0),
@@ -445,24 +454,26 @@ impl Session {
         let t_start = Instant::now();
         let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let outcome = {
+        let mut outcome = {
             let mut files = self.shared.files.lock();
             let fb = files
                 .get_mut(rel_path)
                 .ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
             fb.apply(&edit, &mut self.shared.ids.lock(), rev)
         };
+        if self.shared.preamble_inputs.lock().contains(rel_path) {
+            outcome.preamble_changed = true;
+        }
         if outcome.preamble_changed {
             self.shared.preamble_revision.store(rev, Ordering::SeqCst);
+            self.load_new_inputs();
             {
                 let files = self.shared.files.lock();
-                let main = files
-                    .get(&self.shared.cfg.main_file)
-                    .map(|f| f.text.clone())
-                    .unwrap_or_default();
-                let preamble = crate::split_preamble(&main)
-                    .map(|(p, _)| p.to_string())
-                    .unwrap_or_default();
+                let texts = texts_of(&files);
+                let preamble = effective_preamble(&texts, &self.shared.cfg.main_file);
+                *self.shared.preamble_inputs.lock() =
+                    preamble_input_set(&texts, &self.shared.cfg.main_file);
+                *self.shared.inputted.lock() = crate::document::inputted_files(&texts);
                 let policy = Policy::from_preamble(
                     &preamble,
                     &self.shared.cfg.trusted_macros,
@@ -505,6 +516,23 @@ impl Session {
             });
         }
         let t_seg = t_start.elapsed();
+        // a new \input/\include line: load the file so its paragraphs get spans (and contexts
+        // from the next pass)
+        if outcome
+            .touched
+            .iter()
+            .chain(outcome.added.iter())
+            .any(|id| {
+                let files = self.shared.files.lock();
+                files
+                    .get(rel_path)
+                    .and_then(|fb| fb.span_text(*id))
+                    .map(|t| !crate::document::input_targets(t).is_empty())
+                    .unwrap_or(false)
+            })
+        {
+            self.load_new_inputs();
+        }
         // Every body span the edit touched or created is routed (a split compiles both halves,
         // a merge the merged paragraph, a fresh paragraph borrows a context); the first one in
         // document order decides the reported outcome. Removed spans are announced as empty
@@ -738,7 +766,11 @@ impl Session {
             par_id: span.id,
             edit_id,
             span_hash: span.hash,
-            source: text.trim_end_matches('\n').to_string(),
+            source: crate::document::fast_source(
+                fb,
+                span,
+                self.shared.inputted.lock().contains(rel_path),
+            ),
             seq,
             ctx,
             versions: Versions {
@@ -878,6 +910,61 @@ impl Session {
             pending_since: self.shared.source_revision.load(Ordering::SeqCst),
         });
         self.shared.bg_signal.0.send(BgCmd::Pass).ok();
+    }
+
+    /// Load from disk every file the tracked files now `\input` that is not tracked yet.
+    /// Returns the number of files added.
+    fn load_new_inputs(&self) -> usize {
+        let mut files = self.shared.files.lock();
+        let envs: Vec<String> = self
+            .shared
+            .policy
+            .lock()
+            .theorem_envs
+            .iter()
+            .cloned()
+            .collect();
+        let mut added = 0;
+        loop {
+            let wanted: Vec<String> = files
+                .values()
+                .flat_map(|fb| crate::document::input_targets(&fb.text))
+                .filter(|t| !files.contains_key(t))
+                .collect();
+            if wanted.is_empty() || files.len() > 256 {
+                break;
+            }
+            let mut any = false;
+            for rel in wanted {
+                if files.contains_key(&rel) {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(self.shared.cfg.project_root.join(&rel))
+                else {
+                    // missing on disk: remember it as empty so we do not retry on every edit;
+                    // the compiler reports it
+                    files.insert(
+                        rel,
+                        FileBuf::with_block_envs("", &mut self.shared.ids.lock(), 1, envs.clone()),
+                    );
+                    continue;
+                };
+                let rev = self.shared.source_revision.load(Ordering::SeqCst);
+                files.insert(
+                    rel,
+                    FileBuf::with_block_envs(&text, &mut self.shared.ids.lock(), rev, envs.clone()),
+                );
+                added += 1;
+                any = true;
+            }
+            if !any {
+                break;
+            }
+        }
+        if added > 0 {
+            *self.shared.inputted.lock() = crate::document::inputted_files(&texts_of(&files));
+        }
+        added
     }
 
     pub fn export_pdf(&self, out: impl Into<PathBuf>) -> u64 {
@@ -1103,16 +1190,7 @@ fn engine_thread(s: Arc<Shared>) {
             if let Some(mut old) = server.take() {
                 old.kill();
             }
-            let preamble = {
-                let files = s.files.lock();
-                let main = files
-                    .get(&s.cfg.main_file)
-                    .map(|f| f.text.clone())
-                    .unwrap_or_default();
-                crate::split_preamble(&main)
-                    .map(|(p, _)| p.to_string())
-                    .unwrap_or_default()
-            };
+            let preamble = effective_preamble(&texts_of(&s.files.lock()), &s.cfg.main_file);
             s.events
                 .send(Event::EngineState {
                     engine_generation: wanted_gen,
@@ -1502,11 +1580,14 @@ fn prepare_standby(s: &Shared) {
         return;
     }
     let (texts, _, _) = snapshot(s);
-    let pre_hash = texts
+    if !texts
         .get(&s.cfg.main_file)
-        .and_then(|t| crate::split_preamble(t))
-        .map(|(p, _)| crate::document::hash_str(p));
-    let Some(pre_hash) = pre_hash else { return };
+        .map(|t| t.contains("\\begin{document}"))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let pre_hash = crate::document::hash_str(&effective_preamble(&texts, &s.cfg.main_file));
     let mut slot = s.standby.lock();
     if let Some(w) = slot.as_mut() {
         if w.preamble_hash == pre_hash && w.is_alive() {
@@ -1543,6 +1624,33 @@ fn prepare_standby(s: &Shared) {
                 .ok();
         }
     }
+}
+
+fn texts_of(files: &BTreeMap<String, FileBuf>) -> BTreeMap<String, String> {
+    files
+        .iter()
+        .map(|(n, fb)| (n.clone(), fb.text.clone()))
+        .collect()
+}
+
+/// The main file's preamble with `\input`ted files inlined from the buffers.
+fn effective_preamble(texts: &BTreeMap<String, String>, main: &str) -> String {
+    texts
+        .get(main)
+        .and_then(|t| crate::split_preamble(t))
+        .map(|(p, _)| crate::document::expand_inputs(p, texts))
+        .unwrap_or_default()
+}
+
+fn preamble_input_set(
+    texts: &BTreeMap<String, String>,
+    main: &str,
+) -> std::collections::BTreeSet<String> {
+    texts
+        .get(main)
+        .and_then(|t| crate::split_preamble(t))
+        .map(|(p, _)| crate::document::transitive_inputs(p, texts))
+        .unwrap_or_default()
 }
 
 fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpan>, Revision) {
