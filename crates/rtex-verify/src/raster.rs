@@ -225,12 +225,20 @@ pub fn read_png_gray(path: &Path) -> Result<(Vec<u8>, usize, usize)> {
 }
 
 /// Render page `page` (1-based) of `pdf` with PyMuPDF at `dpi` into a grayscale PNG.
+///
+/// The interpreter is `$RTEX_PYTHON` when set, else `python3` from `PATH`. The script
+/// drops the current directory from `sys.path` (what `-I` would do) but keeps the user
+/// site-packages, so a `pip install --user pymupdf` is found.
 pub fn render_pdf_page_with_pymupdf(pdf: &Path, page: u32, dpi: u32, out: &Path) -> Result<()> {
-    let script = format!(
-        "import pymupdf,sys\nd=pymupdf.open(sys.argv[1]);p=d[int(sys.argv[2])-1];pix=p.get_pixmap(dpi=int(sys.argv[3]),colorspace=pymupdf.csGRAY,alpha=False);pix.save(sys.argv[4])\n"
+    let script = concat!(
+        "import os,sys\n",
+        "sys.path[:]=[p for p in sys.path if p and os.path.abspath(p)!=os.getcwd()]\n",
+        "import pymupdf\n",
+        "d=pymupdf.open(sys.argv[1]);p=d[int(sys.argv[2])-1]\n",
+        "pix=p.get_pixmap(dpi=int(sys.argv[3]),colorspace=pymupdf.csGRAY,alpha=False);pix.save(sys.argv[4])\n"
     );
-    let st = std::process::Command::new("python3")
-        .arg("-I")
+    let python = std::env::var_os("RTEX_PYTHON").unwrap_or_else(|| "python3".into());
+    let st = std::process::Command::new(&python)
         .arg("-c")
         .arg(script)
         .arg(pdf)
@@ -238,7 +246,7 @@ pub fn render_pdf_page_with_pymupdf(pdf: &Path, page: u32, dpi: u32, out: &Path)
         .arg(dpi.to_string())
         .arg(out)
         .output()
-        .context("running python3 (PyMuPDF)")?;
+        .with_context(|| format!("running {} (PyMuPDF)", python.to_string_lossy()))?;
     if !st.status.success() {
         anyhow::bail!("pymupdf render failed: {}", String::from_utf8_lossy(&st.stderr));
     }
