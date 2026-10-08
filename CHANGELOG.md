@@ -7,7 +7,10 @@
   `fixtures/corpus/pictures`). Pictures are keyed by `file:line` with a start- and end-line check,
   hashed with the definitions before them in `\input` order (whole statements), compared against
   the font, color and width in force, and taken from per-page extracts of the pass PDF. A 111-page
-  document with 120 pictures: 45 s → 18 s per pass.
+  document with 120 pictures: 45 s → 18 s per pass. A cached picture is `UNSUPPORTED{cached_picture}`
+  in the display list, never an image (hosts render the page from the PDF as for a drawn picture).
+- `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
+  set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Inline pictures stay in their paragraph (segmenter and eligibility); setup statements before a
   block environment no longer hide the environment's shape; the verification rasterizer rounds
   page sizes like MuPDF.

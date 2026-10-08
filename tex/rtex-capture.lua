@@ -527,11 +527,8 @@ function C.pic_write()
   if not p then return end
   local n = img.node(p.img)
   local idx = n.index
-  if idx then
-    C.cache_images[idx] = true
-    C.images[tostring(idx)] = { index = idx, file = p.entry.pdf, page = p.entry.page, pages = p.img.pages or 0,
-                                 bbox = p.entry.bbox, cached_picture = true }
-  end
+  -- not listed in images_info: hosts never see a cached picture as an image
+  if idx then C.cache_images[idx] = true end
   node.write(n)
 end
 

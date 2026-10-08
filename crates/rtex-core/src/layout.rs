@@ -610,14 +610,10 @@ pub fn compare_unit_rows(
         // a row holding a cached picture (an image standing in for the drawing the fast path
         // typesets) is judged by its box alone: the glyphs of the picture's labels are inside
         // the image
-        let cached_row = rl.items.iter().any(|i| match i {
-            Item::Image { index, .. } => page
-                .images
-                .get(&index.to_string())
-                .map(|inf| inf.cached_picture)
-                .unwrap_or(false),
-            _ => false,
-        });
+        let cached_row = rl
+            .items
+            .iter()
+            .any(|i| matches!(i, Item::Unsupported { kind, .. } if kind == "cached_picture"));
         if cached_row {
             if fl.w != rl.w || fl.h != rl.h || fl.d != rl.d {
                 notes.push(format!(

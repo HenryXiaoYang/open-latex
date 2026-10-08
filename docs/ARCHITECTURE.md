@@ -108,7 +108,10 @@ context and the rows,
 tags line boxes, and at shipout writes placements and page display lists. The layout store maps
 units to spans by snapshot line ranges, diffs page hashes, extracts the aux labels for the
 server's `\ref`/`\cite`, and emits `LayoutUpdate` with the convergence state (CONVERGENCE.md).
-Degraded pages carry a PDF fallback path.
+Degraded pages carry a PDF fallback path: `build/bg/layout-<layout_version>.pdf`, a copy of the
+pass PDF made before the layout is delivered (the previous layout's copy is kept, older ones are
+removed), because the next pass rewrites `main.pdf` while the host still reads it; the path is
+given whenever any page of the layout is degraded, changed in this layout or not.
 
 **Picture cache.** Drawings (`tikzpicture`, `circuitikz`) dominate a pass over a document that
 has many of them, and almost none of them change between two passes. Each pass records where

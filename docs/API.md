@@ -19,7 +19,7 @@ let r = session.apply_edit("main.tex", Edit { start_byte, end_byte, text })?;  /
 for ev in session.poll(std::time::Duration::from_millis(16)) {
     match ev {
         Event::ParagraphUpdate { par_id, status, fragments, dl, pagination_stale, context_stale, versions, .. } => { /* draw; status "removed": the span is gone, clear it */ }
-        Event::LayoutUpdate { versions, convergence, pages_changed, placements, pdf_fallback, .. } => { /* replace pages */ }
+        Event::LayoutUpdate { versions, convergence, pages_changed, placements, pdf_fallback, .. } => { /* replace pages; pdf_fallback: a copy of the pass PDF for this layout (build/bg/layout-N.pdf, stable until the layout after the next), set whenever any page is degraded */ }
         Event::Diagnostics { source, items } => { /* show */ }
         Event::EngineState { engine_generation, state, reason } => { /* status bar */ }
         Event::BackgroundScheduled { par_id, reasons, .. } => { /* "will update shortly" */ }

@@ -2334,6 +2334,22 @@ fn deliver_layout(
             Ok(c) => {
                 // verdicts are keyed by layout version; drop the old ones while the lock is held
                 s.probe.lock().clear();
+                // the PDF hosts render degraded pages from: a copy per layout, since the next
+                // pass (started right after this one, a provisional layout's in particular)
+                // rewrites the pass PDF while the host reads it
+                let v = layout.layout_version;
+                let stable = cap.out_dir.join(format!("layout-{v}.pdf"));
+                match std::fs::copy(&cap.pdf, &stable) {
+                    Ok(_) => {
+                        layout.pdf = Some(stable);
+                        if v >= 2 {
+                            let _ = std::fs::remove_file(
+                                cap.out_dir.join(format!("layout-{}.pdf", v - 2)),
+                            );
+                        }
+                    }
+                    Err(e) => log::warn!("layout PDF copy: {e}"),
+                }
                 c
             }
             Err(e) => {
@@ -2520,7 +2536,12 @@ fn deliver_layout(
             })
             .ok();
     }
-    let any_degraded = pages_changed.iter().any(|p| !p.exact);
+    // the fallback is named whenever the layout has a degraded page, changed in this
+    // layout or not: a host that keeps one PDF per layout needs the current file
+    let any_degraded = {
+        let layout = s.layout.lock();
+        layout.pages.values().any(|dl| !dl.is_exact())
+    };
     s.events
         .send(Event::LayoutUpdate {
             versions,

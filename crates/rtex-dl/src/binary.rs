@@ -256,8 +256,6 @@ pub fn decode(bytes: &[u8]) -> Result<DisplayList, BinError> {
                         file,
                         page,
                         pages,
-                        bbox: None,
-                        cached_picture: false,
                     },
                 );
             }

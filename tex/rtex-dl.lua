@@ -473,8 +473,13 @@ hlist_out = function(st, box, left, base_v)
         sync_out()
         if sub == RULE_IMAGE then
           local idx = getfield(n, "index")
-          st:emit({ "i", idx, cur_h, base_v - h, w, h + d }); st.images = st.images + 1
-          if st.pic_images and st.pic_images[idx] then st:flag("pic_cache") end
+          if st.pic_images and st.pic_images[idx] then
+            -- a picture taken from the cache: not an image hosts can draw (a region of an
+            -- internal PDF); the page is degraded and rendered from the pass PDF
+            st:emit({ "u", "cached_picture", idx }); st:flag("pic_cache")
+          else
+            st:emit({ "i", idx, cur_h, base_v - h, w, h + d }); st.images = st.images + 1
+          end
         elseif sub == RULE_EMPTY then
           -- \nullfont / empty rule: occupies space, draws nothing
         elseif sub == RULE_USER or sub == RULE_OUTLINE then
@@ -597,8 +602,11 @@ vlist_out = function(st, box, left, top)
       if d == RUNNING then d = 0 end
       if sub == RULE_IMAGE then
         local idx = getfield(n, "index")
-        st:emit({ "i", idx, left, cur_v, w, h + d }); st.images = st.images + 1
-        if st.pic_images and st.pic_images[idx] then st:flag("pic_cache") end
+        if st.pic_images and st.pic_images[idx] then
+          st:emit({ "u", "cached_picture", idx }); st:flag("pic_cache")
+        else
+          st:emit({ "i", idx, left, cur_v, w, h + d }); st.images = st.images + 1
+        end
       elseif sub == RULE_EMPTY then
       elseif sub == RULE_USER or sub == RULE_OUTLINE then
         st:emit({ "u", "rule_subtype", sub }); st:flag("rule_subtype", sub)
