@@ -54,6 +54,10 @@
   that cannot run now reports `LayoutUpdate` with `compile: Failed` instead of only a
   diagnostic. Fixtures keep their image in `images/` so the integration tests cover nested
   projects.
+- Fix: an edit arriving while a layout was being installed could deadlock the session (the two
+  threads took the file and layout locks in opposite orders). A unit whose live compile hung or
+  crashed the engine is quarantined on the full compile until the preamble changes instead of
+  killing the server again on the next keystroke.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

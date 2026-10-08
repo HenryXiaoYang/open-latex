@@ -380,6 +380,7 @@ impl Session {
                 w.kill();
             }
             self.shared.overlays.lock().clear();
+            self.shared.slow_units.lock().clear();
             self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
             self.shared.pending.lock().clear();
             self.shared.pending_signal.0.send(()).ok();
@@ -491,7 +492,9 @@ impl Session {
                     reasons.push(reason_str(&Reason::KindMismatch));
                 }
                 if let Some((lv, ms)) = self.shared.slow_units.lock().get(&span.id).copied() {
-                    if lv == layout.layout_version {
+                    if lv == QUARANTINED {
+                        reasons.push("EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes".into());
+                    } else if lv == layout.layout_version {
                         reasons.push(reason_str(&Reason::OverBudget(ms)));
                     }
                 }
@@ -919,12 +922,17 @@ fn engine_failed(s: &Shared, req: &FastRequest, e: anyhow::Error, wanted_gen: u6
     s.events.send(Event::EngineState { engine_generation: wanted_gen, state: "Restarting".into(), reason: Some(e.to_string()) }).ok();
     s.events.send(Event::Diagnostics { source: format!("fast:{:?}", req.par_id), items: vec![Diagnostic { severity: "error".into(), file: None, line: None, message: e.to_string(), context: None }] }).ok();
     s.engine_generation.fetch_add(1, Ordering::SeqCst);
-    // the paragraph goes to the background path
+    // the paragraph goes to the background path, and stays there until the preamble changes:
+    // retrying a unit that hung or crashed the engine would kill the server on every keystroke
     s.bg_signal.0.send(BgCmd::Pass).ok();
     if !req.warmup {
+        s.slow_units.lock().insert(req.par_id, (QUARANTINED, 0));
         s.events.send(Event::BackgroundScheduled { par_id: Some(req.par_id), reasons: vec!["engine restarted".into()], edit_id: req.edit_id }).ok();
     }
 }
+
+/// `slow_units` layout-version marker for a unit quarantined after an engine failure.
+const QUARANTINED: u64 = u64::MAX;
 
 fn handle_result(s: &Shared, req: FastRequest, cr: crate::engine::CompileResult, rt: crate::engine::RoundTrip, t0: Instant, wanted_gen: u64) {
     if req.warmup {
@@ -1181,6 +1189,9 @@ fn run_background_pass(s: &Shared) {
         return;
     }
     let (changed, versions, placements, eligible, pdf) = {
+        // lock order everywhere: files, then layout, then policy (apply_edit holds the first two
+        // together)
+        let files = s.files.lock();
         let mut layout = s.layout.lock();
         let changed = match layout.install(&outcome.capture, spans, rev) {
             Ok(c) => c,
@@ -1197,7 +1208,6 @@ fn run_background_pass(s: &Shared) {
         };
         let mut placements = Vec::new();
         let mut eligible = Vec::new();
-        let files = s.files.lock();
         let policy = s.policy.lock().clone();
         for (id, idx) in &layout.by_span {
             let eu = &layout.units[*idx];
@@ -1235,8 +1245,8 @@ fn run_background_pass(s: &Shared) {
     // warm the engine: compile the first eligible paragraph once so fonts are loaded before
     // the first real keystroke
     if let Some(id) = eligible.first().copied() {
-        let layout = s.layout.lock();
         let files = s.files.lock();
+        let layout = s.layout.lock();
         if let (Some(eu), Some(text)) = (layout.unit(id), files.values().find_map(|fb| fb.span_text(id))) {
             let mut p = s.pending.lock();
             if !p.contains_key(&id) {

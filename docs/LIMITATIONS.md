@@ -27,6 +27,7 @@ in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
 | Macros you defined yourself inside body text | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
 | Any unit whose fast compiles exceed `fast_budget` (5 ms by default) three times in a row | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
+| A unit whose live compile hung (watchdog, 5 s) or crashed the engine | background until the preamble changes (`EngineFailed`) | retrying would kill the server on every keystroke; `rtex verify` on the project shows the engine error for that unit |
 
 The fast server differs from a document run in two observable ways, both outside the unit box:
 it inserts no running-head marks (`\markright`/`\markboth` keep only their `\nobreak`), and
