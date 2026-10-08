@@ -204,13 +204,14 @@ S.current = nil
 local head_tokens, tail_tokens  -- built in init once the \luafunction slots are known
 
 -- Leak check: the meanings of the control sequences a unit's source mentions, before and
--- after its compile. A unit that defines or \lets one of them (\newcommand inside a
+-- after its compile (every distinct \name in the source; a name built with \csname is not
+-- seen — documented limitation). A unit that defines or \lets one of them (\newcommand inside a
 -- paragraph, \global\let\emph\relax) changes the server for every later compile; the result
 -- reports the names and the session demotes the unit and restarts the engine.
 local function cs_names(source)
   local seen, names = {}, {}
   for name in source:gmatch("\\(%a+)") do
-    if not seen[name] and #names < 64 then seen[name] = true; names[#names + 1] = name end
+    if not seen[name] then seen[name] = true; names[#names + 1] = name end
   end
   return names
 end

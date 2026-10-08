@@ -113,7 +113,8 @@
   path for that layout (`unverified:` reasons). The server reports leaked definitions
   (`leaks`), which demote the unit and restart the engine. `SessionConfig::eligibility`,
   C ABI `"eligibility"`, `rtex serve --eligibility`; `rtex verify --permissive --max-differing`
-  gates it in CI. Units reported on the blank line before a span map to that span.
+  gates it in CI (`--expect-differing`: the known state-dependent units must be caught
+  exactly). Paragraph units reported on the blank line before a span map to that span.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

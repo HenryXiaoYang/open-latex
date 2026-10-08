@@ -71,6 +71,10 @@ enum Cmd {
         /// units, which the comparison must catch).
         #[arg(long)]
         max_differing: Option<usize>,
+        /// Pass layer 1 only with exactly this many differing units (the known state-dependent
+        /// units must be caught, neither more nor fewer).
+        #[arg(long)]
+        expect_differing: Option<usize>,
     },
     /// JSON-lines session front end (commands on stdin, events on stdout).
     Serve {
@@ -203,6 +207,7 @@ fn main() -> anyhow::Result<()> {
             min_eligible,
             permissive,
             max_differing,
+            expect_differing,
         } => {
             let r = verify::run(verify::VerifyOpts {
                 project,
@@ -217,6 +222,7 @@ fn main() -> anyhow::Result<()> {
                 min_eligible,
                 permissive,
                 max_differing,
+                expect_differing,
             })?;
             if !(r.layer1_pass
                 && r.layer2_pass

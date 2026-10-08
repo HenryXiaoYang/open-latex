@@ -32,7 +32,9 @@ pub struct SnapshotSpan {
     pub last_line: i64,
     pub last_revision: Revision,
     pub background_only: bool,
-    /// The span's text as the pass typeset it (what a probe compile replays).
+    /// What the fast path compiles for the span as the pass typeset it (`document::fast_source`
+    /// of the snapshot: trailing newline removed, `\input` end-of-file space reproduced); the
+    /// probe compile replays exactly this.
     pub text: String,
 }
 
@@ -104,6 +106,7 @@ pub fn snapshot_spans_of(
     fb: &crate::document::FileBuf,
     file: &str,
     policy: &crate::eligibility::Policy,
+    file_is_inputted: bool,
 ) -> Vec<SnapshotSpan> {
     use crate::document::SpanKind;
     fb.spans
@@ -122,7 +125,7 @@ pub fn snapshot_spans_of(
                 last_line: b,
                 last_revision: sp.last_revision,
                 background_only,
-                text: text.to_string(),
+                text: crate::document::fast_source(fb, sp, file_is_inputted),
             }
         })
         .collect()
@@ -139,6 +142,8 @@ pub struct LayoutStore {
     pub pages: BTreeMap<i64, DisplayList>,
     pub page_hashes: BTreeMap<i64, u64>,
     pub snapshot_spans: Vec<SnapshotSpan>,
+    /// Span id → index into `snapshot_spans`.
+    snapshot_index: HashMap<ParaId, usize>,
     pub capture_dir: Option<std::path::PathBuf>,
     pub pdf: Option<std::path::PathBuf>,
     /// `\newlabel`/`\bibcite` definitions of the pass (name, value) for the server's `\ref`/`\cite`.
@@ -179,14 +184,18 @@ impl LayoutStore {
                 // seen after \newpage in standby passes), otherwise to the previous one (a macro
                 // at the end of its last line read ahead before producing the unit: hyperref's
                 // \maketitle wrapper)
-                let next = snapshot
-                    .iter()
-                    .find(|s| {
-                        s.file == file
-                            && s.first_line > u.begin_line
-                            && u.end_line.unwrap_or(u.begin_line) >= s.first_line
-                    })
-                    .map(|s| s.id);
+                let next = if u.kind == "par" {
+                    snapshot
+                        .iter()
+                        .find(|s| {
+                            s.file == file
+                                && s.first_line > u.begin_line
+                                && u.end_line.unwrap_or(u.begin_line) >= s.first_line
+                        })
+                        .map(|s| s.id)
+                } else {
+                    None
+                };
                 span = next.or_else(|| {
                     snapshot
                         .iter()
@@ -329,6 +338,11 @@ impl LayoutStore {
         }
         self.pages = new_pages;
         self.page_hashes = new_hashes;
+        self.snapshot_index = snapshot
+            .iter()
+            .enumerate()
+            .map(|(i, sp)| (sp.id, i))
+            .collect();
         self.snapshot_spans = snapshot;
         self.capture_dir = Some(cap.out_dir.clone());
         self.pdf = Some(cap.pdf.clone());
@@ -345,10 +359,9 @@ impl LayoutStore {
 
     /// The text of span `id` as the installed pass typeset it.
     pub fn snapshot_text(&self, id: ParaId) -> Option<&str> {
-        self.snapshot_spans
-            .iter()
-            .find(|sp| sp.id == id)
-            .map(|sp| sp.text.as_str())
+        self.snapshot_index
+            .get(&id)
+            .map(|i| self.snapshot_spans[*i].text.as_str())
     }
 
     /// Probe check: does `fast`, the fast compile of the span's snapshot text, reproduce the
@@ -374,6 +387,10 @@ impl LayoutStore {
         }
         if same != total {
             return Err(format!("{} of {} glyphs differ", total - same, total));
+        }
+        if total == 0 {
+            // an empty box against no rows proves nothing
+            return Err("nothing to compare: the unit has no glyph rows".into());
         }
         Ok(())
     }
@@ -401,6 +418,7 @@ impl LayoutStore {
         let texts = crate::document::load_project_files(project, main)?;
         let mut ids = crate::document::IdAllocator(0);
         let mut set = crate::document::FileSet::default();
+        set.inputted = crate::document::inputted_files(&texts);
         let mut spans = Vec::new();
         // the main file first so its ids come first (tools pick "the middle paragraph" by id)
         for (name, text) in std::iter::once((main, texts[main].as_str())).chain(
@@ -415,10 +433,14 @@ impl LayoutStore {
                 1,
                 policy.theorem_envs.iter().cloned().collect(),
             );
-            spans.extend(snapshot_spans_of(&fb, name, policy));
+            spans.extend(snapshot_spans_of(
+                &fb,
+                name,
+                policy,
+                set.inputted.contains(name),
+            ));
             set.files.insert(name.to_string(), fb);
         }
-        set.inputted = crate::document::inputted_files(&texts);
         let mut store = LayoutStore::default();
         store.install(cap, spans, 1)?;
         Ok((store, set))
@@ -640,6 +662,19 @@ pub fn compare_unit_rows(
                         b
                     ));
                 }
+            }
+        }
+        for (kind, pred) in [
+            (
+                "rule",
+                (|i: &&Item| matches!(i, Item::Rule { .. })) as fn(&&Item) -> bool,
+            ),
+            ("image", |i: &&Item| matches!(i, Item::Image { .. })),
+        ] {
+            let fr = fl.items.iter().filter(pred).count();
+            let rr = rl.items.iter().filter(pred).count();
+            if fr != rr {
+                notes.push(format!("row {} {kind} count {} vs {}", k + 1, fr, rr));
             }
         }
     }

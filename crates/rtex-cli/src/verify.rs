@@ -35,6 +35,9 @@ pub struct VerifyOpts {
     /// Pass layer 1 as long as at most this many units differ (probe-mode fixtures: the units
     /// known to be state-dependent must be caught, not absent).
     pub max_differing: Option<usize>,
+    /// Pass layer 1 only with exactly this many differing units: the fixture's state-dependent
+    /// units must be caught, neither more nor fewer.
+    pub expect_differing: Option<usize>,
 }
 
 #[derive(Serialize, Default)]
@@ -399,9 +402,10 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
             );
         }
     }
-    report.layer1_pass = match opts.max_differing {
-        Some(max) => l1_bad.len() <= max && !report.paragraphs.is_empty(),
-        None => l1_bad.is_empty() && !report.paragraphs.is_empty(),
+    report.layer1_pass = match (opts.expect_differing, opts.max_differing) {
+        (Some(n), _) => l1_bad.len() == n && !report.paragraphs.is_empty(),
+        (None, Some(max)) => l1_bad.len() <= max && !report.paragraphs.is_empty(),
+        (None, None) => l1_bad.is_empty() && !report.paragraphs.is_empty(),
     };
     println!("layer 1 (fast vs extractor): {} eligible of {} units; {} compiled; {}/{} glyphs identical; {} units with differences",
         report.paragraphs_eligible, report.paragraphs_total, report.paragraphs.len(), l1_same, l1_total, l1_bad.len());

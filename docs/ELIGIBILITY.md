@@ -112,18 +112,31 @@ demotes it: `BackgroundScheduled { reasons: ["unverified: …"] }`, a layout pas
 and until the next layout `apply_edit` routes the unit to the background up front with the
 same reason. Verdicts are cleared when a layout is installed. Allow-listed units never probe.
 
-**Leaks.** The server records the meaning of every control sequence a unit's source mentions
-before the compile and compares after it; names whose meaning changed are reported as `leaks`
-in the result (`\gdef`, `\global\let`; a `\newcommand` inside a paragraph is local to the
-unit's box group and is *not* a leak). A leak demotes the unit until the preamble changes and
-restarts the engine, because the server's state is no longer the document's.
+**Leaks.** The server records the meaning of every distinct control sequence a unit's source
+mentions before the compile and compares after it; names whose meaning changed are reported as
+`leaks` in the result (`\gdef`, `\global\let`; a `\newcommand` inside a paragraph is local to
+the unit's box group and is *not* a leak). A leak demotes the unit until the preamble changes
+and restarts the engine, because the server's state is no longer the document's; this is
+checked before any other handling of a result, warm-ups and superseded results included. A
+name built with `\csname…\endcsname` does not appear in the source and is not seen: the
+fingerprint and the counter restore remain the defence for that case.
+
+**Bookkeeping.** The probe runs on the engine thread without the link lock held (the host's
+`apply_edit` never waits on it; the direct dispatch path stays off the server meanwhile), it
+reads the snapshot text from the layout current at that moment and judges against that same
+layout (a request whose layout moved during the probe goes back to the queue), and verdicts
+are keyed by layout version. A demotion after `apply_edit` reported "fast" removes the unit's
+overlay and counts as a background change for the spans after it, like a synchronous
+background routing would. `LayoutUpdate.eligible_paragraphs` lists every structurally eligible
+unit, probed or not; the warm-up compile only ever picks an allow-listed one.
 
 Tests: `probe_mode_verifies_and_demotes` (session) walks the three outcomes on one document
 (`\scalebox` verified live; `\thepage` on page 2 demoted with the glyph difference; a `\gdef`
 demoted with a restart); `leaked_definitions_are_reported` (engine). CI runs
-`rtex verify --permissive` on the research fixture (`--min-eligible 28 --max-differing 2`)
-and on the corpus, so a construct the comparison stops catching, or one it starts rejecting,
-fails the build.
+`rtex verify --permissive` on the research fixture (`--min-eligible 28 --expect-differing 2`:
+exactly the two state-dependent units must be caught, neither more nor fewer) and on the
+corpus, so a construct the comparison stops catching, or one it starts rejecting, fails the
+build.
 
 Cost: one extra compile (1–5 ms) per not-allow-listed unit per layout, on its first edit.
 

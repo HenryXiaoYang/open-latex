@@ -57,6 +57,9 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
     if depth > 8 {
         return Ok(());
     }
+    // the snapshot's own tree, in canonical form (a host may keep its build directory inside
+    // the project under any name, given relative or absolute)
+    let dst_canon = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -67,7 +70,8 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
         let path = entry.path();
         // never descend into the build tree the snapshot itself lives in (a host may keep it
         // inside the project under any name), and skip FIFOs, sockets and devices
-        if dst.starts_with(&path) {
+        let path_canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if dst_canon.starts_with(&path_canon) {
             continue;
         }
         if path.is_dir() {

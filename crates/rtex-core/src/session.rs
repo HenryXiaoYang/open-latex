@@ -59,6 +59,17 @@ pub struct LayoutUnitInfo {
     pub span: Option<ParaId>,
 }
 
+/// Outcome of a probe compile (probe mode).
+#[derive(Debug, Clone)]
+enum ProbeVerdict {
+    /// The snapshot text reproduced the layout's rows: edits of the unit go live.
+    Verified,
+    /// Rows differed, the compile failed, or there was nothing to compare (why).
+    Mismatch(String),
+    /// The compile changed the meaning of a control sequence it mentions (names).
+    Leak(String),
+}
+
 /// How the session decides that a unit may be typeset live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EligibilityMode {
@@ -244,9 +255,9 @@ struct FastRequest {
     versions: Versions,
     context_stale: bool,
     expected_rows: i64,
-    /// Probe mode: the span's snapshot text to compile and compare with the layout before this
-    /// request is sent (None: verified, or allow-listed).
-    probe_source: Option<String>,
+    /// Probe mode: the unit must be proven first (its snapshot text, fetched from the layout
+    /// current when the engine thread gets to it, compiled and compared with that layout).
+    probe: bool,
 }
 
 /// A compile the server is working on (sent either by the engine thread or directly by the
@@ -268,6 +279,9 @@ struct EngineLink {
     context_rev_sent: u64,
     labels_sent: u64,
     next_req: i64,
+    /// A probe compile is running on the engine thread without the lock held: the direct
+    /// dispatch path must not write to the server meanwhile.
+    probing: bool,
     /// Probe mode statistics: probe compiles run and their total time.
     probes: u64,
     probe_us: u64,
@@ -310,8 +324,8 @@ struct Shared {
     /// Counters the last fast compile of a span advanced (what the layout saw until then): a
     /// change renumbers what follows and needs a pass.
     counters_seen: Mutex<HashMap<ParaId, BTreeMap<String, i64>>>,
-    /// Probe results for this layout (probe mode): span → verified, or why not.
-    probe: Mutex<HashMap<ParaId, Result<(), String>>>,
+    /// Probe verdicts (probe mode): span → (layout version the verdict is for, verdict).
+    probe: Mutex<HashMap<ParaId, (u64, ProbeVerdict)>>,
     /// Spans whose compile changed the meaning of a control sequence (a definition leaked):
     /// background-only until the preamble changes.
     leaky: Mutex<HashMap<ParaId, String>>,
@@ -821,17 +835,29 @@ impl Session {
         let mut ctx: Option<serde_json::Value> = None;
         let mut expected_rows = 0i64;
         let mut derived_from: Option<(ParaId, bool)> = None;
-        let mut probe_source: Option<String> = None;
+        let mut probe = false;
         match layout.unit(span.id) {
             Some(eu) => {
                 if needs_probe {
-                    match self.shared.probe.lock().get(&span.id) {
-                        Some(Ok(())) => {}
-                        Some(Err(why)) => reasons.push(format!("unverified: {why}")),
-                        None => match layout.snapshot_text(span.id) {
-                            Some(t) => probe_source = Some(t.trim_end_matches('\n').to_string()),
-                            None => reasons.push("unverified: no snapshot to compare with".into()),
-                        },
+                    let verdict = self
+                        .shared
+                        .probe
+                        .lock()
+                        .get(&span.id)
+                        .filter(|(lv, _)| *lv == layout.layout_version)
+                        .map(|(_, v)| v.clone());
+                    match verdict {
+                        Some(ProbeVerdict::Verified) => {}
+                        Some(ProbeVerdict::Mismatch(why)) | Some(ProbeVerdict::Leak(why)) => {
+                            reasons.push(format!("unverified: {why}"))
+                        }
+                        None => {
+                            if layout.snapshot_text(span.id).is_some() {
+                                probe = true;
+                            } else {
+                                reasons.push("unverified: no snapshot to compare with".into());
+                            }
+                        }
                     }
                 }
                 let c = &eu.captured;
@@ -929,7 +955,7 @@ impl Session {
             },
             context_stale: stale,
             expected_rows,
-            probe_source,
+            probe,
         };
         (Some(req), reasons)
     }
@@ -990,7 +1016,8 @@ impl Session {
     /// the engine thread otherwise. Queued requests coalesce per paragraph.
     fn dispatch_fast(&self, req: FastRequest) {
         let mut link = self.shared.link.lock();
-        let direct = req.probe_source.is_none()
+        let direct = !req.probe
+            && !link.probing
             && link.writer.is_some()
             && link.inflight.is_none()
             && link.generation == req.versions.engine_generation
@@ -1478,22 +1505,50 @@ fn engine_thread(s: Arc<Shared>) {
                 link.contexts_sent.insert(req.seq);
             }
         }
-        // 4b. probe mode: prove the unit first (its snapshot text against the layout's rows)
-        if let Some(probe_src) = req.probe_source.take() {
-            let verdict = match s.probe.lock().get(&req.par_id) {
-                Some(v) => Some(v.clone()),
-                None => None,
+        // 4b. probe mode: prove the unit first — its snapshot text (from the layout current
+        // now) compiled and compared with that layout's rows. The compile runs without the
+        // link lock (the host's apply_edit must not wait on it); `probing` keeps the direct
+        // dispatch path off the server meanwhile.
+        if req.probe {
+            let (text, lv) = {
+                let layout = s.layout.lock();
+                (
+                    layout.snapshot_text(req.par_id).map(|t| t.to_string()),
+                    layout.layout_version,
+                )
             };
-            let verdict = match verdict {
+            let cached = s
+                .probe
+                .lock()
+                .get(&req.par_id)
+                .filter(|(v, _)| *v == lv)
+                .map(|(_, v)| v.clone());
+            let verdict = match cached {
                 Some(v) => v,
                 None => {
+                    let Some(text) = text else {
+                        drop(link);
+                        demote_span(&s, &req, "no snapshot to compare with");
+                        continue;
+                    };
+                    link.probing = true;
+                    drop(link);
                     let t_probe = Instant::now();
-                    let v = match srv.compile(req.seq, &probe_src) {
+                    let res = srv.compile(req.seq, &text);
+                    let mut relock = s.link.lock();
+                    relock.probing = false;
+                    relock.probes += 1;
+                    relock.probe_us += t_probe.elapsed().as_micros() as u64;
+                    link = relock;
+                    let v = match res {
                         Ok((cr, _)) => {
                             if !cr.leaks.is_empty() {
-                                Err(format!("the unit redefines \\{}", cr.leaks.join(", \\")))
+                                ProbeVerdict::Leak(format!(
+                                    "the unit redefines \\{}",
+                                    cr.leaks.join(", \\")
+                                ))
                             } else if cr.status == "error" {
-                                Err(format!(
+                                ProbeVerdict::Mismatch(format!(
                                     "probe compile failed: {}",
                                     cr.errors
                                         .first()
@@ -1501,9 +1556,22 @@ fn engine_thread(s: Arc<Shared>) {
                                         .unwrap_or_default()
                                 ))
                             } else {
+                                let layout = s.layout.lock();
+                                if layout.layout_version != lv {
+                                    // the layout moved while the probe ran: judge against the
+                                    // new one (the request goes back to the queue)
+                                    drop(layout);
+                                    drop(link);
+                                    s.pending.lock().insert(req.par_id, req);
+                                    s.pending_signal.0.send(()).ok();
+                                    continue;
+                                }
                                 match &cr.dl {
-                                    Some(dl) => s.layout.lock().probe_check(req.par_id, dl),
-                                    None => Err("probe produced no box".into()),
+                                    Some(dl) => match layout.probe_check(req.par_id, dl) {
+                                        Ok(()) => ProbeVerdict::Verified,
+                                        Err(why) => ProbeVerdict::Mismatch(why),
+                                    },
+                                    None => ProbeVerdict::Mismatch("probe produced no box".into()),
                                 }
                             }
                         }
@@ -1515,33 +1583,27 @@ fn engine_thread(s: Arc<Shared>) {
                             continue;
                         }
                     };
-                    link.probe_us += t_probe.elapsed().as_micros() as u64;
-                    link.probes += 1;
-                    s.probe.lock().insert(req.par_id, v.clone());
+                    s.probe.lock().insert(req.par_id, (lv, v.clone()));
                     v
                 }
             };
-            if let Err(why) = verdict {
-                drop(link);
-                let leaked = why.starts_with("the unit redefines");
-                if leaked {
-                    s.leaky.lock().insert(req.par_id, why.clone());
+            match verdict {
+                ProbeVerdict::Verified => {}
+                ProbeVerdict::Mismatch(why) => {
+                    drop(link);
+                    demote_span(&s, &req, &why);
+                    continue;
                 }
-                s.events
-                    .send(Event::BackgroundScheduled {
-                        par_id: Some(req.par_id),
-                        reasons: vec![format!("unverified: {why}")],
-                        edit_id: req.edit_id,
-                    })
-                    .ok();
-                s.bg_signal.0.send(BgCmd::Pass).ok();
-                if leaked {
+                ProbeVerdict::Leak(why) => {
+                    drop(link);
+                    s.leaky.lock().insert(req.par_id, why.clone());
+                    demote_span(&s, &req, &why);
                     // the server's state is no longer the document's: start over
                     s.engine_generation.fetch_add(1, Ordering::SeqCst);
                     server = None;
                     reset_link(&s);
+                    continue;
                 }
-                continue;
             }
         }
         let req_id = link.next_req;
@@ -1559,6 +1621,37 @@ fn engine_thread(s: Arc<Shared>) {
             }
         }
     }
+}
+
+/// A fast request the probe (or a leak) took away from the live path after `apply_edit`
+/// reported it as fast: undo the live bookkeeping (no overlay claims a result at this
+/// revision; the change counts as a background change for the spans after it), tell the host,
+/// and schedule the pass that will typeset it.
+fn demote_span(s: &Shared, req: &FastRequest, why: &str) {
+    s.overlays.lock().remove(&req.par_id);
+    {
+        let files = s.files.lock();
+        if let Some((name, line)) = files.iter().find_map(|(name, fb)| {
+            fb.span(req.par_id)
+                .map(|sp| (name.clone(), fb.line_range(sp).0))
+        }) {
+            s.bg_change
+                .lock()
+                .entry(name)
+                .or_default()
+                .push((req.versions.source_revision, line));
+        }
+    }
+    if !req.warmup {
+        s.events
+            .send(Event::BackgroundScheduled {
+                par_id: Some(req.par_id),
+                reasons: vec![format!("unverified: {why}")],
+                edit_id: req.edit_id,
+            })
+            .ok();
+    }
+    s.bg_signal.0.send(BgCmd::Pass).ok();
 }
 
 fn engine_failed(s: &Shared, req: &FastRequest, e: anyhow::Error, wanted_gen: u64) {
@@ -1608,6 +1701,17 @@ fn handle_result(
     t0: Instant,
     wanted_gen: u64,
 ) {
+    if !cr.leaks.is_empty() {
+        // before any early return: the compile changed the meaning of a control sequence it
+        // mentions, so the server is no longer the document's state whatever else happened.
+        // Demote the span until the preamble changes and restart the engine.
+        let why = format!("the unit redefines \\{}", cr.leaks.join(", \\"));
+        s.leaky.lock().insert(req.par_id, why.clone());
+        demote_span(s, &req, &why);
+        s.engine_generation.fetch_add(1, Ordering::SeqCst);
+        s.pending_signal.0.send(()).ok();
+        return;
+    }
     if req.warmup {
         return;
     }
@@ -1655,24 +1759,6 @@ fn handle_result(
                 timing,
             })
             .ok();
-        return;
-    }
-    if !cr.leaks.is_empty() {
-        // the compile changed the meaning of a control sequence it mentions: the result may be
-        // right, but the server is no longer the document's state. Demote the span until the
-        // preamble changes and restart the engine.
-        let why = format!("the unit redefines \\{}", cr.leaks.join(", \\"));
-        s.leaky.lock().insert(req.par_id, why.clone());
-        s.events
-            .send(Event::BackgroundScheduled {
-                par_id: Some(req.par_id),
-                reasons: vec![format!("unverified: {why}")],
-                edit_id: req.edit_id,
-            })
-            .ok();
-        s.bg_signal.0.send(BgCmd::Pass).ok();
-        s.engine_generation.fetch_add(1, Ordering::SeqCst);
-        s.pending_signal.0.send(()).ok();
         return;
     }
     let mut dl = cr.dl.unwrap();
@@ -1905,25 +1991,18 @@ fn preamble_input_set(
 fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpan>, Revision) {
     let files = s.files.lock();
     let rev = s.source_revision.load(Ordering::SeqCst);
+    let policy = s.policy.lock();
+    let inputted = s.inputted.lock();
     let mut texts = BTreeMap::new();
     let mut spans = Vec::new();
     for (name, fb) in files.iter() {
         texts.insert(name.clone(), fb.text.clone());
-        for sp in &fb.spans {
-            let (a, b) = fb.line_range(sp);
-            let text = &fb.text[sp.range.clone()];
-            let background_only = matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer)
-                || !classify_source(text, &s.policy.lock()).1.is_empty();
-            spans.push(SnapshotSpan {
-                id: sp.id,
-                file: name.clone(),
-                first_line: a,
-                last_line: b,
-                last_revision: sp.last_revision,
-                background_only,
-                text: text.to_string(),
-            });
-        }
+        spans.extend(crate::layout::snapshot_spans_of(
+            fb,
+            name,
+            &policy,
+            inputted.contains(name),
+        ));
     }
     (texts, spans, rev)
 }
@@ -2111,13 +2190,17 @@ fn run_background_pass(s: &Shared) {
             .ok();
         return;
     }
-    let (changed, versions, placements, eligible, pdf) = {
+    let (changed, versions, placements, eligible, eligible_strict, pdf) = {
         // lock order everywhere: files, then layout, then policy (apply_edit holds the first two
         // together)
         let files = s.files.lock();
         let mut layout = s.layout.lock();
         let changed = match layout.install(&outcome.capture, spans, rev) {
-            Ok(c) => c,
+            Ok(c) => {
+                // verdicts are keyed by layout version; drop the old ones while the lock is held
+                s.probe.lock().clear();
+                c
+            }
             Err(e) => {
                 drop(layout);
                 drop(files);
@@ -2133,6 +2216,8 @@ fn run_background_pass(s: &Shared) {
         };
         let mut placements = Vec::new();
         let mut eligible = Vec::new();
+        // units whose vocabulary the allow-list fully knows (safe to compile unprobed)
+        let mut eligible_strict: Vec<ParaId> = Vec::new();
         let policy = s.policy.lock().clone();
         for (id, idx) in &layout.by_span {
             let eu = &layout.units[*idx];
@@ -2183,16 +2268,32 @@ fn run_background_pass(s: &Shared) {
                 && check_engine_unit(&c.kind, &c.everypar, has_ctx, eu.rows(), &eu.flags).is_empty()
             {
                 eligible.push(*id);
+                let strict_ok = files
+                    .values()
+                    .find_map(|fb| fb.span_text(*id))
+                    .map(|text| classify_source_with(text, &policy, false).1.is_empty())
+                    .unwrap_or(false);
+                if strict_ok {
+                    eligible_strict.push(*id);
+                }
             }
         }
         drop(files);
         placements.sort_by_key(|p| p.par_id);
         eligible.sort();
-        (changed, versions, placements, eligible, layout.pdf.clone())
+        eligible_strict.sort();
+        (
+            changed,
+            versions,
+            placements,
+            eligible,
+            eligible_strict,
+            layout.pdf.clone(),
+        )
     };
-    // warm the engine: compile the first eligible paragraph once so fonts are loaded before
-    // the first real keystroke
-    if let Some(id) = eligible.first().copied() {
+    // warm the engine: compile the first allow-listed paragraph once so fonts are loaded before
+    // the first real keystroke (never an unprobed unit: it could leak state)
+    if let Some(id) = eligible_strict.first().copied() {
         let files = s.files.lock();
         let layout = s.layout.lock();
         if let (Some(eu), Some(text)) = (
@@ -2222,7 +2323,7 @@ fn run_background_pass(s: &Shared) {
                         },
                         context_stale: false,
                         expected_rows: 0,
-                        probe_source: None,
+                        probe: false,
                     },
                 );
                 s.pending_signal.0.send(()).ok();
@@ -2235,7 +2336,6 @@ fn run_background_pass(s: &Shared) {
     s.derived.lock().clear();
     s.live_rows.lock().clear();
     s.counters_seen.lock().clear();
-    s.probe.lock().clear();
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !outcome.aux_stable {
