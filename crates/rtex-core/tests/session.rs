@@ -613,8 +613,13 @@ fn input_files_are_tracked() {
     cfg.build_dir = root.join("build");
     cfg.debounce = Duration::from_millis(50);
     let s = Session::open(cfg).unwrap();
-    // all three files are tracked from the start; the preamble file is one
+    // all three files are tracked from the start; the preamble file is one. Host paths may
+    // carry `./` or be absolute inside the project.
     assert!(!s.spans("chapters/one.tex").is_empty());
+    assert!(!s.spans("./chapters/one.tex").is_empty());
+    assert!(!s
+        .spans(&project.join("chapters/one.tex").to_string_lossy())
+        .is_empty());
     assert!(!s.spans("macros.tex").is_empty());
     assert!(s.spans("chapters/two.tex").is_empty(), "not referenced yet");
     let Event::LayoutUpdate {
@@ -814,5 +819,72 @@ fn counter_changes_schedule_a_pass() {
         |e| matches!(e, Event::LayoutUpdate { versions, .. } if versions.source_revision >= r2.source_revision),
     );
     assert!(ev.is_none(), "unexpected pass: {ev:?}");
+    s.close();
+}
+
+/// Environments defined in the preamble: an inline one wraps a paragraph that stays live, a
+/// block one (wrapping quote) is a unit of its own.
+#[test]
+fn user_environments_are_live() {
+    if rtex_core::texlive::TexLive::discover().is_err() {
+        eprintln!("SKIP: no lualatex");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("rtex-session-{}-userenv", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\newenvironment{solution}{\\par\\noindent\\textbf{Solution.}\\ \\itshape}{\\par}\n\\newenvironment{hint}{\\begin{quote}\\small\\textbf{Hint:}\\ }{\\end{quote}}\n\\begin{document}\nA first paragraph of plain text.\n\n\\begin{hint}\nThink about it carefully before answering, and then think again.\n\\end{hint}\n\n\\begin{solution}\nThe answer is forty-two, as every reader of the guide already knows very well.\n\\end{solution}\n\\end{document}\n",
+    )
+    .unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.debounce = Duration::from_millis(50);
+    let s = Session::open(cfg).unwrap();
+    let Event::LayoutUpdate {
+        eligible_paragraphs,
+        ..
+    } = wait_layout(&s)
+    else {
+        unreachable!()
+    };
+    let doc = s.document_text("main.tex").unwrap();
+    let spans = s.spans("main.tex");
+    let hint = spans
+        .iter()
+        .find(|sp| doc[sp.range.clone()].starts_with("\\begin{hint}"))
+        .unwrap();
+    let sol = spans
+        .iter()
+        .find(|sp| doc[sp.range.clone()].starts_with("\\begin{solution}"))
+        .unwrap();
+    assert!(eligible_paragraphs.contains(&hint.id), "hint unit");
+    assert!(eligible_paragraphs.contains(&sol.id), "solution unit");
+    for (sp, word) in [(hint, "Think"), (sol, "answer")] {
+        let pos = sp.range.start + doc[sp.range.clone()].find(word).unwrap() + word.len();
+        let r = s
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: pos,
+                    end_byte: pos,
+                    text: " really".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+        let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
+        let Some(Event::ParagraphUpdate {
+            par_id, status, dl, ..
+        }) = ev
+        else {
+            panic!("no update")
+        };
+        assert_eq!(par_id, sp.id);
+        assert_eq!(status, "ok");
+        assert!(dl.glyph_count() > 10);
+    }
     s.close();
 }

@@ -392,25 +392,47 @@ impl Session {
         self.shared.convergence.lock().clone()
     }
 
+    /// The key a host's path maps to: project-relative, without a leading `./`; an absolute
+    /// path inside the project root is made relative.
+    fn rel_key(&self, path: &str) -> String {
+        let p = Path::new(path);
+        if p.is_absolute() {
+            if let Ok(rel) = p.strip_prefix(&self.shared.cfg.project_root) {
+                return rel.to_string_lossy().into_owned();
+            }
+            if let Ok(canon) = p.canonicalize() {
+                if let Ok(rel) = canon.strip_prefix(&self.shared.cfg.project_root) {
+                    return rel.to_string_lossy().into_owned();
+                }
+            }
+            return path.to_string();
+        }
+        let mut t = path;
+        while let Some(r) = t.strip_prefix("./") {
+            t = r;
+        }
+        t.to_string()
+    }
+
     pub fn document_text(&self, rel_path: &str) -> Option<String> {
-        self.shared
-            .files
-            .lock()
-            .get(rel_path)
-            .map(|f| f.text.clone())
+        let key = self.rel_key(rel_path);
+        self.shared.files.lock().get(&key).map(|f| f.text.clone())
     }
 
     pub fn spans(&self, rel_path: &str) -> Vec<crate::document::Span> {
+        let key = self.rel_key(rel_path);
         self.shared
             .files
             .lock()
-            .get(rel_path)
+            .get(&key)
             .map(|f| f.spans.clone())
             .unwrap_or_default()
     }
 
     /// Replace a whole buffer. Treated as an edit covering the full text.
     pub fn set_document(&self, rel_path: &str, text: &str) -> Result<EditResult> {
+        let key = self.rel_key(rel_path);
+        let rel_path = key.as_str();
         let len = self
             .shared
             .files
@@ -455,6 +477,8 @@ impl Session {
     }
 
     pub fn apply_edit(&self, rel_path: &str, edit: Edit) -> Result<EditResult> {
+        let key = self.rel_key(rel_path);
+        let rel_path = key.as_str();
         let t_start = Instant::now();
         let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;

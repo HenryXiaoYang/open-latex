@@ -125,6 +125,7 @@ const TEXT_MACROS: &[&str] = &[
     "-",
     "/",
     "@",
+    " ", // control space
     "hfill",
     "hfil",
     "hss",
@@ -828,6 +829,10 @@ pub struct Policy {
     pub packages: BTreeSet<String>,
     /// Math-mode macros defined in the preamble whose bodies are allow-listed (`\newcommand{\R}{\mathbb{R}}`).
     pub trusted_math: BTreeSet<String>,
+    /// Environments defined in the preamble (`\newenvironment`) whose begin/end code is
+    /// allow-listed text (font switches, `\noindent`, a label): typeset inside the paragraph
+    /// they wrap. Ones whose code opens a block environment are in `theorem_envs` instead.
+    pub user_inner_envs: BTreeSet<String>,
 }
 
 impl Policy {
@@ -896,6 +901,7 @@ impl Policy {
             cite_ok: !has_pkg("biblatex"),
             packages,
             trusted_math: BTreeSet::new(),
+            user_inner_envs: BTreeSet::new(),
         };
         // Macros defined in the preamble whose bodies are themselves allow-listed are trusted:
         // in text mode, in math mode, or both, depending on how the body classifies. Two rounds
@@ -924,6 +930,43 @@ impl Policy {
                 if classify_source(&format!("$x {b} x$"), &policy).1.is_empty() {
                     policy.trusted_math.insert(name.clone());
                 }
+            }
+        }
+        // Environments defined in the preamble: allowed when their begin and end code is
+        // allow-listed. One that opens a block environment (quote, itemize, center, a theorem)
+        // is a block unit itself (the capture tags it like a theorem); otherwise it is typeset
+        // inside the paragraph that uses it.
+        for (name, nargs, begin, end) in user_environment_definitions(&text) {
+            let mut b = format!("{begin} x {end}");
+            for k in 1..=nargs {
+                b = b.replace(&format!("#{k}"), "x");
+            }
+            if b.contains('#')
+                || b.contains("\\def")
+                || b.contains("\\let")
+                || b.contains("\\global")
+                || b.contains("\\gdef")
+                || b.contains("\\xdef")
+                || b.contains("\\newcommand")
+                || b.contains("\\renewcommand")
+                || name.is_empty()
+            {
+                continue;
+            }
+            let (shape, mut reasons) = classify_source(&b, &policy);
+            // declarations in the begin code are local to the environment's group
+            reasons.retain(|r| !matches!(r, Reason::SizeDeclarationOutsideGroup(_)));
+            if !reasons.is_empty() {
+                continue;
+            }
+            match shape {
+                UnitShape::Env(_) => {
+                    policy.theorem_envs.insert(name);
+                }
+                UnitShape::Par => {
+                    policy.user_inner_envs.insert(name);
+                }
+                UnitShape::Heading(_) => {}
             }
         }
         policy
@@ -987,6 +1030,86 @@ fn usepackages(text: &str) -> Vec<(Vec<String>, Vec<String>)> {
 /// Simple macro definitions in the preamble: `\newcommand{\name}[n]{body}` (also `*`,
 /// `\renewcommand`, `\providecommand`, an optional default argument), `\DeclareMathOperator`
 /// and parameterless `\def\name{body}`. Returns (name, argument count, body).
+/// `\newenvironment{name}[n][default]{begin}{end}` / `\renewenvironment` in `text`:
+/// (name, argument count, begin code, end code).
+fn user_environment_definitions(text: &str) -> Vec<(String, usize, String, String)> {
+    fn balanced(text: &str, open_at: usize) -> Option<usize> {
+        let b = text.as_bytes();
+        if b.get(open_at) != Some(&b'{') {
+            return None;
+        }
+        let mut depth = 0i32;
+        let mut i = open_at;
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 1,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    for key in ["\\newenvironment", "\\renewenvironment"] {
+        let mut idx = 0;
+        while let Some(p) = text[idx..].find(key) {
+            let mut i = idx + p + key.len();
+            idx = i;
+            if i < b.len() && b[i] == b'*' {
+                i += 1;
+            }
+            while i < b.len() && b[i] == b' ' {
+                i += 1;
+            }
+            let Some(e) = balanced(text, i) else { continue };
+            let name = text[i + 1..e].trim().to_string();
+            i = e + 1;
+            let mut nargs = 0usize;
+            let mut has_default = false;
+            for round in 0..2 {
+                while i < b.len() && (b[i] == b' ' || b[i] == b'\n') {
+                    i += 1;
+                }
+                if i < b.len() && b[i] == b'[' {
+                    if let Some(k) = text[i..].find(']') {
+                        if round == 0 {
+                            nargs = text[i + 1..i + k].trim().parse().unwrap_or(0);
+                        } else {
+                            has_default = true;
+                        }
+                        i += k + 1;
+                    }
+                }
+            }
+            while i < b.len() && (b[i] == b' ' || b[i] == b'\n') {
+                i += 1;
+            }
+            let Some(e1) = balanced(text, i) else {
+                continue;
+            };
+            let begin = text[i + 1..e1].to_string();
+            i = e1 + 1;
+            while i < b.len() && (b[i] == b' ' || b[i] == b'\n') {
+                i += 1;
+            }
+            let Some(e2) = balanced(text, i) else {
+                continue;
+            };
+            let end = text[i + 1..e2].to_string();
+            out.push((name, nargs.max(if has_default { 1 } else { 0 }), begin, end));
+        }
+    }
+    out
+}
+
 fn user_macro_definitions(text: &str) -> Vec<(String, usize, String)> {
     fn balanced(text: &str, open_at: usize) -> Option<usize> {
         let b = text.as_bytes();
@@ -1448,7 +1571,10 @@ pub fn classify_source(src: &str, policy: &Policy) -> (UnitShape, Vec<Reason>) {
                         env: Some(env),
                         depth_at_entry: depth,
                     });
-                } else if INNER_ENVS.contains(&env.as_str()) || is_amsmath_inner {
+                } else if INNER_ENVS.contains(&env.as_str())
+                    || is_amsmath_inner
+                    || policy.user_inner_envs.contains(&env)
+                {
                     if is_amsmath_inner && !policy.amsmath {
                         push(&mut reasons, Reason::NeedsPackage("amsmath".into()));
                     }
@@ -2045,6 +2171,29 @@ mod tests {
         assert!(classify_source("\\section{\\texorpdfstring{$x$}{x}}", &p2)
             .1
             .is_empty());
+    }
+    #[test]
+    fn user_environments() {
+        let p = Policy::from_preamble(
+            "\\newenvironment{solution}{\\par\\noindent\\textbf{Solution.}\\ \\itshape}{\\par}\n\\newenvironment{hint}[1]{\\begin{quote}\\small\\textbf{#1:}\\ }{\\end{quote}}\n\\newenvironment{bad}{\\tikz{x}}{}\n\\renewenvironment{abstract}{\\small}{\\par}\n",
+            &[],
+            &[],
+        );
+        assert!(
+            p.user_inner_envs.contains("solution") && p.user_inner_envs.contains("abstract"),
+            "inner {:?} block {:?}",
+            p.user_inner_envs,
+            p.theorem_envs
+        );
+        assert!(p.theorem_envs.contains("hint"));
+        assert!(!p.user_inner_envs.contains("bad") && !p.theorem_envs.contains("bad"));
+        let (shape, r) = classify_source("\\begin{solution}\nText.\n\\end{solution}", &p);
+        assert!(r.is_empty(), "{r:?}");
+        assert_eq!(shape, UnitShape::Par);
+        let (shape, r) = classify_source("\\begin{hint}{Idea}\nText.\n\\end{hint}", &p);
+        assert!(r.is_empty(), "{r:?}");
+        assert_eq!(shape, UnitShape::Env("hint".into()));
+        assert!(!check_source("\\begin{bad}x\\end{bad}", &p).is_empty());
     }
     #[test]
     fn trusted() {

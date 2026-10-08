@@ -56,12 +56,12 @@ placements, labels and page glyphs as a fresh run.
 ### Corpus (0.0.2)
 
 `fixtures/corpus/` holds seven realistic documents (a CS homework with enumitem lists, listings,
-hyperref and tabularx; analysis notes with amsthm, mathtools and user macros; a report with
+hyperref, tabularx and user-defined `solution`/`hint` environments; analysis notes with amsthm, mathtools and user macros; a report with
 natbib, subfigures, multirow and colortbl tables; a lab report with minipages, boxes and ulem;
 a code/units document with verbatim, listings, siunitx and cancel; a project split over files
 with a preamble `\input`, an `\input` chapter and an `\include` chapter; counters set by
 hand, `\texorpdfstring` and `\captionof`). CI runs `rtex verify` on each with an eligibility
-gate (`--min-eligible`): cs 15/16 units (the lone `\newpage` line draws nothing), math 9/9,
+gate (`--min-eligible`): cs 17/18 units (the lone `\newpage` line draws nothing), math 9/9,
 layout 9/9, code 8/8, multi 14/14, counters 9/10 (a `\stepcounter` before a paragraph's text
 is background-only by design), report 9/17 (the rest is the title block, TOC entries and
 bibliography, generated material), every eligible unit glyph-identical.

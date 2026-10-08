@@ -81,6 +81,10 @@
   pass only when that changes (an equation or item added, a counter set), so what follows is
   renumbered. hyperref `\texorpdfstring` and caption `\captionof` are allowed with their
   packages. Corpus fixture `counters` (9/10 live).
+- User-defined environments: `\newenvironment`/`\renewenvironment` in the preamble whose
+  begin/end code is allow-listed are fast-path material; one that opens a block environment
+  becomes a unit environment (captured like a theorem), the others are typeset inside the
+  paragraph that uses them. `\ ` (control space) is allowed.
 - Versioning reset: the library, protocol and documents are versioned together as 0.0.x; nothing
   is frozen before 0.1.
 

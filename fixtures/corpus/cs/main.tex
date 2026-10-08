@@ -14,6 +14,9 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \lstset{basicstyle=\ttfamily\small, keywordstyle=\color{blue}, language=Python, frame=single}
+% user environments: an inline one (font switch and a label) and a block one (wraps quote)
+\newenvironment{solution}{\par\noindent\textbf{Solution.}\ \itshape}{\par}
+\newenvironment{hint}{\begin{quote}\small\textbf{Hint:}\ }{\end{quote}}
 \begin{document}
 {\Large\bfseries Computer Hardware and Operation\par}
 Henry Yang \hfill 22 September 2026
@@ -77,4 +80,12 @@ An operating system manages \textit{resources}: memory, the processor and periph
   \item Outline the function of the MAR. \hfill [2]
   \item Describe one difference between RAM and ROM. \hfill [2]
 \end{enumerate}
+
+\begin{hint}
+  Think about what happens to the contents of each kind of memory when the power is switched off, and which of them the processor can write to.
+\end{hint}
+
+\begin{solution}
+The MAR holds the address of the memory location that is about to be read from or written to, so that the address bus can be driven with it while the data travels over the data bus.
+\end{solution}
 \end{document}
