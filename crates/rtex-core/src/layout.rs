@@ -469,8 +469,10 @@ impl LayoutStore {
     ) -> anyhow::Result<(LayoutStore, crate::document::FileSet)> {
         let texts = crate::document::load_project_files(project, main)?;
         let mut ids = crate::document::IdAllocator(0);
-        let mut set = crate::document::FileSet::default();
-        set.inputted = crate::document::inputted_files(&texts);
+        let mut set = crate::document::FileSet {
+            inputted: crate::document::inputted_files(&texts),
+            ..Default::default()
+        };
         let mut spans = Vec::new();
         // the main file first so its ids come first (tools pick "the middle paragraph" by id)
         for (name, text) in std::iter::once((main, texts[main].as_str())).chain(

@@ -98,7 +98,7 @@ fn page_resources(
                                 .map(|n| String::from_utf8_lossy(n).to_string())
                                 .unwrap_or_default();
                             // subset prefixes are random per run; strip them
-                            let base = base.split('+').last().unwrap_or("").to_string();
+                            let base = base.split('+').next_back().unwrap_or("").to_string();
                             h ^= hash(base.as_bytes());
                         }
                     }

@@ -10,11 +10,11 @@ use rtex_core::{Edit, Event, Session, SessionConfig};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-fn med(v: &mut Vec<f64>) -> f64 {
+fn med(v: &mut [f64]) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     v[v.len() / 2]
 }
-fn p95(v: &mut Vec<f64>) -> f64 {
+fn p95(v: &mut [f64]) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     v[((v.len() as f64) * 0.95) as usize]
 }

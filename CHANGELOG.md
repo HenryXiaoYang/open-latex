@@ -49,7 +49,13 @@
   per-span facts of the live path (borrowed contexts, live rows and placements, counters seen,
   probe verdicts, budget marks, internal errors, leaks), ten maps with their own clearing rules,
   are one record per span with three explicit lifetimes (`session/live.rs`); the write-only
-  `overlays` map is gone.
+  `overlays` map is gone. The engine thread is an `EngineLoop` with one method per step, and
+  the eligibility classifier a `Scan` with one method per construct (checked identical to the
+  original over 1.6 million classifications).
+- Clippy-clean workspace, enforced in CI with `-D warnings`, and `cargo fmt --check` enforced
+  (it was not). API: `background::run_pass_with_runner` takes a `PassPlan` and
+  `WarmEngine::spawn` a `StandbySpec` instead of eight arguments each; `IdAllocator::next` is
+  `next_id`; `engine::Response::Result` holds a `Box<CompileResult>`.
 - The host drains the server's response FIFO on a reader thread with blocking reads instead of
   polling it. On macOS the server blocked writing a 9 KB display list (more than the FIFO
   holds) while the host's `poll` never reported the frame: the watchdog killed the engine

@@ -85,7 +85,7 @@ pub enum Response {
     #[serde(rename = "ok")]
     Ok { id: i64 },
     #[serde(rename = "result")]
-    Result(CompileResult),
+    Result(Box<CompileResult>),
     #[serde(rename = "fatal")]
     Fatal {
         #[serde(default)]
@@ -237,7 +237,8 @@ impl FastServer {
             }
             // the bibliography data of that pass (biblatex reads \jobname.bbl at
             // \begin{document}; bibtex's .bbl is \input by \bibliography, in the body)
-            for ext in ["bbl"] {
+            {
+                let ext = "bbl";
                 let src = a.with_extension(ext);
                 let dst = work_dir.join(format!("rtex-serve-g{generation}.{ext}"));
                 let _ = std::fs::remove_file(&dst);
@@ -460,7 +461,7 @@ impl FastServer {
                 }
                 cr.host_us[2] = t_read.as_micros() as u64;
                 cr.host_us[3] = (t0.elapsed() - t_read).as_micros() as u64;
-                Ok(Response::Result(cr))
+                Ok(Response::Result(Box::new(cr)))
             }
             k => bail!("unknown frame kind {k}"),
         }
@@ -547,7 +548,7 @@ impl FastServer {
                     t_traverse: Duration::from_micros(cr.t_traverse_us as u64),
                     t_pack: Duration::from_micros(cr.t_pack_us as u64),
                 };
-                Ok((cr, rt))
+                Ok((*cr, rt))
             }
             Response::Fatal {
                 reason,

@@ -174,12 +174,12 @@ pub fn parse_log(log: &Path) -> Vec<Diagnostic> {
                 message: l.to_string(),
                 context: None,
             });
-        } else if l.starts_with("! ") {
+        } else if let Some(message) = l.strip_prefix("! ") {
             out.push(Diagnostic {
                 severity: "error".into(),
                 file: None,
                 line: None,
-                message: l[2..].to_string(),
+                message: message.to_string(),
                 context: lines.get(i + 1).map(|s| s.to_string()),
             });
         }

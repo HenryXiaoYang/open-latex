@@ -27,15 +27,29 @@ fn standby_pass_matches_fresh_pass() {
     // standby: spawn, wait a moment (preamble loading), release
     let warm_out = root.join("warm");
     let body_dir = root.join("src-body");
-    let w = WarmEngine::spawn(
-        &tl, &project, &files, "main.tex", &body_dir, &warm_out, true, "",
-    )
+    let w = WarmEngine::spawn(rtex_core::background::StandbySpec {
+        tl: &tl,
+        project: &project,
+        files: &files,
+        main: "main.tex",
+        src_dir: &body_dir,
+        out_dir: &warm_out,
+        instrumented: true,
+        unit_envs: "",
+    })
     .unwrap();
     let first = w.run(&project, &files, "main.tex").unwrap();
     assert!(first.exit_ok, "standby pass failed");
-    let w2 = WarmEngine::spawn(
-        &tl, &project, &files, "main.tex", &body_dir, &warm_out, true, "",
-    )
+    let w2 = WarmEngine::spawn(rtex_core::background::StandbySpec {
+        tl: &tl,
+        project: &project,
+        files: &files,
+        main: "main.tex",
+        src_dir: &body_dir,
+        out_dir: &warm_out,
+        instrumented: true,
+        unit_envs: "",
+    })
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1500));
     let t0 = std::time::Instant::now();

@@ -158,17 +158,17 @@ fn load_font(doc: &Document, resource: &str, id: ObjectId) -> Result<PdfFont> {
             let w = doc.dereference(w)?.1.as_array()?.clone();
             let mut i = 0;
             while i < w.len() {
-                let first = f(&doc.dereference(&w[i])?.1)? as u32;
+                let first = f(doc.dereference(&w[i])?.1)? as u32;
                 if i + 1 < w.len() {
                     let second = doc.dereference(&w[i + 1])?.1.clone();
                     if let Ok(list) = second.as_array() {
                         for (k, wv) in list.iter().enumerate() {
-                            widths.insert(first + k as u32, f(&doc.dereference(wv)?.1)?);
+                            widths.insert(first + k as u32, f(doc.dereference(wv)?.1)?);
                         }
                         i += 2;
                     } else {
                         let last = f(&second)? as u32;
-                        let wv = f(&doc.dereference(&w[i + 2])?.1)?;
+                        let wv = f(doc.dereference(&w[i + 2])?.1)?;
                         for c in first..=last {
                             widths.insert(c, wv);
                         }
@@ -189,7 +189,7 @@ fn load_font(doc: &Document, resource: &str, id: ObjectId) -> Result<PdfFont> {
         if let Ok(w) = dict.get(b"Widths") {
             let w = doc.dereference(w)?.1.as_array()?.clone();
             for (k, wv) in w.iter().enumerate() {
-                widths.insert(first + k as u32, f(&doc.dereference(wv)?.1)?);
+                widths.insert(first + k as u32, f(doc.dereference(wv)?.1)?);
             }
         }
     }

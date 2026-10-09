@@ -208,12 +208,14 @@ pub fn run_pass_with(
         crate::capture::run_capture_with(tl, snapshot_dir, main, out_dir, instrumented, unit_envs)
     };
     run_pass_with_runner(
-        tl,
-        snapshot_dir,
-        main,
-        out_dir,
-        max_passes,
-        bib,
+        PassPlan {
+            tl,
+            snapshot_dir,
+            main,
+            aux_dir: out_dir,
+            max_passes,
+            bib,
+        },
         &mut runner,
         &mut |_, _| {},
     )
@@ -277,19 +279,34 @@ pub fn copy_aux_family(from: &Path, to: &Path) -> Result<()> {
     go(from, from, to)
 }
 
+/// Where and how a sequence of passes runs.
+#[derive(Clone, Copy)]
+pub struct PassPlan<'a> {
+    pub tl: &'a TexLive,
+    pub snapshot_dir: &'a Path,
+    pub main: &'a str,
+    /// The aux family the first pass starts from (each pass may run in its own directory).
+    pub aux_dir: &'a Path,
+    pub max_passes: u32,
+    pub bib: BibTool,
+}
+
 /// `run_pass_with` with the single pass supplied by `runner` (a fresh lualatex, or a standby
 /// `WarmEngine` that already holds the preamble). Each pass may run in its own directory
 /// (`CaptureResult::out_dir`); `aux_dir` holds the aux family the first pass starts from.
 pub fn run_pass_with_runner(
-    tl: &TexLive,
-    snapshot_dir: &Path,
-    main: &str,
-    aux_dir: &Path,
-    max_passes: u32,
-    bib: BibTool,
+    plan: PassPlan,
     runner: &mut dyn FnMut(u32) -> Result<CaptureResult>,
     on_pass: &mut dyn FnMut(&CaptureResult, u32),
 ) -> Result<PassOutcome> {
+    let PassPlan {
+        tl,
+        snapshot_dir,
+        main,
+        aux_dir,
+        max_passes,
+        bib,
+    } = plan;
     std::fs::create_dir_all(aux_dir)?;
     let jobname = Path::new(main)
         .file_stem()
@@ -535,28 +552,37 @@ pub struct WarmEngine {
     pub spawned: std::time::Instant,
 }
 
+/// What a standby engine runs: the project and its sources, where the body snapshot goes and
+/// where the pass writes.
+#[derive(Clone, Copy)]
+pub struct StandbySpec<'a> {
+    pub tl: &'a TexLive,
+    pub project: &'a Path,
+    pub files: &'a BTreeMap<String, String>,
+    pub main: &'a str,
+    pub src_dir: &'a Path,
+    pub out_dir: &'a Path,
+    pub instrumented: bool,
+    pub unit_envs: &'a str,
+}
+
 impl WarmEngine {
     /// Start a standby: writes the body snapshot into `src_dir` and runs lualatex up to the end
     /// of the preamble, where it blocks on stdin (tex/rtex-bg.lua).
-    pub fn spawn(
-        tl: &TexLive,
-        project: &Path,
-        files: &BTreeMap<String, String>,
-        main: &str,
-        src_dir: &Path,
-        out_dir: &Path,
-        instrumented: bool,
-        unit_envs: &str,
-    ) -> Result<WarmEngine> {
-        let preamble_hash = write_body_snapshot(project, files, main, src_dir)?;
-        let (mut cmd, jobname, out_dir) = capture_command(
+    pub fn spawn(spec: StandbySpec) -> Result<WarmEngine> {
+        let StandbySpec {
             tl,
-            src_dir,
+            project,
+            files,
             main,
-            &out_dir.to_path_buf(),
+            src_dir,
+            out_dir,
             instrumented,
             unit_envs,
-        )?;
+        } = spec;
+        let preamble_hash = write_body_snapshot(project, files, main, src_dir)?;
+        let (mut cmd, jobname, out_dir) =
+            capture_command(tl, src_dir, main, out_dir, instrumented, unit_envs)?;
         let pkg = if instrumented {
             "\\RequirePackage{rtex-capture}"
         } else {

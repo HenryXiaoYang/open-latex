@@ -35,7 +35,7 @@ impl Rng {
     pub fn new(seed: u64) -> Self {
         Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1)
     }
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         // xorshift64*
         let mut x = self.0;
         x ^= x >> 12;
@@ -45,7 +45,7 @@ impl Rng {
         x.wrapping_mul(0x2545F4914F6CDD1D)
     }
     pub fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
+        self.next_u64() % n
     }
     pub fn range(&mut self, lo: u64, hi: u64) -> u64 {
         lo + self.below(hi - lo + 1)

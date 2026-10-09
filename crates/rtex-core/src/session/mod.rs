@@ -205,6 +205,9 @@ pub struct ParagraphPlacement {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event")]
+// ParagraphUpdate carries its display list inline: an event is moved once, through a channel,
+// and boxing the field would change the public type hosts match on for no measurable gain
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     ParagraphUpdate {
         par_id: ParaId,
@@ -768,7 +771,7 @@ impl Session {
                         .send(Event::ParagraphUpdate {
                             par_id: *id,
                             edit_id,
-                            versions: versions.clone(),
+                            versions,
                             status: "removed".into(),
                             reasons: vec![],
                             fragments: vec![],

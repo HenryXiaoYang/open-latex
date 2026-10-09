@@ -75,7 +75,7 @@ impl EngineLoop {
         reset_link(&self.s);
     }
 
-    /// 1. A compile is in flight (sent by us or directly by the host): read its result. True
+    /// Step 1: A compile is in flight (sent by us or directly by the host): read its result. True
     /// when there was one (the iteration is settled).
     fn collect_inflight(&mut self, wanted_gen: u64) -> bool {
         let s = self.s.clone();
@@ -107,7 +107,7 @@ impl EngineLoop {
                     t_traverse: Duration::from_micros(cr.t_traverse_us as u64),
                     t_pack: Duration::from_micros(cr.t_pack_us as u64),
                 };
-                handle_result(&s, fl.req, cr, rt, fl.t0, wanted_gen);
+                handle_result(&s, fl.req, *cr, rt, fl.t0, wanted_gen);
                 return true;
             }
             Ok(Response::Fatal {
@@ -125,7 +125,7 @@ impl EngineLoop {
         true
     }
 
-    /// 2. The next queued request (the smallest unit id). None: the iteration is settled
+    /// Step 2: The next queued request (the smallest unit id). None: the iteration is settled
     /// (nothing to do and the server is fine: waited for a signal; or the request was
     /// superseded). Some(None): nothing queued but the server needs attention.
     fn next_request(&mut self, wanted_gen: u64) -> Option<Option<FastRequest>> {
@@ -151,7 +151,7 @@ impl EngineLoop {
         Some(req)
     }
 
-    /// 3. (Re)start the server when the generation changed or it died. A preamble edit bumps
+    /// Step 3: (Re)start the server when the generation changed or it died. A preamble edit bumps
     /// the generation per keystroke; wait until it has been quiet for the debounce time so a
     /// burst of preamble keystrokes costs one restart, not one per keystroke. False: the
     /// iteration is settled (the generation moved on, or the start failed).
@@ -245,7 +245,7 @@ impl EngineLoop {
         }
     }
 
-    /// 3b. Labels (\newlabel/\bibcite of the last pass) when they changed; done while idle
+    /// Step 3b: Labels (\newlabel/\bibcite of the last pass) when they changed; done while idle
     /// when possible, and before a compile otherwise. False: the server failed (dropped).
     fn sync_labels(&mut self, wanted_gen: u64) -> bool {
         let s = self.s.clone();
@@ -282,7 +282,7 @@ impl EngineLoop {
         }
     }
 
-    /// 4., 4b., 5.: context, probe, compile frame, under the link lock (released around the
+    /// Steps 4, 4b and 5: context, probe, compile frame, under the link lock (released around the
     /// probe compile and every side effect that takes it again).
     fn serve(&mut self, mut req: FastRequest, wanted_gen: u64) {
         let s = self.s.clone();
@@ -313,7 +313,7 @@ impl EngineLoop {
         }
     }
 
-    /// 4. Send the context when the server does not hold it. False: the iteration is settled
+    /// Step 4: Send the context when the server does not hold it. False: the iteration is settled
     /// (the context is gone, or the server failed).
     fn ensure_context(
         &mut self,
@@ -378,7 +378,7 @@ impl EngineLoop {
         }
     }
 
-    /// 4b. Probe mode: prove the unit first — its snapshot text (from the layout current now)
+    /// Step 4b: Probe mode: prove the unit first — its snapshot text (from the layout current now)
     /// compiled and compared with that layout's rows. The compile runs without the link lock
     /// (the host's apply_edit must not wait on it); `probing` keeps the direct dispatch path
     /// off the server meanwhile. A verdict is kept for the layout version.

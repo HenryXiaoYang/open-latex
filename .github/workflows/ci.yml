@@ -9,8 +9,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check || true
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --release -- -D warnings
       - run: cargo build --workspace --release
       - run: cargo test --workspace --lib
       - run: scripts/check-abi.sh

@@ -19,7 +19,7 @@ pub struct SliceOpts {
     pub json_out: Option<PathBuf>,
 }
 
-fn stats(v: &mut Vec<f64>) -> (f64, f64, f64, f64) {
+fn stats(v: &mut [f64]) -> (f64, f64, f64, f64) {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = v.len();
     let at = |frac: f64| v[((n as f64 * frac).floor() as usize + 1).min(n) - 1];
@@ -251,7 +251,7 @@ pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
             .max_dx_by_font
             .iter()
             .map(|(k, v)| (
-                k.split('+').last().unwrap_or(k).to_string(),
+                k.split('+').next_back().unwrap_or(k).to_string(),
                 (v * 1e5).round() / 1e5
             ))
             .collect::<Vec<_>>()

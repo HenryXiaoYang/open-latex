@@ -260,7 +260,7 @@ fn boundary_change_and_preamble_change() {
             seen_second = true;
             assert!(pagination_stale && context_stale);
             assert!(fragments[0].approximate);
-            assert!(dl.lines.len() >= 1);
+            assert!(!dl.lines.is_empty());
         }
     }
     assert!(seen_first && seen_second);

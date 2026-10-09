@@ -288,12 +288,10 @@ pub fn roundtrip(
                             "Diagnostics {:?}",
                             items.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
                         ),
-                        other => format!(
-                            "{}",
-                            serde_json::to_value(other)
-                                .map(|v| v["event"].to_string())
-                                .unwrap_or_default()
-                        ),
+                        other => serde_json::to_value(other)
+                            .map(|v| v["event"].to_string())
+                            .unwrap_or_default()
+                            .to_string(),
                     })
                     .collect();
                 bail!("no paragraph update for par {pid} ({cat}); events seen: {seen:?}; edit result: {:?}", r.reasons)

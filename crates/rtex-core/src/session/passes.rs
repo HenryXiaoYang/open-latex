@@ -8,11 +8,7 @@ use super::*;
 // ---------------------------------------------------------------------------------------------
 pub(super) fn background_thread(s: Arc<Shared>) {
     prepare_standby(&s);
-    loop {
-        let cmd = match s.bg_signal.1.recv() {
-            Ok(c) => c,
-            Err(_) => break,
-        };
+    while let Ok(cmd) = s.bg_signal.1.recv() {
         match cmd {
             BgCmd::Quit => break,
             BgCmd::Export(job, out) => run_export(&s, job, out),
@@ -84,6 +80,26 @@ pub(super) fn last_pass_dir(s: &Shared) -> Option<PathBuf> {
 }
 
 /// The slot (0 or 1) a new standby takes: the one that does not hold the last pass.
+/// A standby engine for `slot`: the session's project and sources, the slot's body snapshot
+/// and pass directories.
+pub(super) fn spawn_standby(
+    s: &Shared,
+    texts: &BTreeMap<String, String>,
+    unit_envs: &str,
+    slot: usize,
+) -> Result<WarmEngine> {
+    WarmEngine::spawn(crate::background::StandbySpec {
+        tl: &s.tl,
+        project: &s.cfg.project_root,
+        files: texts,
+        main: &s.cfg.main_file,
+        src_dir: &standby_dir(s, slot),
+        out_dir: &pass_dir(s, slot),
+        instrumented: true,
+        unit_envs,
+    })
+}
+
 pub(super) fn standby_slot(s: &Shared) -> usize {
     match last_pass_dir(s) {
         Some(d) if d.ends_with("pass-0") => 1,
@@ -120,16 +136,7 @@ pub(super) fn prepare_standby(s: &Shared) {
     }
     let unit_envs = s.policy.lock().unit_envs_env();
     let n = standby_slot(s);
-    match WarmEngine::spawn(
-        &s.tl,
-        &s.cfg.project_root,
-        &texts,
-        &s.cfg.main_file,
-        &standby_dir(s, n),
-        &pass_dir(s, n),
-        true,
-        &unit_envs,
-    ) {
+    match spawn_standby(s, &texts, &unit_envs, n) {
         Ok(w) => *slot = Some(w),
         Err(e) => {
             s.events
@@ -358,16 +365,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
                 Some(w) => w,
                 None => {
                     let slot = standby_slot(s);
-                    WarmEngine::spawn(
-                        &s.tl,
-                        &s.cfg.project_root,
-                        &texts,
-                        &s.cfg.main_file,
-                        &standby_dir(s, slot),
-                        &pass_dir(s, slot),
-                        true,
-                        &unit_envs,
-                    )?
+                    spawn_standby(s, &texts, &unit_envs, slot)?
                 }
             };
             // this pass starts from the last one's aux family, then the next standby starts
@@ -378,16 +376,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             } else {
                 0
             };
-            if let Ok(next) = WarmEngine::spawn(
-                &s.tl,
-                &s.cfg.project_root,
-                &texts,
-                &s.cfg.main_file,
-                &standby_dir(s, other),
-                &pass_dir(s, other),
-                true,
-                &unit_envs,
-            ) {
+            if let Ok(next) = spawn_standby(s, &texts, &unit_envs, other) {
                 *s.standby.lock() = Some(next);
             }
             let cap = w.run(&s.cfg.project_root, &texts, &s.cfg.main_file)?;
@@ -395,12 +384,14 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             Ok(cap)
         };
         run_pass_with_runner(
-            &s.tl,
-            &standby_dir(s, 0),
-            &s.cfg.main_file,
-            &aux_dir,
-            s.cfg.max_passes,
-            s.cfg.bib_tool,
+            crate::background::PassPlan {
+                tl: &s.tl,
+                snapshot_dir: &standby_dir(s, 0),
+                main: &s.cfg.main_file,
+                aux_dir: &aux_dir,
+                max_passes: s.cfg.max_passes,
+                bib: s.cfg.bib_tool,
+            },
             &mut runner,
             &mut on_pass,
         )
@@ -421,12 +412,14 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             Ok(cap)
         };
         run_pass_with_runner(
-            &s.tl,
-            &snap_dir,
-            &s.cfg.main_file,
-            &aux_dir,
-            s.cfg.max_passes,
-            s.cfg.bib_tool,
+            crate::background::PassPlan {
+                tl: &s.tl,
+                snapshot_dir: &snap_dir,
+                main: &s.cfg.main_file,
+                aux_dir: &aux_dir,
+                max_passes: s.cfg.max_passes,
+                bib: s.cfg.bib_tool,
+            },
             &mut runner,
             &mut on_pass,
         )
@@ -539,10 +532,10 @@ pub(super) fn deliver_layout(
                 },
                 compile,
                 convergence: Convergence::PassLimitReached {
-                    passes: passes,
+                    passes,
                     reasons: vec!["no pages".into()],
                 },
-                passes: passes,
+                passes,
                 pages_changed: vec![],
                 pages_total: 0,
                 placements: vec![],
@@ -558,7 +551,7 @@ pub(super) fn deliver_layout(
         // together)
         let files = s.files.lock();
         let mut layout = s.layout.lock();
-        let changed = match layout.install(&cap, spans, rev) {
+        let changed = match layout.install(cap, spans, rev) {
             Ok(c) => {
                 // the PDF hosts render degraded pages from: a copy per layout, since the next
                 // pass (started right after this one, a provisional layout's in particular)
@@ -683,34 +676,31 @@ pub(super) fn deliver_layout(
             files.values().find_map(|fb| fb.span_text(id)),
         ) {
             let mut p = s.pending.lock();
-            if !p.contains_key(&id) {
+            if let std::collections::btree_map::Entry::Vacant(e) = p.entry(id) {
                 // exercise the font variants and math a body paragraph commonly needs so their
                 // font instances are loaded before the first real keystroke
                 let warm = format!("{} \\emph{{warm}} \\textbf{{warm}} \\textit{{warm}} \\textsc{{warm}} {{\\small warm}} $x^2_i + \\alpha \\sum \\frac{{1}}{{2}} \\mathbf{{v}}$", text.trim_end_matches('\n'));
-                p.insert(
-                    id,
-                    FastRequest {
-                        warmup: true,
-                        par_id: id,
-                        edit_id: 0,
-                        span_hash: 0,
-                        source: warm,
-                        pics: String::new(),
-                        pics_n: 0,
-                        seq: eu.uid,
-                        ctx: None,
-                        versions: Versions {
-                            source_revision: rev,
-                            context_revision: layout.context_revision,
-                            engine_generation: s.engine_generation.load(Ordering::SeqCst),
-                            layout_version: layout.layout_version,
-                        },
-                        context_stale: false,
-                        expected_rows: 0,
-                        probe: false,
-                        pics_required: false,
+                e.insert(FastRequest {
+                    warmup: true,
+                    par_id: id,
+                    edit_id: 0,
+                    span_hash: 0,
+                    source: warm,
+                    pics: String::new(),
+                    pics_n: 0,
+                    seq: eu.uid,
+                    ctx: None,
+                    versions: Versions {
+                        source_revision: rev,
+                        context_revision: layout.context_revision,
+                        engine_generation: s.engine_generation.load(Ordering::SeqCst),
+                        layout_version: layout.layout_version,
                     },
-                );
+                    context_stale: false,
+                    expected_rows: 0,
+                    probe: false,
+                    pics_required: false,
+                });
                 s.pending_signal.0.send(()).ok();
             }
         }
@@ -739,7 +729,7 @@ pub(super) fn deliver_layout(
         Convergence::Converged
     } else if !aux_stable && passes >= s.cfg.max_passes {
         Convergence::PassLimitReached {
-            passes: passes,
+            passes,
             reasons: reasons.clone(),
         }
     } else {
@@ -783,7 +773,7 @@ pub(super) fn deliver_layout(
             versions,
             compile,
             convergence: convergence.clone(),
-            passes: passes,
+            passes,
             pages_changed,
             pages_total,
             placements,

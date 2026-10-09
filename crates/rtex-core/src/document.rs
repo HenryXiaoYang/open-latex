@@ -572,7 +572,7 @@ fn find_all_envs(line: &str, prefix: &str) -> Vec<String> {
 
 pub struct IdAllocator(pub u64);
 impl IdAllocator {
-    pub fn next(&mut self) -> ParaId {
+    pub fn next_id(&mut self) -> ParaId {
         self.0 += 1;
         ParaId(self.0)
     }
@@ -616,7 +616,7 @@ impl FileBuf {
             .map(|(range, kind)| {
                 let hash = hash_str(&self.text[range.clone()]);
                 Span {
-                    id: ids.next(),
+                    id: ids.next_id(),
                     range,
                     kind,
                     hash,
@@ -791,9 +791,7 @@ impl FileBuf {
         }
         let mut outcome = EditOutcome::default();
         let mut spans = Vec::with_capacity(new_units.len());
-        for i in 0..prefix {
-            spans.push(old_spans[i].clone());
-        }
+        spans.extend(old_spans[..prefix].iter().cloned());
         let old_mid = &old_spans[prefix..old_spans.len() - suffix];
         let new_mid = &new_units[prefix..new_units.len() - suffix];
         if old_mid.len() == 1 && new_mid.len() == 1 {
@@ -839,7 +837,7 @@ impl FileBuf {
                         id
                     }
                     _ => {
-                        let id = ids.next();
+                        let id = ids.next_id();
                         outcome.added.push(id);
                         id
                     }

@@ -1754,7 +1754,7 @@ pub fn classify_source_with(
 /// absorbs), a heading, or a paragraph. Also returns where the unit's own heading command may
 /// start (a heading macro further in is not the unit's heading).
 fn unit_shape(text: &str, policy: &Policy) -> (UnitShape, usize) {
-    let trimmed = text[setup_prefix(&text).0..].trim();
+    let trimmed = text[setup_prefix(text).0..].trim();
     let mut shape = UnitShape::Par;
     let env_start = vertical_prefix_len(trimmed);
     if let Some((name, _)) = env_name(trimmed, env_start, "\\begin") {
@@ -2005,7 +2005,7 @@ impl<'a> Scan<'a> {
     fn begin_environment(&mut self, in_math: bool) {
         let (text, policy) = (self.text, self.policy);
         let begin_pos = self.i - 6;
-        let Some((env, after)) = env_name(&text, begin_pos, "\\begin") else {
+        let Some((env, after)) = env_name(text, begin_pos, "\\begin") else {
             self.push(Reason::UnbalancedEnvironment);
             return;
         };
@@ -2066,10 +2066,10 @@ impl<'a> Scan<'a> {
                 // after it (the capture keeps one unit)
                 let inline = self.env_depth == 0
                     && self.shape == UnitShape::Par
-                    && !text[content_start(&text).min(begin_pos)..begin_pos]
+                    && !text[content_start(text).min(begin_pos)..begin_pos]
                         .trim()
                         .is_empty();
-                match skip_env_body(&text, self.i, &env) {
+                match skip_env_body(text, self.i, &env) {
                     Some(e) => {
                         self.i = e;
                         if self.env_depth == 0 && !inline {
@@ -2117,12 +2117,11 @@ impl<'a> Scan<'a> {
                 depth_at_entry: self.depth,
             });
         }
-        return;
     }
 
     fn end_environment(&mut self) {
         let (text, policy) = (self.text, self.policy);
-        let Some((env, after)) = env_name(&text, self.i - 4, "\\end") else {
+        let Some((env, after)) = env_name(text, self.i - 4, "\\end") else {
             self.push(Reason::UnbalancedEnvironment);
             return;
         };
@@ -2147,7 +2146,6 @@ impl<'a> Scan<'a> {
             }
             _ => self.push(Reason::UnbalancedEnvironment),
         }
-        return;
     }
 
     /// Opaque arguments (URLs, units, verbatim): skipped; the package is checked.
@@ -2204,7 +2202,6 @@ impl<'a> Scan<'a> {
                 }
             }
         }
-        return;
     }
 
     /// A macro: allowed by the vocabulary for its mode and context, or a reason.
