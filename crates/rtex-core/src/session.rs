@@ -2223,6 +2223,37 @@ fn handle_result(
             }
         }
     };
+    // a placement that lands off its page is a bad guess (a borrowed anchor on another page,
+    // a unit grown past the page bottom, rows extrapolated above the top): drop it so the unit
+    // waits for the pass instead of drawing its rows, pictures and all, at the page edge or
+    // past it (two graphs, a plot pinned to the page top)
+    if !fragments.is_empty() && !s.layout.lock().fragments_on_page(&fragments) {
+        demote_span(s, &req, "the placement would fall off its page");
+        return;
+    }
+    // a box the host cannot place (no placement for the unit, no neighbour to place it
+    // against) is not a live result: the unit waits for the pass
+    if fragments.is_empty() && !dl.lines.is_empty() {
+        demote_span(s, &req, "no placement for the unit's rows");
+        return;
+    }
+    if s.cfg.debug_dir.is_some() {
+        let f = fragments.first();
+        debug_request_line(
+            s,
+            &format!(
+                "par {} placed: rows {} fragments {} page {:?} x {:?} y {:?}..{:?} approximate {:?}",
+                req.par_id.0,
+                dl.lines.len(),
+                fragments.len(),
+                f.map(|f| f.page),
+                f.and_then(|f| f.xs.first().copied()),
+                f.and_then(|f| f.baselines.first().copied()),
+                fragments.last().and_then(|f| f.baselines.last().copied()),
+                f.map(|f| f.approximate),
+            ),
+        );
+    }
     s.live_rows.lock().insert(req.par_id, dl.lines.len() as i64);
     if let Some(f) = fragments.last() {
         if let (Some(x), Some(last)) = (f.xs.first(), f.baselines.last()) {

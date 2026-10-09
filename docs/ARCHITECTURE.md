@@ -61,7 +61,9 @@ in order, the first one provides the context, and the fast path typesets the spa
    context such as the other half of a split), at that span's left edge (exact for consecutive
    paragraphs with the same baselineskip and no parskip), `approximate` and `context_stale`; the next layout replaces the borrowed context with a
    captured one. A float typed fresh waits for the next pass (its box state comes from the
-   capture only).
+   capture only). Any live placement (borrowed or anchored) whose rows would fall off the page
+   they land on is dropped, so the unit waits for the pass instead of drawing at the page edge;
+   a host renders that page from the last pass until then.
 3. The request goes straight to the server when it is idle and already holds the unit's context
    (no engine-thread wake-up on the keystroke path); otherwise it is queued, latest per unit. The
    server replays the context, typesets the source in a `\vbox`, restores the counters, checks

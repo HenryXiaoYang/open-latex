@@ -378,6 +378,30 @@ impl LayoutStore {
         self.by_span.get(&id).map(|i| &self.units[*i])
     }
 
+    /// The height of page `page` as the installed pass shipped it, when known.
+    pub fn page_height(&self, page: i64) -> Option<Sp> {
+        self.pages.get(&page).and_then(|d| d.page_height)
+    }
+
+    /// Does every row of `frags` sit on its page (a baseline strictly inside the page, after
+    /// the top margin and before the bottom edge)? A borrowed or relative placement is a
+    /// guess; one that lands above the page top or past its bottom is not trusted (the unit
+    /// waits for the pass instead of drawing an overlay in the wrong place). Pages whose height
+    /// is unknown are not checked.
+    pub fn fragments_on_page(&self, frags: &[Fragment]) -> bool {
+        for f in frags {
+            let Some(h) = self.page_height(f.page) else {
+                continue;
+            };
+            for &b in &f.baselines {
+                if b <= 0 || b >= h {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// What the host recorded about span `id` when the installed pass was started.
     pub fn snapshot_span(&self, id: ParaId) -> Option<&SnapshotSpan> {
         self.snapshot_index
@@ -746,4 +770,48 @@ pub fn compare_unit_rows(
         }
     }
     (same, total, notes)
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    fn frag(page: i64, baselines: Vec<Sp>) -> Fragment {
+        Fragment {
+            page,
+            first_line: 1,
+            last_line: baselines.len() as i64,
+            x: 0,
+            xs: baselines.iter().map(|_| 0).collect(),
+            baselines,
+            approximate: true,
+        }
+    }
+
+    fn store_with_page(page: i64, height: Sp) -> LayoutStore {
+        let mut s = LayoutStore::default();
+        let dl = DisplayList {
+            page_height: Some(height),
+            ..DisplayList::default()
+        };
+        s.pages.insert(page, dl);
+        s
+    }
+
+    #[test]
+    fn a_placement_off_its_page_is_rejected() {
+        let h = 50 * 65536 * 12; // ~12 inch page in sp, order of magnitude only
+        let s = store_with_page(1, h);
+        // a baseline inside the page is fine
+        assert!(s.fragments_on_page(&[frag(1, vec![h / 2])]));
+        // a baseline above the page top (the top-of-page overlay bug) is rejected
+        assert!(!s.fragments_on_page(&[frag(1, vec![-10])]));
+        assert!(!s.fragments_on_page(&[frag(1, vec![0])]));
+        // a baseline past the page bottom is rejected
+        assert!(!s.fragments_on_page(&[frag(1, vec![h + 10])]));
+        // one bad row among good ones rejects the whole placement
+        assert!(!s.fragments_on_page(&[frag(1, vec![h / 2, h + 1])]));
+        // a page whose height is unknown is not checked (no false drop)
+        assert!(s.fragments_on_page(&[frag(9, vec![-100])]));
+    }
 }

@@ -30,7 +30,10 @@
   the engine drew one after all. A borrowed unit is placed after the nearest preceding span
   with rows, a heading included, at its left edge (it used to follow the nearest paragraph's
   last row, which put a paragraph typed after a heading over the heading, at the x of a
-  centered display formula); a split's halves follow each other.
+  centered display formula); a split's halves follow each other. A live placement that would
+  fall off its page (above the top, past the bottom) is dropped and the unit waits for the
+  pass, rather than drawing its rows and pictures at the page edge (a plot pinned to the page
+  top, a figure past the last line).
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried
