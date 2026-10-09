@@ -137,7 +137,17 @@ fn converged_layout_equals_fresh_instrumented_run() {
     .unwrap();
     assert!(fresh.aux_stable);
     // compare page display lists and per-paragraph placements with the session's layout
-    let session_out = root.join("build").join("bg");
+    // passes run in build/bg/pass-0 and pass-1 alternately: the last one holds the layout
+    let session_out = [0, 1]
+        .iter()
+        .map(|n| root.join("build").join("bg").join(format!("pass-{n}")))
+        .filter(|d| d.join("main.rtex.json").exists())
+        .max_by_key(|d| {
+            std::fs::metadata(d.join("main.rtex.json"))
+                .and_then(|m| m.modified())
+                .ok()
+        })
+        .expect("a pass directory");
     for n in 1..=fresh.capture.json.pages {
         let a =
             std::fs::read_to_string(session_out.join(format!("main.rtex-page{n}.json"))).unwrap();

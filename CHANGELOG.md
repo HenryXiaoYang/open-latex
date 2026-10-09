@@ -11,6 +11,10 @@
   in the display list, never an image (hosts render the page from the PDF as for a drawn picture).
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
+  Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried
+  forward): a standby engine wrote its log and PDF into the running pass's files, which produced
+  corrupt, ever-growing PDFs on long documents (blank pages in pdf.js). `build/bg/<jobname>.pdf`
+  and `.log` now name the latest delivered layout.
   Inline pictures stay in their paragraph (segmenter and eligibility); setup statements before a
   block environment no longer hide the environment's shape; the verification rasterizer rounds
   page sizes like MuPDF.

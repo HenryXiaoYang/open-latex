@@ -339,6 +339,9 @@ struct Shared {
     live_rows: Mutex<HashMap<ParaId, i64>>,
     /// Standby background engine (preamble loaded, waiting for the body).
     standby: Mutex<Option<WarmEngine>>,
+    /// Directory of the last finished background pass (its aux family seeds the next pass;
+    /// its PDF and capture files stay until a later pass reuses the directory).
+    last_pass_dir: Mutex<Option<PathBuf>>,
 }
 
 enum BgCmd {
@@ -426,6 +429,7 @@ impl Session {
             leaky: Mutex::new(HashMap::new()),
             live_rows: Mutex::new(HashMap::new()),
             standby: Mutex::new(None),
+            last_pass_dir: Mutex::new(None),
         });
         let mut threads = Vec::new();
         {
@@ -1909,6 +1913,50 @@ fn standby_dir(s: &Shared, n: usize) -> PathBuf {
     s.cfg.build_dir.join(format!("src-body-{n}"))
 }
 
+/// Output directory of the pass that runs from `src-body-{n}`. Two alternate: a standby
+/// (lualatex up to the end of the preamble) opens its log, and with some preambles its PDF,
+/// as soon as it starts, so it must never share a directory with the pass that is running.
+fn pass_dir(s: &Shared, n: usize) -> PathBuf {
+    s.cfg.build_dir.join("bg").join(format!("pass-{n}"))
+}
+
+/// The directory of the last finished pass (seeded from disk on the first call: the newer
+/// of the two pass directories, or the pre-pass-directory layout `build/bg` itself).
+fn last_pass_dir(s: &Shared) -> Option<PathBuf> {
+    let mut slot = s.last_pass_dir.lock();
+    if slot.is_none() {
+        let jobname = jobname_of(&s.cfg.main_file);
+        let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+        for d in [pass_dir(s, 0), pass_dir(s, 1), s.cfg.build_dir.join("bg")] {
+            if let Ok(m) = std::fs::metadata(d.join(format!("{jobname}.aux"))) {
+                if let Ok(t) = m.modified() {
+                    if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) {
+                        best = Some((t, d));
+                    }
+                }
+            }
+        }
+        *slot = best.map(|(_, d)| d);
+    }
+    slot.clone()
+}
+
+/// The slot (0 or 1) a new standby takes: the one that does not hold the last pass.
+fn standby_slot(s: &Shared) -> usize {
+    match last_pass_dir(s) {
+        Some(d) if d.ends_with("pass-0") => 1,
+        _ => 0,
+    }
+}
+
+fn jobname_of(main: &str) -> String {
+    Path::new(main)
+        .file_stem()
+        .and_then(|x| x.to_str())
+        .unwrap_or("main")
+        .to_string()
+}
+
 /// Start a standby engine for the next background pass (while the user types, it loads the
 /// current preamble). Replaces a standby whose preamble is outdated; keeps a matching one.
 fn prepare_standby(s: &Shared) {
@@ -1929,13 +1977,14 @@ fn prepare_standby(s: &Shared) {
         w.kill();
     }
     let unit_envs = s.policy.lock().unit_envs_env();
+    let n = standby_slot(s);
     match WarmEngine::spawn(
         &s.tl,
         &s.cfg.project_root,
         &texts,
         &s.cfg.main_file,
-        &standby_dir(s, 0),
-        &s.cfg.build_dir.join("bg"),
+        &standby_dir(s, n),
+        &pass_dir(s, n),
         true,
         &unit_envs,
     ) {
@@ -2072,7 +2121,6 @@ fn run_background_pass_inner(s: &Shared) {
     // picture cache: pictures whose source and surroundings are unchanged come from an earlier
     // pass's PDF; the manifest is refreshed before every pass of the run (a pass's own
     // drawings serve the next one)
-    let manifest = out_dir.join("pic-manifest.json");
     let _ = std::fs::create_dir_all(&out_dir);
     let pics: Vec<crate::piccache::PictureRef> = if s.cfg.picture_cache {
         let pre_hash = crate::piccache::preamble_hash(&texts, &s.cfg.main_file);
@@ -2082,7 +2130,9 @@ fn run_background_pass_inner(s: &Shared) {
     };
     let pic_cache =
         std::sync::Mutex::new(crate::piccache::PicCache::open(&out_dir.join("pic-cache")));
-    let refresh_manifest = || {
+    // written into the directory of the pass about to run (the capture reads it from there)
+    let refresh_manifest = |dir: &Path| {
+        let manifest = dir.join("pic-manifest.json");
         if pics.is_empty() {
             let _ = std::fs::remove_file(&manifest);
             return;
@@ -2104,7 +2154,38 @@ fn run_background_pass_inner(s: &Shared) {
             log::warn!("picture cache: {e:#}");
         }
     };
-    refresh_manifest();
+    // the aux family every pass of this run starts from
+    let aux_dir = last_pass_dir(s).unwrap_or_else(|| pass_dir(s, 0));
+    // before a pass runs in its directory: the previous pass's aux family and the manifest
+    let prepare_dir = |dir: &Path| {
+        if let Some(from) = last_pass_dir(s) {
+            if let Err(e) = crate::background::copy_aux_family(&from, dir) {
+                log::warn!("aux family: {e:#}");
+            }
+        }
+        refresh_manifest(dir);
+    };
+    let finished = |cap: &crate::capture::CaptureResult| {
+        *s.last_pass_dir.lock() = Some(cap.out_dir.clone());
+    };
+    let spans_for_provisional = spans.clone();
+    let mut pass_started = Instant::now();
+    let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
+        absorb(cap);
+        if pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
+            deliver_layout(
+                s,
+                t0,
+                cap,
+                pass,
+                false,
+                spans_for_provisional.clone(),
+                rev,
+                true,
+            );
+        }
+        pass_started = Instant::now();
+    };
     let result = if s.cfg.warm_background {
         // Every pass of the loop runs in a standby engine: the one prepared while the user
         // typed, then the one started when the previous pass was released (its preamble loads
@@ -2131,18 +2212,23 @@ fn run_background_pass_inner(s: &Shared) {
             };
             let w = match ready {
                 Some(w) => w,
-                None => WarmEngine::spawn(
-                    &s.tl,
-                    &s.cfg.project_root,
-                    &texts,
-                    &s.cfg.main_file,
-                    &standby_dir(s, 0),
-                    &out_dir,
-                    true,
-                    &unit_envs,
-                )?,
+                None => {
+                    let slot = standby_slot(s);
+                    WarmEngine::spawn(
+                        &s.tl,
+                        &s.cfg.project_root,
+                        &texts,
+                        &s.cfg.main_file,
+                        &standby_dir(s, slot),
+                        &pass_dir(s, slot),
+                        true,
+                        &unit_envs,
+                    )?
+                }
             };
-            // the next standby starts now, in the other directory
+            // this pass starts from the last one's aux family, then the next standby starts
+            // in the other slot (whose previous results are consumed by now)
+            prepare_dir(w.out_dir());
             let other = if w.src_dir.ends_with("src-body-0") {
                 1
             } else {
@@ -2154,53 +2240,51 @@ fn run_background_pass_inner(s: &Shared) {
                 &texts,
                 &s.cfg.main_file,
                 &standby_dir(s, other),
-                &out_dir,
+                &pass_dir(s, other),
                 true,
                 &unit_envs,
             ) {
                 *s.standby.lock() = Some(next);
             }
-            w.run(&s.cfg.project_root, &texts, &s.cfg.main_file)
-        };
-        let spans_for_provisional = spans.clone();
-        let mut pass_started = Instant::now();
-        let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
-            absorb(cap);
-            refresh_manifest();
-            if pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
-                deliver_layout(
-                    s,
-                    t0,
-                    cap,
-                    pass,
-                    false,
-                    spans_for_provisional.clone(),
-                    rev,
-                    true,
-                );
-            }
-            pass_started = Instant::now();
+            let cap = w.run(&s.cfg.project_root, &texts, &s.cfg.main_file)?;
+            finished(&cap);
+            Ok(cap)
         };
         run_pass_with_runner(
             &s.tl,
             &standby_dir(s, 0),
             &s.cfg.main_file,
-            &out_dir,
+            &aux_dir,
             s.cfg.max_passes,
             s.cfg.bib_tool,
             &mut runner,
             &mut on_pass,
         )
     } else {
-        run_pass_with(
+        // plain passes: a fresh lualatex per pass in pass-0 (sequential, so one directory)
+        let dir = pass_dir(s, 0);
+        let mut runner = |_pass: u32| -> Result<crate::capture::CaptureResult> {
+            prepare_dir(&dir);
+            let cap = crate::capture::run_capture_with(
+                &s.tl,
+                &snap_dir,
+                &s.cfg.main_file,
+                &dir,
+                true,
+                &unit_envs,
+            )?;
+            finished(&cap);
+            Ok(cap)
+        };
+        run_pass_with_runner(
             &s.tl,
             &snap_dir,
             &s.cfg.main_file,
-            &out_dir,
+            &aux_dir,
             s.cfg.max_passes,
             s.cfg.bib_tool,
-            true,
-            &unit_envs,
+            &mut runner,
+            &mut on_pass,
         )
     };
     let outcome = match result {
@@ -2338,15 +2422,23 @@ fn deliver_layout(
                 // pass (started right after this one, a provisional layout's in particular)
                 // rewrites the pass PDF while the host reads it
                 let v = layout.layout_version;
-                let stable = cap.out_dir.join(format!("layout-{v}.pdf"));
+                let bg = s.cfg.build_dir.join("bg");
+                let stable = bg.join(format!("layout-{v}.pdf"));
                 match std::fs::copy(&cap.pdf, &stable) {
                     Ok(_) => {
-                        layout.pdf = Some(stable);
+                        layout.pdf = Some(stable.clone());
                         if v >= 2 {
-                            let _ = std::fs::remove_file(
-                                cap.out_dir.join(format!("layout-{}.pdf", v - 2)),
-                            );
+                            let _ = std::fs::remove_file(bg.join(format!("layout-{}.pdf", v - 2)));
                         }
+                        // build/bg/<jobname>.pdf and .log: the latest layout, for hosts that
+                        // name these files themselves (a link to the copy; nothing writes
+                        // them in place)
+                        let main_pdf = bg.join(format!("{}.pdf", cap.jobname));
+                        let _ = std::fs::remove_file(&main_pdf);
+                        if std::fs::hard_link(&stable, &main_pdf).is_err() {
+                            let _ = std::fs::copy(&stable, &main_pdf);
+                        }
+                        let _ = std::fs::copy(&cap.log, bg.join(format!("{}.log", cap.jobname)));
                     }
                     Err(e) => log::warn!("layout PDF copy: {e}"),
                 }

@@ -108,9 +108,15 @@ context and the rows,
 tags line boxes, and at shipout writes placements and page display lists. The layout store maps
 units to spans by snapshot line ranges, diffs page hashes, extracts the aux labels for the
 server's `\ref`/`\cite`, and emits `LayoutUpdate` with the convergence state (CONVERGENCE.md).
+Passes write to `build/bg/pass-0` and `pass-1` alternately, the slot of the snapshot directory
+they run from: a standby opens its log, and with some preambles its PDF, the moment it starts, so
+it must never share a directory with the pass that is running (two writers once produced PDFs
+with gaps that renderers showed as blank pages). Before a pass is released, the previous pass's
+aux family (`.aux .toc .bbl …`, chapter `.aux` files included) is copied into its directory.
 Degraded pages carry a PDF fallback path: `build/bg/layout-<layout_version>.pdf`, a copy of the
 pass PDF made before the layout is delivered (the previous layout's copy is kept, older ones are
-removed), because the next pass rewrites `main.pdf` while the host still reads it; the path is
+removed); `build/bg/<jobname>.pdf` is a link to the latest one and `<jobname>.log` a copy of its
+log, for hosts that name these files themselves. Nothing writes those files in place. The path is
 given whenever any page of the layout is degraded, changed in this layout or not.
 
 **Picture cache.** Drawings (`tikzpicture`, `circuitikz`) dominate a pass over a document that

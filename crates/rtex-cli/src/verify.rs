@@ -668,34 +668,6 @@ pub fn run(opts: VerifyOpts) -> Result<Report> {
     Ok(report)
 }
 
-/// Copy the aux family (`.aux .toc .lof .lot .out .bbl .bcf`) of a pass directory into another,
-/// subdirectories included (`\include`d chapters write `chapters/one.aux`).
-fn copy_aux_family(root: &Path, dir: &Path, out: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            if path.file_name().and_then(|n| n.to_str()) != Some("pic-cache") {
-                copy_aux_family(root, &path, out)?;
-            }
-            continue;
-        }
-        let keep = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| matches!(e, "aux" | "toc" | "lof" | "lot" | "out" | "bbl" | "bcf"))
-            .unwrap_or(false);
-        if keep {
-            let rel = path.strip_prefix(root).unwrap_or(&path);
-            let dst = out.join(rel);
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&path, dst)?;
-        }
-    }
-    Ok(())
-}
-
 /// Picture cache check: build a cache from the converged capture (`cap`), run one more capture
 /// pass with its manifest, and compare units, placements and (optionally) rendered pages.
 fn pic_cache_check(
@@ -732,7 +704,7 @@ fn pic_cache_check(
     let out = opts.build.join("piccache");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out)?;
-    copy_aux_family(&cap.out_dir, &cap.out_dir, &out)?;
+    rtex_core::background::copy_aux_family(&cap.out_dir, &out)?;
     let mut cache = PicCache::open(&out.join("pic-cache"));
     cache.absorb(&pics, &recorded, &[], &cap.pdf)?;
     rep.hits = cache.write_manifest(&pics, &out.join("pic-manifest.json"))?;

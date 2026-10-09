@@ -219,25 +219,84 @@ pub fn run_pass_with(
     )
 }
 
+/// Copy the aux family a pass leaves for the next one (`.aux .toc .lof .lot .out .bbl .bcf
+/// .idx .ind .glo .nav .snm`, and the partial `.aux` files of `\include`d chapters in
+/// subdirectories) from one pass directory into another. Pass outputs (PDF, log, capture
+/// JSON) and the picture cache are not copied.
+pub fn copy_aux_family(from: &Path, to: &Path) -> Result<()> {
+    fn go(root: &Path, dir: &Path, to: &Path) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if name != "pic-cache" && !name.starts_with("pass-") {
+                    go(root, &path, to)?;
+                }
+                continue;
+            }
+            let keep = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| {
+                    matches!(
+                        e,
+                        "aux"
+                            | "toc"
+                            | "lof"
+                            | "lot"
+                            | "out"
+                            | "bbl"
+                            | "bcf"
+                            | "blg"
+                            | "idx"
+                            | "ind"
+                            | "glo"
+                            | "gls"
+                            | "nav"
+                            | "snm"
+                            | "vrb"
+                            | "xml"
+                    )
+                })
+                .unwrap_or(false);
+            if keep {
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                let dst = to.join(rel);
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&path, dst)?;
+            }
+        }
+        Ok(())
+    }
+    if from == to || !from.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(to)?;
+    go(from, from, to)
+}
+
 /// `run_pass_with` with the single pass supplied by `runner` (a fresh lualatex, or a standby
-/// `WarmEngine` that already holds the preamble).
+/// `WarmEngine` that already holds the preamble). Each pass may run in its own directory
+/// (`CaptureResult::out_dir`); `aux_dir` holds the aux family the first pass starts from.
 pub fn run_pass_with_runner(
     tl: &TexLive,
     snapshot_dir: &Path,
     main: &str,
-    out_dir: &Path,
+    aux_dir: &Path,
     max_passes: u32,
     bib: BibTool,
     runner: &mut dyn FnMut(u32) -> Result<CaptureResult>,
     on_pass: &mut dyn FnMut(&CaptureResult, u32),
 ) -> Result<PassOutcome> {
-    std::fs::create_dir_all(out_dir)?;
+    std::fs::create_dir_all(aux_dir)?;
     let jobname = Path::new(main)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("main")
         .to_string();
-    let mut sig_before = aux_signature(out_dir, &jobname);
+    let mut sig_before = aux_signature(aux_dir, &jobname);
     let mut bib_ran = false;
     let mut last: Option<CaptureResult> = None;
     let mut passes = 0;
@@ -245,6 +304,8 @@ pub fn run_pass_with_runner(
     while passes < max_passes {
         passes += 1;
         let cap = runner(passes)?;
+        let out_dir = cap.out_dir.clone();
+        let out_dir = out_dir.as_path();
         let bcf = out_dir.join(format!("{jobname}.bcf"));
         let aux = out_dir.join(format!("{jobname}.aux"));
         let wants_bib = match bib {
@@ -521,6 +582,11 @@ impl WarmEngine {
 
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Where this engine writes its pass (PDF, log, capture JSON, aux family).
+    pub fn out_dir(&self) -> &Path {
+        &self.out_dir
     }
 
     /// Typeset the body: refresh the snapshot texts (same preamble), release the engine and
