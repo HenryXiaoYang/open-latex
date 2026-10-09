@@ -12,7 +12,9 @@
 - Debugging: `SessionConfig::debug_dir` (`"debug_dir"`, `rtex serve --debug-dir`,
   `$RTEX_DEBUG_DIR`) writes a bundle per engine failure (request source, context, picture
   entries, server driver, preamble, TeX log, per-stage and per-font-load trace, `\tracingmacros`
-  on) and a `requests.log`.
+  on) and a `requests.log`; a server that fails to start leaves a bundle too. The debug extras
+  install after the server's `ready` and under `pcall` (with luatexja loaded, wrapping
+  luaotfload's font callback by name failed and kept the engine from ever starting).
 - The live engine reuses cached pictures too: a unit that contains a picture the cache holds
   (same text, definitions and font/color/width state) is compiled with the cached region in
   place of the drawing, so editing a sentence that shares its unit with a pgfplots axis stays

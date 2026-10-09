@@ -1507,11 +1507,12 @@ fn engine_thread(s: Arc<Shared>) {
                         .ok();
                 }
                 Err(e) => {
+                    let reason = debug_bundle_startup(&s, wanted_gen, &format!("{e:#}"));
                     s.events
                         .send(Event::EngineState {
                             engine_generation: wanted_gen,
                             state: "Failed".into(),
-                            reason: Some(e.to_string()),
+                            reason: Some(reason),
                         })
                         .ok();
                     std::thread::sleep(Duration::from_secs(1));
@@ -1868,6 +1869,43 @@ fn debug_bundle(
         }
     }
     Some(dir)
+}
+
+/// With `SessionConfig::debug_dir`: a bundle for a server that failed to start (its driver,
+/// preamble copy, TeX log and trace from `build/serve`), named in the returned message.
+fn debug_bundle_startup(s: &Shared, gen: u64, reason: &str) -> String {
+    let Some(base) = s.cfg.debug_dir.as_ref() else {
+        return reason.to_string();
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = base.join(format!("engine-{ts}-g{gen}-start"));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return reason.to_string();
+    }
+    let serve = s.cfg.build_dir.join("serve");
+    for name in [
+        format!("rtex-serve-g{gen}.tex"),
+        "rtex-preamble.tex".to_string(),
+        format!("rtex-serve-g{gen}.log"),
+        format!("rtex-serve-g{gen}.trace"),
+    ] {
+        let f = serve.join(&name);
+        if f.is_file() {
+            let _ = std::fs::copy(&f, dir.join(&name));
+        }
+    }
+    let report = serde_json::json!({
+        "reason": reason, "engine_generation": gen, "stage": "startup",
+        "rtex_version": env!("CARGO_PKG_VERSION"),
+    });
+    let _ = std::fs::write(
+        dir.join("report.json"),
+        serde_json::to_string_pretty(&report).unwrap_or_default(),
+    );
+    format!("{reason} (debug bundle: {})", dir.display())
 }
 
 /// With `SessionConfig::debug_dir`: one line per live compile in `<debug_dir>/requests.log`.

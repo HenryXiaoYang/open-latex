@@ -634,26 +634,33 @@ function S.init(boxnum, countnum, cctnum)
   tail_tokens = "\\par\\egroup\\endgroup" .. (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
-  if trace_file then
-    trace("ready " .. tostring(os.getenv("RTEX_TRACE")))
-    -- font loads with their cost (a first use of a big font can take seconds), and every macro
-    -- expansion in the TeX log (\tracingmacros): a loop shows in the log's last flushed block
-    -- even though the killed process loses the tail
-    local prev = luatexbase.remove_from_callback("define_font", "luaotfload.define_font")
-    if prev then
-      luatexbase.add_to_callback("define_font", function(name, size, id)
-        local t = gettime()
-        local f = prev(name, size, id)
-        trace(format("font %s size %s id %s: %.1f ms", tostring(name), tostring(size), tostring(id), (gettime() - t) * 1000))
-        return f
-      end, "luaotfload.define_font")
-    end
-    tex.tracingmacros = 1
-    tex.tracingonline = 0
-  end
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,
         fingerprint = S.fp_string(S.fp_base), font_nextid = font.nextid() }
   log("ready")
+  if trace_file then
+    trace("ready; trace " .. tostring(os.getenv("RTEX_TRACE")))
+    -- Debug extras, after "ready" and under pcall: nothing here may keep the server from
+    -- starting. Font loads with their cost (a first use of a big font can take seconds): the
+    -- define_font callback is wrapped whoever registered it (luaotfload, or luatexja which
+    -- replaces luaotfload's). Every macro expansion goes to the TeX log (\tracingmacros), so a
+    -- loop shows in the log's last flushed block even though the killed process loses the tail.
+    local ok, err = pcall(function()
+      local descs = luatexbase.callback_descriptions("define_font")
+      local name = descs and descs[1]
+      if not name then return end
+      local prev = luatexbase.remove_from_callback("define_font", name)
+      if not prev then return end
+      luatexbase.add_to_callback("define_font", function(fname, size, id)
+        local t = gettime()
+        local f = prev(fname, size, id)
+        trace(format("font %s size %s id %s: %.1f ms", tostring(fname), tostring(size), tostring(id), (gettime() - t) * 1000))
+        return f
+      end, name)
+      tex.tracingmacros = 1
+      tex.tracingonline = 0
+    end)
+    if not ok then trace("debug extras not installed: " .. tostring(err)) end
+  end
 end
 
 function S.stop()
