@@ -74,9 +74,13 @@ until the next layout (`ParagraphUpdate.reasons` lists `inserts`).
   fast results alike) give the file, page and page count. graphicx draws bitmap images at their
   natural size inside a `MATRIX save` / `set` / `restore` group: apply the matrix about its
   point to the image rectangle (`verify.rs` shows the composition). A picture the background
-  pass took from the picture cache is not an image: it appears as `UNSUPPORTED{kind:
-  "cached_picture"}` and the page carries the `pic_cache` flag, so it is degraded and hosts
-  render it from the pass PDF, exactly like a page with a drawn TikZ picture.
+  pass (or the live engine) took from the picture cache is not an image: it appears as
+  `UNSUPPORTED{kind: "cached_picture", detail: "<index> <x> <top> <width> <height>"}` (sp, the
+  picture's rectangle in the list's frame) and the page carries the `pic_cache` flag, so it is
+  degraded and hosts render it from the pass PDF, exactly like a page with a drawn TikZ picture.
+  In a live result the item marks where the picture now stands: a host that draws the layout
+  page from the PDF can copy the picture's rectangle from that rendering (the same `width` and
+  `height` identify it on the page) to the live position before it redraws the unit's rows.
 - **Color** records are LuaTeX `pdf_colorstack` operations with the raw PDF color operators in
   `data` (e.g. `1 0 0 rg 1 0 0 RG`); `set` replaces the stack top, `push`/`pop` nest. A paragraph
   display list starts with a `set` of the color in force at its start when it is not black.

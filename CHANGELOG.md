@@ -19,7 +19,8 @@
   (same text, definitions and font/color/width state) is compiled with the cached region in
   place of the drawing, so editing a sentence that shares its unit with a pgfplots axis stays
   within the fast budget (compile frame field `<plen>`, result `pics_seen`/`pics_used`; shared
-  `rtex-pic.lua`/`rtex-pic.tex`).
+  `rtex-pic.lua`/`rtex-pic.tex`). The `cached_picture` item carries the picture's rectangle, so a
+  host can carry the picture along when it redraws the unit live.
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried
