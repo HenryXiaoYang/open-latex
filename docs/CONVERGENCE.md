@@ -3,7 +3,11 @@
 A background pass runs the instrumented full compile (`rtex-capture`) on a snapshot of the
 buffers, repeating while the aux family changes or the log asks for a rerun, up to
 `max_passes` (default 5). `biber`/`bibtex` run between passes when the document asks for them
-(`.bcf` present or `\bibdata` in the aux; `bib_tool` selects the tool or disables this).
+(`.bcf` present or `\bibdata` in the aux; `bib_tool` selects the tool or disables this), and
+`makeindex` on every `.idx` whose entries changed (or whose `.ind` is missing). The aux family
+compared between passes is `.aux` (with the `\include`d chapters' `.aux`), `.toc .lof .lot .out
+.bcf .bbl .idx` and every `.ind`, with the pass directory's path taken out (bookmark records the
+path of the `.ind` it read; passes alternate between two directories).
 
 `LayoutUpdate.convergence`:
 

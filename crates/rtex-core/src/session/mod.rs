@@ -45,8 +45,10 @@ pub struct SessionConfig {
     pub fast_on_stale_context: bool,
     pub bib_tool: BibTool,
     pub compile_timeout: Duration,
-    /// Units whose last fast compile took longer than this are routed to the background path
-    /// until the next layout (the host keeps its real-time guarantee).
+    /// Units whose fast compiles take longer than this three times in a row are routed to the
+    /// background path until the next layout (default 50 ms: a unit that slow, a large plot
+    /// being drawn, would hold up the units typed after it; a quicker one, even an `align`
+    /// of 15 ms, is still far quicker live than through a pass of seconds).
     pub fast_budget: Duration,
     /// Extra block environments (theorem-like) treated as units, besides those found by scanning
     /// the preamble for `\newtheorem`.
@@ -131,7 +133,7 @@ impl SessionConfig {
             fast_on_stale_context: true,
             bib_tool: BibTool::Auto,
             compile_timeout: Duration::from_secs(5),
-            fast_budget: Duration::from_millis(5),
+            fast_budget: Duration::from_millis(50),
             unit_envs: Vec::new(),
             warm_background: true,
             eligibility: EligibilityMode::Probe,

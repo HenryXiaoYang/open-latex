@@ -383,6 +383,23 @@ const UNCACHEABLE_WORDS: &[&str] = &[
     "newsavebox",
     "usebox",
     "setbox",
+    // catcode changes and Lua: a skipped body is scanned with the catcodes in force at the
+    // picture, so a body that reads part of itself under other catcodes (`%` inside
+    // `luacode*`, `\verb|}|`) is not skipped the way the drawing reads it; Lua may also
+    // print anything
+    "catcode",
+    "makeatletter",
+    "makeatother",
+    "ExplSyntaxOn",
+    "obeylines",
+    "obeyspaces",
+    "scantokens",
+    "lstinline",
+    "mintinline",
+    "Verb",
+    "directlua",
+    "luaexec",
+    "luadirect",
 ];
 
 /// Control-word prefixes (`\citep`, `\includegraphics*`, `\pgfplotstableread` …).
@@ -504,10 +521,76 @@ fn word_before_arg(text: &str, word: &str) -> bool {
     false
 }
 
+/// Environments that read their body under other catcodes (`luacode*`, `verbatim`,
+/// `lstlisting`, `minted`, `comment`, `filecontents` and their variants), matched by name.
+fn has_verbatim_env(text: &str) -> bool {
+    const PARTS: &[&str] = &[
+        "verbatim",
+        "luacode",
+        "listing",
+        "minted",
+        "comment",
+        "filecontents",
+        "alltt",
+    ];
+    let mut from = 0;
+    while let Some(k) = text[from..].find("\\begin{") {
+        let start = from + k + "\\begin{".len();
+        let name = text[start..]
+            .split('}')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if PARTS.iter().any(|p| name.contains(p)) {
+            return true;
+        }
+        from = start;
+    }
+    false
+}
+
+/// Would the skip of a cached picture's body (rtex-pic.tex: `\rtex@gobbleto`, which takes
+/// everything up to each `\end` as a macro argument) stop at the picture's own `\end{env}`?
+/// It cannot when a `}` closes a group the body never opened (an argument error) or when the
+/// `\end{env}` sits inside braces (the skip runs past it to the end of the file). `text` is
+/// the comment-stripped source from the `\begin{env}` line to the `\end{env}` line.
+fn skip_stops_at_end(text: &str, env: &str) -> bool {
+    let begin = format!("\\begin{{{env}}}");
+    let end = format!("\\end{{{env}}}");
+    let Some(b) = text.find(&begin) else {
+        return false;
+    };
+    let body = &text[b + begin.len()..];
+    let bytes = body.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if depth == 0 && body[i..].starts_with(&end) {
+                    return true;
+                }
+                i += 1;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Does a picture with this (comment-stripped) text depend on more than its source and the
 /// definitions before it?
 pub fn uncacheable(text: &str) -> bool {
     UNCACHEABLE_WORDS.iter().any(|w| has_cs(text, w))
+        || has_verbatim_env(text)
         || has_the_counter(text)
         || UNCACHEABLE_PREFIXES.iter().any(|w| has_cs_prefix(text, w))
         || UNCACHEABLE_TEXT.iter().any(|t| text.contains(t))
@@ -637,7 +720,8 @@ pub fn scan_pictures(
                         && trimmed.starts_with(&begin_marker)
                         && text_all.matches(&begin_marker).count() == 1
                         && !line.contains("\\end{")
-                        && !uncacheable(&text_all);
+                        && !uncacheable(&text_all)
+                        && skip_stops_at_end(&text_all, env);
                     let mut h = self.prelude.clone();
                     hash_bytes(&mut h, &text_all);
                     self.out.push(PictureRef {
@@ -828,6 +912,27 @@ mod tests {
         assert!(uncacheable("\\pgfmathsetmacro\\w{3} \\xdef\\figwidth{\\w}"));
         assert!(uncacheable("\\global\\advance\\c by 1"));
         assert!(uncacheable("\\includegraphics*[width=1cm]{f}"));
+        // bodies read under other catcodes, Lua
+        assert!(uncacheable(
+            "\\begin{luacode*}\n tex.print(\"{hsb}{\")\n\\end{luacode*}"
+        ));
+        assert!(uncacheable("\\begin{Verbatim}x\\end{Verbatim}"));
+        assert!(uncacheable("\\node {\\directlua{tex.print(1)}};"));
+        assert!(uncacheable("{\\catcode`\\|=13 x}"));
+        assert!(!uncacheable("\\node[draw] {a comment-free node};"));
+    }
+
+    #[test]
+    fn the_body_skip_must_stop_at_the_pictures_end() {
+        let ok = "\\begin{tikzpicture}\n\\draw (0,0) -- (1,1);\n\\end{tikzpicture}";
+        assert!(skip_stops_at_end(ok, "tikzpicture"));
+        // a `{` left open by a stripped `%` (luacode* read under normal catcodes)
+        let open = "\\begin{tikzpicture}\n\\fill[c] {hsb}{\n\\end{tikzpicture}";
+        assert!(!skip_stops_at_end(open, "tikzpicture"));
+        let extra = "\\begin{tikzpicture}\n}\\draw;\n\\end{tikzpicture}";
+        assert!(!skip_stops_at_end(extra, "tikzpicture"));
+        let nested = "\\begin{tikzpicture}\n\\node {\\end{tikzpicture}};";
+        assert!(!skip_stops_at_end(nested, "tikzpicture"));
         // a picture after text on its line, or with text before its \begin, is not keyed by
         // the line its \begin is on
         let texts = texts_of(

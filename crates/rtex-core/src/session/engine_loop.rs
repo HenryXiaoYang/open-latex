@@ -12,6 +12,10 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
         server: None,
         server_generation: u64::MAX,
         labels_sent: 0,
+        server_bbl: None,
+        standby: None,
+        bbl_checked: u64::MAX,
+        swapped_from: None,
     }
     .run();
 }
@@ -22,6 +26,52 @@ struct EngineLoop {
     server: Option<FastServer>,
     server_generation: u64,
     labels_sent: u64,
+    /// Hash of the `.bbl` the running server read at `\begin{document}` (None: it had none).
+    /// biblatex reads its data once, so a newer one needs a new server (`refresh_bibliography`).
+    server_bbl: Option<u64>,
+    /// A server starting with a newer `.bbl` while the running one keeps serving.
+    standby: Option<Standby>,
+    /// The layout version whose `.bbl` was last compared with the server's.
+    bbl_checked: u64,
+    /// The generation a standby replaced: requests queued for it are still valid (same
+    /// preamble) and are carried over instead of being dropped as superseded.
+    swapped_from: Option<u64>,
+}
+
+/// A server for the latest bibliography (`refresh_bibliography`): starting on a helper thread,
+/// then ready and waiting for the running server to be idle.
+struct Standby {
+    generation: u64,
+    bbl: Option<u64>,
+    state: StandbyState,
+}
+
+enum StandbyState {
+    Starting(std::thread::JoinHandle<Result<FastServer>>),
+    Ready(FastServer),
+}
+
+/// Hash of the `.bbl` next to `aux` (None: there is none).
+fn bbl_hash(aux: Option<&Path>) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = std::fs::read(aux?.with_extension("bbl")).ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    Some(h.finish())
+}
+
+/// The aux file of the latest layout's pass (the server starts from it and its `.bbl`).
+fn layout_aux(s: &Shared) -> Option<PathBuf> {
+    let layout = s.layout.lock();
+    let jobname = Path::new(&s.cfg.main_file)
+        .file_stem()
+        .and_then(|x| x.to_str())
+        .unwrap_or("main")
+        .to_string();
+    layout
+        .capture_dir
+        .as_ref()
+        .map(|d| d.join(format!("{jobname}.aux")))
 }
 
 /// The link fields that describe the current server, cleared when it goes away.
@@ -56,6 +106,9 @@ impl EngineLoop {
             }
             let wanted_gen = self.s.engine_generation.load(Ordering::SeqCst);
             if self.collect_inflight(wanted_gen) {
+                continue;
+            }
+            if self.refresh_bibliography(wanted_gen) {
                 continue;
             }
             let Some(req) = self.next_request(wanted_gen) else {
@@ -143,12 +196,131 @@ impl EngineLoop {
             let _ = s.pending_signal.1.recv_timeout(Duration::from_millis(200));
             return None;
         }
-        if let Some(r) = &req {
+        let mut req = req;
+        if let Some(r) = &mut req {
+            if self.swapped_from == Some(r.versions.engine_generation) {
+                // queued for the server a standby replaced: same preamble, still valid
+                r.versions.engine_generation = wanted_gen;
+            }
             if r.versions.engine_generation != wanted_gen {
                 return None; // superseded by a preamble change
             }
         }
         Some(req)
+    }
+
+    /// Step 1b: biblatex reads its `.bbl` once, at `\begin{document}`: a server started before
+    /// the pass that wrote the bibliography (a session opened without an earlier build), or
+    /// before the bibliography changed, prints citations as unresolved keys, and the probe
+    /// keeps every citing unit on the pass. When the latest layout's `.bbl` differs from the
+    /// server's, a server is started with it on a helper thread while the running one keeps
+    /// serving, and replaces it once ready and idle. True: the iteration is settled (swapped).
+    fn refresh_bibliography(&mut self, wanted_gen: u64) -> bool {
+        let s = self.s.clone();
+        if let Some(mut sb) = self.standby.take() {
+            if let StandbyState::Starting(handle) = sb.state {
+                if !handle.is_finished() {
+                    sb.state = StandbyState::Starting(handle);
+                    self.standby = Some(sb);
+                    return false;
+                }
+                match handle.join() {
+                    Ok(Ok(srv)) => sb.state = StandbyState::Ready(srv),
+                    Ok(Err(e)) => {
+                        log::warn!("standby server for the new bibliography: {e:#}");
+                        return false;
+                    }
+                    Err(_) => return false,
+                }
+            }
+            let StandbyState::Ready(mut srv) = sb.state else {
+                unreachable!()
+            };
+            // only onto the server it was started to replace (a preamble change meanwhile
+            // restarts the engine anyway)
+            if self.server_generation != wanted_gen || sb.generation != wanted_gen + 1 {
+                srv.kill();
+                return false;
+            }
+            // and only while nothing is in flight or queued (try again next iteration); the
+            // check and the swap of the link happen under one lock, so a host thread cannot
+            // write a compile to the old server in between (it sees the new generation and
+            // queues the request, which `next_request` carries over)
+            srv.timeout = compile_timeout(&s.cfg).max(Duration::from_secs(30)); // first compile loads fonts
+            {
+                let mut l = s.link.lock();
+                let idle = l.inflight.is_none() && s.pending.lock().is_empty();
+                if !idle
+                    || s.engine_generation
+                        .compare_exchange(
+                            wanted_gen,
+                            sb.generation,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_err()
+                {
+                    drop(l);
+                    sb.state = StandbyState::Ready(srv);
+                    self.standby = Some(sb);
+                    return false;
+                }
+                l.writer = srv.stdin_clone().ok();
+                l.generation = sb.generation;
+                l.contexts_sent.clear();
+                l.inflight = None;
+            }
+            if let Some(mut old) = self.server.replace(srv) {
+                let _ = old.shutdown();
+            }
+            self.swapped_from = Some(self.server_generation);
+            self.server_generation = sb.generation;
+            self.server_bbl = sb.bbl;
+            self.labels_sent = 0;
+            // verdicts reached against the old server's citations no longer apply
+            s.live.lock().on_server_swap();
+            s.events
+                .send(Event::EngineState {
+                    engine_generation: sb.generation,
+                    state: "Ready".into(),
+                    reason: Some("restarted with the bibliography of the latest layout".into()),
+                })
+                .ok();
+            return true;
+        }
+        let lv = s.layout.lock().layout_version;
+        if lv == self.bbl_checked
+            || self.server_generation != wanted_gen
+            || !self.server.as_mut().is_some_and(|srv| srv.is_alive())
+        {
+            return false;
+        }
+        self.bbl_checked = lv;
+        let aux = layout_aux(&s);
+        let bbl = bbl_hash(aux.as_deref());
+        if bbl.is_none() || bbl == self.server_bbl {
+            return false;
+        }
+        let preamble = effective_preamble(&texts_of(&s.files.lock()), &s.cfg.main_file);
+        let generation = wanted_gen + 1;
+        let s2 = s.clone();
+        let handle = std::thread::spawn(move || {
+            FastServer::spawn_with(
+                &s2.tl,
+                &s2.cfg.project_root,
+                &s2.cfg.build_dir.join("serve-next"),
+                &preamble,
+                generation,
+                aux.as_deref(),
+                s2.cfg.debug_dir.is_some(),
+            )
+        });
+        self.standby = Some(Standby {
+            generation,
+            bbl,
+            state: StandbyState::Starting(handle),
+        });
+        false
     }
 
     /// Step 3: (Re)start the server when the generation changed or it died. A preamble edit bumps
@@ -220,6 +392,8 @@ impl EngineLoop {
                 }
                 self.server = Some(srv);
                 self.server_generation = wanted_gen;
+                self.server_bbl = bbl_hash(aux.as_deref());
+                self.bbl_checked = s.layout.lock().layout_version;
                 self.labels_sent = 0;
                 s.events
                     .send(Event::EngineState {

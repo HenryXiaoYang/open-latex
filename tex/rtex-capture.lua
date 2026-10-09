@@ -67,13 +67,30 @@ end
 -- place. The names come from scanning the document's source files for definitions.
 local tracked_macros = { "arraystretch", "baselinestretch" }
 local prev_macros = {}
+-- Glossary entries the source defines (\newglossaryentry, \newacronym, \newabbreviation):
+-- their first-use switch \ifglo@<label>@flag is set globally by the first \gls, so the long
+-- form appears once; tracked like a macro, it is replayed per unit (and reset after each
+-- compile) by the server.
+local gls_labels = {}
+-- \iftrue / \iffalse for a switch made by \newif (token.get_meaning has no meaning for a
+-- primitive); nil otherwise
+local IFTRUE, IFFALSE
+local function if_meaning(name)
+  local ok, t = pcall(token.create, name)
+  if not ok or not t or t.cmdname ~= "if_test" then return nil end
+  IFTRUE = IFTRUE or token.create("iftrue")
+  IFFALSE = IFFALSE or token.create("iffalse")
+  if t.mode == IFTRUE.mode then return "\\iftrue" elseif t.mode == IFFALSE.mode then return "\\iffalse" end
+  return nil
+end
 local function meaning(name)
   if token.get_meaning then
     local ok, m = pcall(token.get_meaning, name)
     if ok and m then return m end
   end
   local ok, b = pcall(token.get_macro, name)
-  return ok and b and ("->" .. b) or nil
+  if ok and b then return "->" .. b end
+  return if_meaning(name)
 end
 local function scan_definitions(path, seen, depth)
   if depth > 6 then return end
@@ -88,6 +105,16 @@ local function scan_definitions(path, seen, depth)
   for name in text:gmatch("\\[gex]?def%s*\\(%a+)") do seen[name] = true end
   for name in text:gmatch("\\let%s*\\(%a+)") do seen[name] = true end
   for name in text:gmatch("\\setlength%s*\\(%a+)") do seen[name] = true end
+  for _, cmd in ipairs({ "newglossaryentry", "longnewglossaryentry", "newacronym", "newabbreviation" }) do
+    for label in text:gmatch("\\" .. cmd .. "%s*{([%w@:%-_.]+)}") do gls_labels[label] = true end
+    for label in text:gmatch("\\" .. cmd .. "%s*%b[]%s*{([%w@:%-_.]+)}") do gls_labels[label] = true end
+  end
+  for _, pat in ipairs({ "\\loadglsentries%s*{([^}]*)}", "\\loadglsentries%s*%b[]%s*{([^}]*)}" }) do
+    for sub in text:gmatch(pat) do
+      local sp = sub:match("%.tex$") and sub or (sub .. ".tex")
+      scan_definitions(sp, seen, depth + 1)
+    end
+  end
   for sub in text:gmatch("\\input%s*{([^}]*)}") do
     local sp = sub:match("%.tex$") and sub or (sub .. ".tex")
     scan_definitions(sp, seen, depth + 1)
@@ -164,13 +191,26 @@ function C.begin_document()
   prev_macros = {}
   local seen = {}
   scan_definitions(tex.jobname .. ".tex", seen, 0)
+  -- a body-only pass (standby engine) has the preamble in rtex-preamble.tex, the main file's
+  -- preamble lines blanked: definitions made there (glossary entries) are read from it
+  local pre = kpse.find_file("rtex-preamble.tex")
+  if pre then scan_definitions(pre, seen, 0) end
   for name in pairs(seen) do
     local known = false
     for i = 1, #tracked_macros do if tracked_macros[i] == name then known = true end end
     -- only macros (not counters, lengths or primitives): \c@…, \the…, \if… are handled elsewhere
     if not known and not name:match("^the") and not name:match("^if") then tracked_macros[#tracked_macros + 1] = name end
   end
+  local labels = {}
+  for label in pairs(gls_labels) do labels[#labels + 1] = label end
+  table.sort(labels)
+  for _, label in ipairs(labels) do tracked_macros[#tracked_macros + 1] = "ifglo@" .. label .. "@flag" end
   C.outer = snapshot_outer()
+  -- registered now, after the preamble's packages: this filter sees the page as they leave it
+  luatexbase.add_to_callback("pre_shipout_filter", function(b)
+    C.shipout(b)
+    return true
+  end, "rtex-capture")
 end
 
 -- Units ------------------------------------------------------------------------------------------
@@ -498,12 +538,24 @@ end
 -- not listed in images_info: hosts never see a cached picture as an image
 function C.pic_write() P.write(C.picctl, C.cache_images) end
 
-function C.shipout(boxnum)
+-- shipout/before: the page attributes in force for the page about to ship.
+function C.page_attr(s) C.next_page_attr = s end
+
+-- pre_shipout_filter: `b` is the page box as shipped.
+function C.shipout(b)
   C.page = C.page + 1
-  local b = tex.box[boxnum]
+  local attr = C.next_page_attr or ""
+  C.next_page_attr = nil
   if not b then return end
   local page = dl.page(b, C.attr_par, C.attr_line, C.page, nil, C.attr_unit, is_insert,
                        { attr_pic = C.attr_pic, pic_images = C.cache_images })
+  -- a /Rotate page attribute (pdflscape) turns the page in the viewer: the display list
+  -- draws it unturned, so hosts take the page from the PDF
+  local rot = tonumber(attr:match("/Rotate%s*(%-?%d+)") or "0") or 0
+  if rot % 360 ~= 0 then
+    page.flags.page_rotate = 1
+    page.flags.page_rotate_detail = rot
+  end
   for _, pc in ipairs(page.pics or {}) do
     local k = C.pic_keys[pc.id]
     -- one box per picture (several boxes on one baseline are joined); a picture broken over

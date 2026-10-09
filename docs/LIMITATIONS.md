@@ -39,8 +39,13 @@ in the standby engine (ARCHITECTURE.md), about a quarter of a full LuaLaTeX run.
 | `\marginpar`, `wrapfigure`, `\setlength`/`\renewcommand` at a unit's top level | background | would change the state the following units are typeset in (inside a group or environment they are fine) |
 | Preamble, packages, macro definitions | background after an engine restart (≈ 1–2 s) | the server must reload the preamble |
 | Macros you defined yourself whose bodies are not allow-listed (`\def` with parameters, TikZ, `\global` …) | background unless listed in `trusted_macros` | the allow-list cannot know they are pure |
-| Any unit whose fast compiles exceed `fast_budget` (`fast_budget_ms`, default 5) three times in a row while no layout pass is running | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
+| Any unit whose fast compiles exceed `fast_budget` (`fast_budget_ms`, default 50) three times in a row while no layout pass is running | background until the next layout | the real-time budget is enforced per unit; a unit's first slow compiles (font loading) are forgiven |
 | A unit whose live compile hung (watchdog, 5 s) or crashed the engine | background until the preamble changes (`EngineFailed`) | retrying would kill the server on every keystroke; `rtex verify` on the project shows the engine error for that unit |
+| Run-in headings (`\paragraph`, `\subparagraph`) | background (`RunInHeading`) | LaTeX sets the title at the start of the following paragraph, whose rows the heading unit then shares |
+| A list that continues an earlier one (enumitem `resume`, `resume*`, `series`) | background (`OutsideState`) | the earlier list's count is kept in a macro, not a counter, and is not replayed |
+| Text whose output depends on package state built up earlier in the document (beyond counters, `\the<counter>` formats, body macro definitions and glossaries' first-use switches, which are replayed per unit) | background when the probe sees a difference | the server starts from the preamble's state; the probe compares its rows with the pass and keeps the unit on the pass |
+| A paragraph that continues after a float in the same TeX paragraph (`text \begin{figure}…\end{figure} more text`, no blank line) | background | the capture's unit is the whole paragraph; the source spans split at the float |
+| Paragraphs inside `tcolorbox` boxes, text printed by Lua (`\directlua`, `luacode`) | background | the capture has no unit for them (a box's inner paragraphs; lines printed from Lua report no source line) |
 
 The fast server differs from a document run in two observable ways, both outside the unit box:
 it inserts no running-head marks (`\markright`/`\markboth` keep only their `\nobreak`), and
@@ -77,6 +82,9 @@ units like any other; an edit to a file the preamble `\input`s is a preamble cha
 restart). Files named through macros (`\input{\chapterdir/x}`), `\includeonly` and
 `\import` are not followed.
 LaTeX only (the paragraph hooks `para/begin` and `shipout/before` are LaTeX kernel hooks, 2021+).
+Page display lists are read in LuaTeX's `pre_shipout_filter`, after the `shipout/background` and
+`foreground` material (eso-pic, `\includepdf`, watermarks) has been added; a page that a
+`/Rotate` page attribute turns (pdflscape) is degraded (`page_rotate`) and renders from the PDF.
 LuaTeX only; no pdfTeX/XeTeX.
 
 **Rendering.** Display lists name font files and glyph indices; hosts need an OpenType/TrueType
@@ -87,8 +95,10 @@ material, unknown whatsits or unexpanded virtual-font commands are marked *Degra
 with a PDF fallback path; TikZ/PGF pictures therefore render through the PDF fallback, not the
 display list.
 
-**Bibliographies and indices.** `biber` and `bibtex` run automatically; `makeindex`, `xindy` and
-glossaries do not (documented hook point: `background.rs::run_pass`).
+**Bibliographies and indices.** `biber`, `bibtex` and `makeindex` (every `.idx` a pass writes,
+imakeidx's named indexes included, with the project's `.ist` files on `INDEXSTYLE`) run
+automatically; `xindy` and `makeglossaries` do not (glossaries' `\printnoidxglossaries` needs no
+tool; hook point: `background.rs::run_pass_with_runner`).
 
 **Determinism of exports.** Export equality with a clean build is byte-exact only when the
 document suppresses optional PDF info (the fixtures set `\pdfvariable suppressoptionalinfo 1023`);

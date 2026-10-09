@@ -10,7 +10,11 @@
 \AddToHook{begindocument/end}{\directlua{rtex_capture.begin_document()}}
 \AddToHook{para/begin}{\directlua{rtex_capture.parbegin()}}
 \AddToHook{para/after}{\directlua{rtex_capture.parafter()}}
-\AddToHook{shipout/before}{\directlua{rtex_capture.shipout(\number\ShipoutBox)}}
+% Pages are read from the box LuaTeX ships (pre_shipout_filter, registered at
+% \begin{document}), which holds the shipout/background and foreground material (eso-pic,
+% pdfpages, watermarks) that \ShipoutBox lacks in shipout/before; the page attributes are
+% taken here (pdflscape's /Rotate).
+\AddToHook{shipout/before}{\directlua{rtex_capture.page_attr("\luaescapestring{\the\pdfvariable pageattr}")}}
 \AddToHook{cmd/@outputpage/before}{\directlua{rtex_capture.output_begin()}}
 \AddToHook{cmd/@outputpage/after}{\directlua{rtex_capture.output_end()}}
 \AddToHook{cmd/@afterheading/before}{\directlua{rtex_capture.afterheading()}}

@@ -379,8 +379,8 @@ fn compute_line_starts(text: &str) -> Vec<usize> {
 /// Boundaries of paragraph-ish units in `text`, as byte ranges with kinds (ids not assigned).
 fn segment(text: &str, extra_block_envs: &[String]) -> Vec<(Range<usize>, SpanKind)> {
     let mut out: Vec<(Range<usize>, SpanKind)> = Vec::new();
-    let begin_doc = text.find("\\begin{document}");
-    let end_doc = text.find("\\end{document}");
+    let begin_doc = find_command(text, "\\begin{document}");
+    let end_doc = find_command(text, "\\end{document}");
     let body_start = match begin_doc {
         Some(i) => {
             let e = i + "\\begin{document}".len();
@@ -553,6 +553,88 @@ pub fn strip_comment(line: &str) -> &str {
         i += 1;
     }
     line
+}
+
+/// Does TeX read the body of environment `name` verbatim (`verbatim`, `Verbatim`,
+/// `lstlisting`, `minted`, `comment`, `luacode*`, `filecontents` …), so that a `\begin{document}`
+/// or a `%` in it is text?
+fn is_verbatim_env(name: &str) -> bool {
+    let n = name.trim_end_matches('*').to_ascii_lowercase();
+    n == "comment"
+        || ["verbatim", "listing", "minted", "luacode", "filecontents"]
+            .iter()
+            .any(|p| n.contains(p))
+}
+
+/// `line` with the argument of every `\verb<c>…<c>` (and `\verb*`) blanked, delimiters
+/// included, byte for byte (offsets are kept).
+fn blank_verb(line: &str) -> String {
+    let mut b = line.as_bytes().to_vec();
+    let mut i = 0;
+    while let Some(k) = line[i..].find("\\verb") {
+        let mut j = i + k + "\\verb".len();
+        if j < b.len() && b[j].is_ascii_alphabetic() {
+            // a longer control word (\verbatim)
+            i = j;
+            continue;
+        }
+        if j < b.len() && b[j] == b'*' {
+            j += 1;
+        }
+        let Some(delim) = line[j..].chars().next() else {
+            break;
+        };
+        let body = j + delim.len_utf8();
+        let end = line[body..]
+            .find(delim)
+            .map(|e| body + e + delim.len_utf8())
+            .unwrap_or(line.len());
+        for x in &mut b[j..end] {
+            *x = b' ';
+        }
+        i = end;
+    }
+    // only whole characters were replaced by spaces
+    String::from_utf8(b).unwrap_or_else(|_| line.to_string())
+}
+
+/// Byte offset of the first `marker` (`\begin{document}`, `\end{document}`) that TeX reads as
+/// a command: not in a `%` comment, a `\verb` or the body of a verbatim-like environment (a
+/// chapter that shows a whole document in `verbatim`, a `\verb|\end{document}|`).
+pub(crate) fn find_command(text: &str, marker: &str) -> Option<usize> {
+    let mut verb_env: Option<String> = None;
+    let mut off = 0;
+    for line in text.split_inclusive('\n') {
+        let start = off;
+        off += line.len();
+        let mut from = 0;
+        if let Some(env) = &verb_env {
+            let end = format!("\\end{{{env}}}");
+            match line.find(&end) {
+                Some(k) => {
+                    from = k + end.len();
+                    verb_env = None;
+                }
+                None => continue,
+            }
+        }
+        let visible = blank_verb(&line[from..]);
+        let visible = strip_comment(&visible);
+        if let Some(k) = visible.find(marker) {
+            return Some(start + from + k);
+        }
+        for env in find_all_envs(visible, "\\begin{") {
+            if is_verbatim_env(&env) {
+                let begin = format!("\\begin{{{env}}}");
+                let after = visible.find(&begin).map(|k| k + begin.len()).unwrap_or(0);
+                if !visible[after..].contains(&format!("\\end{{{env}}}")) {
+                    verb_env = Some(env);
+                }
+                break;
+            }
+        }
+    }
+    None
 }
 
 fn find_all_envs(line: &str, prefix: &str) -> Vec<String> {
@@ -902,6 +984,29 @@ mod tests {
         assert_eq!(fast_source(&fb2, &fb2.spans[0], true), "Only.");
     }
     const DOC: &str = "\\documentclass{book}\n\\usepackage{microtype}\n\\begin{document}\n\\chapter{One}\n\nFirst paragraph\nspanning two lines.\n\nSecond paragraph.\n\n\\begin{itemize}\n\\item a\n\n\\item b\n\\end{itemize}\n\nThird.\n\\end{document}\n";
+
+    #[test]
+    fn document_markers_in_verbatim_comments_and_verb_are_text() {
+        // a chapter that shows a document in verbatim has no preamble and no trailer
+        let chapter = "\\section{Code}\nInline \\verb|\\end{document}| here.\n\n\\begin{verbatim}\n\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n\\end{verbatim}\nAfter.\n% \\begin{document} in a comment\n";
+        let kinds: Vec<SpanKind> = segment(chapter, &[]).into_iter().map(|(_, k)| k).collect();
+        assert!(
+            !kinds.contains(&SpanKind::Preamble) && !kinds.contains(&SpanKind::Trailer),
+            "{kinds:?}"
+        );
+        // the real markers still split a main file
+        let main = "\\documentclass{article}\n% \\begin{document} (comment)\n\\begin{document}\nText \\verb|\\end{document}|.\n\\end{document}\nafter\n";
+        let spans = segment(main, &[]);
+        assert_eq!(spans[0].1, SpanKind::Preamble);
+        assert_eq!(
+            &main[spans[0].0.clone()],
+            "\\documentclass{article}\n% \\begin{document} (comment)\n\\begin{document}\n"
+        );
+        assert_eq!(spans.last().unwrap().1, SpanKind::Trailer);
+        assert!(main[spans.last().unwrap().0.clone()].starts_with("\\end{document}"));
+        assert_eq!(blank_verb("a \\verb*+%x+ b"), "a \\verb*     b");
+        assert_eq!(blank_verb("\\verbatim"), "\\verbatim");
+    }
 
     #[test]
     fn segments_kinds() {

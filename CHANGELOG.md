@@ -62,6 +62,50 @@
   after 5 s and the paragraph was quarantined. The traced stages of a bundle showed it
   (traversal done, result never sent). tests/engine_robustness.rs produces a result larger
   than any FIFO and reads nothing for two seconds; the old transport fails it.
+- Stress test (a 58-page LuaLaTeX document: luatexja, biblatex, imakeidx, glossaries, tcolorbox,
+  pgfplots, pdfpages, pdflscape, verbatim and catcode tricks, `\include` chains; 28 scripted
+  live-typing scenarios). Fixes:
+  - Input PDFs (`\includegraphics{x.pdf}`, `\includepdf`) are copied into the pass snapshot;
+    every `.pdf` was skipped as a build output, so the pass failed on them. Only a PDF next to
+    the `.tex` it was built from is skipped now.
+  - makeindex runs between passes on every `.idx` a pass writes (imakeidx's named indexes too)
+    when its entries changed or its `.ind` is missing; the index was missing from every layout.
+    `.ind` files are part of the aux signature. `.idx`/`.glo` are no longer copied between pass
+    directories: TeX only writes them, and a standby engine may already hold them open.
+  - The aux signature ignores the pass directory's path (plain and hex-encoded): bookmark
+    records the absolute path of the `.ind` it read, which differs between `pass-0` and
+    `pass-1`, so every layout ended in `PassLimitReached`.
+  - `\begin{document}`/`\end{document}` count only where TeX reads them as commands, not in
+    comments, `\verb` or verbatim-like environments, both in the segmenter and in
+    `split_preamble`. A chapter that shows a document in `verbatim` was taken as preamble up to
+    that point and as a trailer after it: each keystroke there restarted the engine.
+  - Picture cache: a picture whose body reads part of itself under other catcodes (`luacode*`,
+    `verbatim`, `\verb`, `\catcode`, `\directlua` …) or whose `\end{env}` the body skip cannot
+    reach (brace balance after comment stripping) is not cached. A `luacode*` with `%.4f` in a
+    `tikzpicture` made the skip run to the end of the file.
+  - Page display lists are taken in `pre_shipout_filter` (registered at `\begin{document}`),
+    after LaTeX added the `shipout/background`/`foreground` material: `\includepdf` pages and
+    eso-pic content were missing from pages reported exact. A page with a `/Rotate` page
+    attribute (pdflscape) is flagged `page_rotate` (PDF fallback).
+  - Run-in headings (`\paragraph`, `\subparagraph`) and lists continuing an earlier list
+    (enumitem `resume`, `series`) are background-only (`RunInHeading`, `OutsideState`, kept in
+    probe mode): the first shares its rows with the following paragraph, the second numbered
+    from 1 live where the document said 3.
+  - `fast_budget` defaults to 50 ms (was 5): a demoted unit waits for a pass (20 s on this
+    document), so an `align` of 15 ms per compile waited 20 s per keystroke.
+  - biblatex citations are live in a session opened without an earlier build: the server read
+    no `.bbl` at start and printed every citation as its key, so the probe kept each citing
+    unit on the pass for the whole session. When a layout's `.bbl` differs from the server's,
+    a server with it is started on a helper thread and swapped in when idle
+    (tests/bibliography.rs).
+  - glossaries' first-use state is replayed per unit: `\gls` sets `\ifglo@<label>@flag`
+    globally, so after one live compile the server printed the short form where the document
+    has its first use (the probe compile set it, and the delivered compile was already wrong).
+    The capture tracks the switch of every entry the source defines (`\newglossaryentry`,
+    `\newacronym`, `\newabbreviation`, `\loadglsentries` files; `\iftrue`/`\iffalse` meanings),
+    the server sets it at the unit's value inside the compile and resets it globally after the
+    group. Body-only passes also scan `rtex-preamble.tex` for definitions (the main file's
+    preamble is blanked there).
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried

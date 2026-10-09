@@ -44,6 +44,12 @@ pub enum Reason {
     KindMismatch,
     /// The last fast compile of this unit exceeded the session's budget (ms).
     OverBudget(u64),
+    /// A run-in heading (`\paragraph`, `\subparagraph`): LaTeX typesets its title at the
+    /// start of the following paragraph, whose lines the unit then shares.
+    RunInHeading(String),
+    /// The unit reads state that its context does not carry (enumitem's `resume` and
+    /// `series`: the item count of an earlier list, kept in a macro, not a counter).
+    OutsideState(String),
 }
 
 impl std::fmt::Display for Reason {
@@ -78,6 +84,14 @@ impl std::fmt::Display for Reason {
                 "\\{m} before the unit's text runs before its counters are captured; put it inside the paragraph or environment, or on its own line"
             ),
             Reason::OverBudget(ms) => write!(f, "last fast compile took {ms} ms, over the budget"),
+            Reason::OutsideState(what) => write!(
+                f,
+                "{what} reads state from earlier in the document that the fast path does not replay"
+            ),
+            Reason::RunInHeading(h) => write!(
+                f,
+                "\\{h} is a run-in heading: its title is set in the following paragraph"
+            ),
             other => write!(f, "{other:?}"),
         }
     }
@@ -1724,6 +1738,10 @@ pub fn classify_source_with(
         return (UnitShape::Par, vec![Reason::SetupStatement]);
     }
     let (shape, heading_base) = unit_shape(&text, policy);
+    let run_in = match &shape {
+        UnitShape::Heading(h) if h == "paragraph" || h == "subparagraph" => Some(h.clone()),
+        _ => None,
+    };
     let mut scan = Scan {
         text: &text,
         b: text.as_bytes(),
@@ -1746,6 +1764,9 @@ pub fn classify_source_with(
     scan.hard_stops();
     scan.leading_counter();
     scan.run();
+    if let Some(h) = run_in {
+        scan.push(Reason::RunInHeading(h));
+    }
     scan.finish(permissive)
 }
 
@@ -2012,6 +2033,14 @@ impl<'a> Scan<'a> {
         self.i = after;
         if self.block_env_closed_at.is_some() && self.env_depth == 0 {
             // a second block environment after one closed: still fine (both inside the unit)
+        }
+        // enumitem: `resume`, `resume*` and `series=` continue an earlier list's numbering
+        if text[after..].trim_start().starts_with('[') {
+            let opts = &text[after..];
+            let opts = &opts[..opts.find(']').unwrap_or(opts.len())];
+            if opts.contains("resume") || opts.contains("series") {
+                self.push(Reason::OutsideState(format!("\\begin{{{env}}}[resume]")));
+            }
         }
         let is_amsmath_display = AMSMATH_DISPLAY_ENVS.contains(&env.as_str());
         let is_amsmath_inner = AMSMATH_INNER_ENVS.contains(&env.as_str());
@@ -2894,6 +2923,21 @@ mod tests {
         let (shape, r) = classify_source("\\newpage\n\\subsection{After a page break}", &p);
         assert!(r.is_empty(), "{r:?}");
         assert_eq!(shape, UnitShape::Heading("subsection".into()));
+        // enumitem's resume continues numbering kept outside the counters
+        let r = check_source(
+            "Then:\n\\begin{enumerate}[resume]\n  \\item Third\n\\end{enumerate}",
+            &p,
+        );
+        assert!(
+            r.contains(&Reason::OutsideState("\\begin{enumerate}[resume]".into())),
+            "{r:?}"
+        );
+        // run-in headings share the following paragraph's lines
+        let (shape, r) = classify_source("\\paragraph{Run-in.} With text.", &p);
+        assert_eq!(shape, UnitShape::Heading("paragraph".into()));
+        assert_eq!(r, vec![Reason::RunInHeading("paragraph".into())]);
+        let (_, r) = classify_source_with("\\subparagraph{Deeper.} Text.", &p, true);
+        assert_eq!(r, vec![Reason::RunInHeading("subparagraph".into())]);
         let r = check_source(
             "Text {\\rm roman} and $\\rm x \\uparrow \\iint$ and \\scalebox{2}{big}",
             &p,

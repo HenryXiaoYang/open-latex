@@ -75,7 +75,9 @@ of the latest pass (`EngineUnit::context_json`):
 `\@afterheading`, `\@doendpe` or `\@setminipage`); the host refuses anything else before the
 server does. `macros` holds the meanings (`"macro:#1->body"`, as `\meaning` prints them) of the
 macros the document body (re)defines, in force at the unit; the server replays them as local
-`\def`s. `thefmt` holds the `\the<counter>` bodies in force at the unit (replayed as local
+`\def`s. A `\newif` switch has the meaning `"\iftrue"`/`"\iffalse"` (glossaries' first-use
+`ifglo@<label>@flag`): the server sets it locally for the compile and resets it globally to
+its idle value right after the compile's group. `thefmt` holds the `\the<counter>` bodies in force at the unit (replayed as local
 `\def\the<counter>{…}` when they differ from the server's idle ones: `\appendix`,
 `\renewcommand{\thesection}`). `counters` are the LaTeX counters at the unit's start (replayed as local `\c@…=`
 assignments; `page` is never replayed) so equation, figure, table, footnote and theorem numbers

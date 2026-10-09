@@ -5,7 +5,7 @@ use rtex_core::{Session, SessionConfig, Edit, Event};
 
 let mut cfg = SessionConfig::new("/path/to/project", "main.tex");
 cfg.debounce = std::time::Duration::from_millis(300);
-cfg.fast_budget = std::time::Duration::from_millis(5);   // per-unit fast budget (C ABI: "fast_budget_ms", CLI: --fast-budget-ms)
+cfg.fast_budget = std::time::Duration::from_millis(50);   // per-unit fast budget (C ABI: "fast_budget_ms", CLI: --fast-budget-ms)
 cfg.eligibility = EligibilityMode::Probe;                // default; AllowList = only allow-listed vocabulary (docs/ELIGIBILITY.md)
 cfg.trusted_macros = vec!["mymacro".into()];       // host-vouched pure macros (optional)
 cfg.picture_cache = true;                          // reuse unchanged TikZ pictures across passes (C ABI: "picture_cache", CLI: --no-picture-cache)

@@ -84,9 +84,16 @@ in order, the first one provides the context, and the fast path typesets the spa
    cached row placements (page positions anchored at each page's first row, the fast box's own
    geometry within the page) and a `ParagraphUpdate` is emitted. Row-count changes mark
    `pagination_stale`; inserts (footnote text) and degraded content are listed in `reasons`;
-   both schedule a background pass. A unit whose compiles exceed `fast_budget` (`fast_budget_ms`, default 5) three times in
+   both schedule a background pass. A unit whose compiles exceed `fast_budget` (`fast_budget_ms`, default 50) three times in
    a row leaves the fast path until the next layout (`OverBudget`; the first slow compiles are
    forgiven because they may be loading fonts).
+5. The server starts from the latest layout's `.aux` and `.bbl`. Labels are refreshed with each
+   layout (`labels` request), but biblatex reads its `.bbl` once, at `\begin{document}`: when a
+   layout's `.bbl` differs from the one the server read (a session opened without an earlier
+   build, an edited `.bib`), the engine thread starts a server with it on a helper thread
+   (`build/serve-next`, generation + 1) while the running one keeps serving, and swaps it in once
+   ready and idle (`EngineState Ready`, reason "restarted with the bibliography of the latest
+   layout"); queued requests carry over and probe verdicts are cleared.
 
 ### Server-only shortcuts (`tex/latex/rtex-serve-patches.tex`)
 

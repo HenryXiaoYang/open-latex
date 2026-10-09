@@ -119,6 +119,14 @@ impl LiveUnits {
         self.prune();
     }
 
+    /// The running server was replaced by one with the same preamble and newer bibliography
+    /// data: probe verdicts compared that server's output, the rest still holds.
+    pub fn on_server_swap(&mut self) {
+        for u in self.0.values_mut() {
+            u.probe = None;
+        }
+    }
+
     /// The preamble changed: the engine restarts, so verdicts, budget marks, quarantines and
     /// leaks about the old engine no longer apply.
     pub fn on_preamble_change(&mut self) {

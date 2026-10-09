@@ -124,6 +124,17 @@ S.counter_names = {}
 S.counter_base = {}
 S.the_base = {}
 -- idle meanings of the macros the capture reports (looked up lazily)
+-- \iftrue / \iffalse for a \newif switch (no token.get_meaning for a primitive), else nil
+local IFTRUE, IFFALSE
+local function if_meaning(name)
+  local ok, t = pcall(create, name)
+  if not ok or not t or t.cmdname ~= "if_test" then return nil end
+  IFTRUE = IFTRUE or create("iftrue")
+  IFFALSE = IFFALSE or create("iffalse")
+  if t.mode == IFTRUE.mode then return "\\iftrue" elseif t.mode == IFFALSE.mode then return "\\iffalse" end
+  return nil
+end
+S.if_meaning = if_meaning
 S.macro_base = setmetatable({}, { __index = function(t, name)
   local m = nil
   if token.get_meaning then
@@ -132,7 +143,7 @@ S.macro_base = setmetatable({}, { __index = function(t, name)
   end
   if m == nil then
     local ok, b = pcall(token.get_macro, name)
-    m = ok and b and ("->" .. b) or false
+    m = ok and b and ("->" .. b) or if_meaning(name) or false
   end
   rawset(t, name, m)
   return m
@@ -197,6 +208,24 @@ local function install_context(id, ctx)
     local d = S.def_from_meaning(k, ctx.macros[k])
     if d then extra[#extra + 1] = d end
   end
+  -- \newif switches (glossaries' first-use \ifglo@<label>@flag): their value at the unit,
+  -- local to the compile; a compile that sets one globally (\gls) has it reset to the idle
+  -- value right after its group, so no compile sees another's first use
+  local snames, after = {}, {}
+  for k, v in pairs(ctx.macros or {}) do
+    if (v == "\\iftrue" or v == "\\iffalse") and k:match("^[%w@:%-_.]+$") then snames[#snames + 1] = k end
+  end
+  table.sort(snames)
+  for _, k in ipairs(snames) do
+    local base = S.macro_base[k]
+    if base == "\\iftrue" or base == "\\iffalse" then
+      if base ~= ctx.macros[k] then
+        extra[#extra + 1] = "\\expandafter\\let\\csname " .. k .. "\\endcsname" .. ctx.macros[k] .. " "
+      end
+      after[#after + 1] = "\\expandafter\\global\\expandafter\\let\\csname " .. k .. "\\endcsname" .. base .. " "
+    end
+  end
+  ctx.after_group = table.concat(after)
   extra[#extra + 1] = ctx.nobreak and "\\@nobreaktrue " or "\\@nobreakfalse "
   extra[#extra + 1] = ctx.afterindent and "\\@afterindenttrue " or "\\@afterindentfalse "
   extra[#extra + 1] = ctx.noskipsec and "\\@noskipsectrue " or "\\@noskipsecfalse "
@@ -276,7 +305,7 @@ local last_nfss = nil
 --   finish() traverses the box, checks the state fingerprint and sends the result.
 -- The TeX side runs `\loop\rtexstep\ifnum\rtexcontinue>0 \repeat`.
 S.current = nil
-local head_tokens, tail_tokens  -- built in init once the \luafunction slots are known
+local head_tokens, tail_after_group  -- built in init once the \luafunction slots are known
 
 -- Leak check: the meanings of the control sequences a unit's source mentions, before and
 -- after its compile (every distinct \name in the source; a name built with \csname is not
@@ -386,7 +415,7 @@ function S.begin_compile(req_id, ctx_id, source, pics)
   -- document's catcodes
   tex.print(S.cct, ftoks .. head_tokens .. ctx.head_extra)
   tex.print(lines)
-  tex.print(S.cct, ctx.tail_extra .. tail_tokens)
+  tex.print(S.cct, ctx.tail_extra .. "\\par\\egroup\\endgroup" .. ctx.after_group .. tail_after_group)
   S.current.t_printed = gettime()
 end
 
@@ -714,7 +743,7 @@ function S.init(boxnum, countnum, cctnum)
   head_tokens = "\\luafunction" .. S.fn_mark .. " \\begingroup\\global\\setbox\\rtexbox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " "
   -- the title block's kernel macros (rtex-serve-patches.tex, 5) come back after every compile
   local restore_title = token.is_defined("rtex@restoretitle") and "\\rtex@restoretitle " or ""
-  tail_tokens = "\\par\\egroup\\endgroup" .. (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
+  tail_after_group = (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,

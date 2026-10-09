@@ -142,8 +142,11 @@ Cost: one extra compile (1–5 ms) per not-allow-listed unit per layout, on its 
 
 ## The fast budget is a parameter
 
-`fast_budget_ms` (default 5): a unit whose fast compiles exceed it three times in a row goes to
-the background path until the next layout. Session config `SessionConfig::fast_budget`, C ABI
+`fast_budget_ms` (default 50; 5 until the stress test below): a unit whose fast compiles exceed
+it three times in a row goes to the background path until the next layout. A demoted unit waits
+for a pass (seconds on a long document: about 20 s on the 58-page stress test), so the budget
+only pays off for a unit slow enough to hold up the units typed after it; at 5 ms, an `align` of
+four rows (15 ms) waited 20 s per keystroke instead of 15 ms. Session config `SessionConfig::fast_budget`, C ABI
 JSON `"fast_budget_ms"`, CLI `rtex serve --fast-budget-ms`. TikZ-style units would want a
 larger value (a three-node flowchart costs about 17 ms in the engine, a 100-sample plot
 about 56 ms): the budget is per session for now. A picture the picture cache holds costs
