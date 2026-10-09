@@ -120,7 +120,10 @@ When the compile changed the meaning of a control sequence the source mentions (
 `\global\let`), the header carries `"leaks": [names]`; the session demotes the unit and restarts
 the engine (docs/ELIGIBILITY.md). When the request carried picture cache entries, the header
 carries `"pics_seen"` (picture environments the compile began) and `"pics_used"` (taken from the
-cache); a `pics_seen` that differs from the number of pictures the session scanned means a
+cache). A result with `"internal": "<message and traceback>"` (status `error`) reports a
+Lua error of the server's own while handling the request, not an error in the source: the
+session sends the unit to the pass until the next layout and keeps the engine. A `pics_seen`
+that differs from the number of pictures the session scanned means a
 picture it did not see (a macro-made one), and the session repeats the compile without the
 entries. A cached picture appears
 in the display list as `UNSUPPORTED{kind: "cached_picture"}` (not an image).

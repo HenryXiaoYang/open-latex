@@ -38,6 +38,13 @@
   cached pictures (a sentence and its plot) is no longer probed after each layout: the probe
   compiled the snapshot's text with entries scanned from the current text, drew the plot when
   they did not match and, with the debug trace on, timed out and quarantined the unit.
+- The server always answers: a Lua error of its own while finishing a compile (or in the
+  context replay, the picture hooks or the request handler) used to be swallowed by TeX in
+  batch mode, leaving the host to wait out the 5 s watchdog, kill the engine and quarantine
+  the unit for the session (seen on macOS on plain paragraphs). It is now traced with its
+  traceback and answered at once as an `internal` error result; the unit goes to the pass
+  until the next layout and the engine keeps running. `finish` traces its stages, so a stall
+  shows where it stopped (tests/internal_error.rs).
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried

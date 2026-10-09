@@ -183,7 +183,14 @@ unit, versions, timeout, server banner), `source.tex` (the exact text sent), `co
 context replay, `finish`) and per font load with its cost, so a hung request shows the last stage
 it reached and whether a font was loading, even though the killed process's log tail is lost
 (LuaTeX ignores no signal politely: SIGINT ends it without a word, so the watchdog kills
-outright). With `$RTEX_TRACE_MACROS=1` as well (opt-in), the server also runs with
+outright). `finish` traces its stages too (counters, leak check, fingerprint, traversal, result
+sent). Every Lua function TeX calls during a compile (`apply`, `finish`, the picture hooks) and
+the request handler run protected: a Lua error of the server's own (in batch mode TeX would
+swallow it and the server would answer nothing, so the host waited out the watchdog, killed
+the engine and quarantined the unit) is traced with its traceback and answered at once with
+an `internal` error result. The host sends that unit to the pass until the next layout (no
+restart, no quarantine, one debug bundle per unit and layout; a warm-up's internal error
+schedules nothing, so it cannot loop passes). With `$RTEX_TRACE_MACROS=1` as well (opt-in), the server also runs with
 `\tracingmacros=1`, so a macro loop shows in the log's last flushed block; it makes a heavy
 compile (a pgfplots axis drawn) many times slower and the log grows without bound, so the
 watchdog is ten times longer while it is on. `requests.log` gets one line per live compile (unit,

@@ -342,6 +342,10 @@ struct Shared {
     inputted: Mutex<std::collections::BTreeSet<String>>,
     /// Units over the fast budget: par id → (layout_version when measured, ms).
     slow_units: Mutex<HashMap<ParaId, (u64, u64)>>,
+    /// Units whose compile hit an internal error in the server: (layout version, message).
+    /// They wait for the pass until the next layout, then get another chance (the engine is
+    /// not restarted and the unit is not quarantined: the error is ours, not the unit's).
+    internal_errors: Mutex<HashMap<ParaId, (u64, String)>>,
     /// Consecutive over-budget compiles per unit (the first ones may be loading fonts).
     slow_candidates: Mutex<HashMap<ParaId, u32>>,
     edit_counter: AtomicU64,
@@ -461,6 +465,7 @@ impl Session {
             preamble_inputs: Mutex::new(preamble_inputs),
             inputted: Mutex::new(crate::document::inputted_files(&texts)),
             slow_units: Mutex::new(HashMap::new()),
+            internal_errors: Mutex::new(HashMap::new()),
             slow_candidates: Mutex::new(HashMap::new()),
             edit_counter: AtomicU64::new(0),
             convergence: Mutex::new(None),
@@ -902,6 +907,18 @@ impl Session {
         }
         if let Some(why) = self.shared.leaky.lock().get(&span.id) {
             reasons.push(format!("unverified: {why}"));
+        }
+        if let Some((_, why)) = self
+            .shared
+            .internal_errors
+            .lock()
+            .get(&span.id)
+            .filter(|(lv, _)| *lv == layout.layout_version)
+        {
+            reasons.push(format!(
+                "EngineFailed: internal error, retried after the next layout ({})",
+                first_line_of(why)
+            ));
         }
         let mut seq = 0i64;
         let mut ctx: Option<serde_json::Value> = None;
@@ -1789,6 +1806,10 @@ fn engine_thread(s: Arc<Shared>) {
                             s.pending_signal.0.send(()).ok();
                             continue;
                         }
+                        Ok((cr, _)) if cr.internal.is_some() => ProbeVerdict::Mismatch(format!(
+                            "internal error ({})",
+                            first_line_of(cr.internal.as_deref().unwrap_or_default())
+                        )),
                         Ok((cr, _)) => {
                             if !cr.leaks.is_empty() {
                                 ProbeVerdict::Leak(format!(
@@ -2064,6 +2085,11 @@ fn debug_bundle_startup(s: &Shared, gen: u64, reason: &str) -> String {
     format!("{reason} (debug bundle: {})", dir.display())
 }
 
+/// The first line of a (multi-line) message, such as a Lua error with its traceback.
+fn first_line_of(msg: &str) -> &str {
+    msg.lines().next().unwrap_or("")
+}
+
 /// The per-compile watchdog. With macro tracing on (`$RTEX_TRACE_MACROS` with a debug
 /// directory) every macro expansion is written to the TeX log, which makes a heavy compile (a
 /// pgfplots axis drawn) many times slower: the watchdog is lengthened rather than letting the
@@ -2104,6 +2130,34 @@ fn handle_result(
     t0: Instant,
     wanted_gen: u64,
 ) {
+    if let Some(msg) = cr.internal.as_deref() {
+        // the server hit a Lua error of its own on this unit and answered with it (it used to
+        // stay silent until the watchdog killed the engine): the unit waits for the pass until
+        // the next layout; the engine is fine
+        if req.warmup {
+            // nothing to demote, and no pass to schedule: a pass would install a layout, which
+            // warms the engine again, which would fail again (a loop of passes)
+            log::warn!("warm-up compile: internal error in the server: {msg}");
+            return;
+        }
+        let lv = s.layout.lock().layout_version;
+        let first = s
+            .internal_errors
+            .lock()
+            .insert(req.par_id, (lv, msg.to_string()))
+            .is_none_or(|(prev, _)| prev != lv);
+        log::warn!("{:?}: internal error in the server: {msg}", req.par_id);
+        // one bundle per unit and layout, not one per keystroke
+        if first {
+            if let Some(dir) =
+                debug_bundle(s, &req, &format!("internal error: {msg}"), wanted_gen, None)
+            {
+                log::warn!("debug bundle: {}", dir.display());
+            }
+        }
+        demote_span(s, &req, &format!("internal error ({})", first_line_of(msg)));
+        return;
+    }
     if !cr.leaks.is_empty() {
         // before any early return: the compile changed the meaning of a control sequence it
         // mentions, so the server is no longer the document's state whatever else happened.

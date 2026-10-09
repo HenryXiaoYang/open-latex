@@ -61,6 +61,11 @@ pub struct CompileResult {
     pub pics_seen: Option<i64>,
     #[serde(default)]
     pub pics_used: Option<i64>,
+    /// A Lua error in the server while handling the request (with its traceback): the result
+    /// is an error the unit's text did not cause, sent instead of nothing so the host does not
+    /// wait out the watchdog.
+    #[serde(default)]
+    pub internal: Option<String>,
     /// Host-side stage times (µs): send, wait, read, parse.
     #[serde(skip)]
     pub host_us: [u64; 4],
