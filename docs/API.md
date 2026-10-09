@@ -9,6 +9,7 @@ cfg.fast_budget = std::time::Duration::from_millis(5);   // per-unit fast budget
 cfg.eligibility = EligibilityMode::Probe;                // default; AllowList = only allow-listed vocabulary (docs/ELIGIBILITY.md)
 cfg.trusted_macros = vec!["mymacro".into()];       // host-vouched pure macros (optional)
 cfg.picture_cache = true;                          // reuse unchanged TikZ pictures across passes (C ABI: "picture_cache", CLI: --no-picture-cache)
+cfg.debug_dir = Some("/tmp/rtex-debug".into());    // diagnostics: a bundle per engine failure + requests.log (C ABI: "debug_dir", CLI: --debug-dir, env: RTEX_DEBUG_DIR)
 let session = Session::open(cfg)?;                 // loads main.tex and the files it \inputs, spawns the server, first pass
 
 let r = session.apply_edit("main.tex", Edit { start_byte, end_byte, text })?;  // or "chapters/one.tex"; paths are

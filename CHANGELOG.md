@@ -9,6 +9,10 @@
   the font, color and width in force, and taken from per-page extracts of the pass PDF. A 111-page
   document with 120 pictures: 45 s → 18 s per pass. A cached picture is `UNSUPPORTED{cached_picture}`
   in the display list, never an image (hosts render the page from the PDF as for a drawn picture).
+- Debugging: `SessionConfig::debug_dir` (`"debug_dir"`, `rtex serve --debug-dir`,
+  `$RTEX_DEBUG_DIR`) writes a bundle per engine failure (request source, context, picture
+  entries, server driver, preamble, TeX log, per-stage and per-font-load trace, `\tracingmacros`
+  on) and a `requests.log`.
 - The live engine reuses cached pictures too: a unit that contains a picture the cache holds
   (same text, definitions and font/color/width state) is compiled with the cached region in
   place of the drawing, so editing a sentence that shares its unit with a pgfplots axis stays

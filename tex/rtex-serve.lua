@@ -34,6 +34,16 @@ end
 
 local function log(msg) texio.write_nl("log", "rtex-serve: " .. msg) end
 
+-- Debug trace ($RTEX_TRACE, set by the session's debug setting): one line per request stage,
+-- flushed at once, so the stage a hung request reached survives the process being killed
+-- (the TeX log's tail does not).
+local trace_file = os.getenv("RTEX_TRACE") and io.open(os.getenv("RTEX_TRACE"), "a") or nil
+local function trace(msg)
+  if not trace_file then return end
+  trace_file:write(format("%.6f %s\n", gettime(), msg))
+  trace_file:flush()
+end
+
 -- Error collection -------------------------------------------------------------------------
 function S.on_error(...)
   S.errors[#S.errors + 1] = { message = status.lasterrorstring, context = status.lasterrorcontext,
@@ -323,6 +333,7 @@ function S.begin_compile(req_id, ctx_id, source, pics)
                 pics = pics, pics_seen = 0, pics_used = 0 }
   S.current.meanings = meanings_of(S.current.names)
   S.images_used = false
+  if trace_file then trace(format("begin req %s ctx %s bytes %d lines %d pics %s", tostring(req_id), tostring(ctx_id), #source, n, pics and #pics or 0)) end
   -- our own tokens use @ as a letter (kernel switches, float emulation); the source keeps the
   -- document's catcodes
   tex.print(S.cct, ftoks .. head_tokens .. ctx.head_extra)
@@ -342,6 +353,7 @@ function S.mark()
   local cur = S.current
   if cur then
     cur.t_mark = gettime()
+    if trace_file then trace("mark (context replayed) req " .. tostring(cur.req)) end
     if cur.font_changed then
       -- the font-selection tokens ran at the outer level: re-baseline
       S.font_outer = font.current()
@@ -360,6 +372,7 @@ function S.finish()
   S.current = nil
   if not cur then return end
   local t1 = gettime()
+  if trace_file then trace(format("finish req %s errors %d", tostring(cur.req), #S.errors)) end
   -- counters the unit advanced globally (\refstepcounter, \stepcounter …) are reported
   -- (value at the end, when it differs from the replayed start value) and go back to the idle
   -- values
@@ -546,6 +559,7 @@ function S.stats()
 end
 
 function S.dispatch(req)
+  if trace_file and req.op ~= "compile" then trace("op " .. tostring(req.op) .. " id " .. tostring(req.id)) end
   if req.op == "context" then
     install_context(req.id, req.ctx)
     send{ op = "ok", id = req.id }
@@ -620,6 +634,23 @@ function S.init(boxnum, countnum, cctnum)
   tail_tokens = "\\par\\egroup\\endgroup" .. (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
+  if trace_file then
+    trace("ready " .. tostring(os.getenv("RTEX_TRACE")))
+    -- font loads with their cost (a first use of a big font can take seconds), and every macro
+    -- expansion in the TeX log (\tracingmacros): a loop shows in the log's last flushed block
+    -- even though the killed process loses the tail
+    local prev = luatexbase.remove_from_callback("define_font", "luaotfload.define_font")
+    if prev then
+      luatexbase.add_to_callback("define_font", function(name, size, id)
+        local t = gettime()
+        local f = prev(name, size, id)
+        trace(format("font %s size %s id %s: %.1f ms", tostring(name), tostring(size), tostring(id), (gettime() - t) * 1000))
+        return f
+      end, "luaotfload.define_font")
+    end
+    tex.tracingmacros = 1
+    tex.tracingonline = 0
+  end
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,
         fingerprint = S.fp_string(S.fp_base), font_nextid = font.nextid() }
   log("ready")

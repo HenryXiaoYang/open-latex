@@ -14,10 +14,14 @@ pub fn run(
     fast_budget_ms: u64,
     eligibility: &str,
     picture_cache: bool,
+    debug_dir: Option<PathBuf>,
 ) -> Result<()> {
     let mut cfg = SessionConfig::new(project, main);
     cfg.fast_budget = std::time::Duration::from_millis(fast_budget_ms);
     cfg.picture_cache = picture_cache;
+    if debug_dir.is_some() {
+        cfg.debug_dir = debug_dir;
+    }
     cfg.eligibility = rtex_core::session::EligibilityMode::parse(eligibility)
         .ok_or_else(|| anyhow::anyhow!("--eligibility: probe or allowlist, not {eligibility:?}"))?;
     if let Some(b) = build {

@@ -102,6 +102,11 @@ enum Cmd {
         /// unchanged ones from an earlier pass's PDF.
         #[arg(long)]
         no_picture_cache: bool,
+        /// Write diagnostics here: a bundle per engine failure (request source, context,
+        /// server log and stage trace) and one line per live compile in requests.log
+        /// (default: $RTEX_DEBUG_DIR when set).
+        #[arg(long)]
+        debug_dir: Option<PathBuf>,
     },
     /// Open a session, apply one edit, print the resulting paragraph update.
     Edit {
@@ -255,6 +260,7 @@ fn main() -> anyhow::Result<()> {
             fast_budget_ms,
             eligibility,
             no_picture_cache,
+            debug_dir,
         } => serve::run(
             project,
             main,
@@ -262,6 +268,7 @@ fn main() -> anyhow::Result<()> {
             fast_budget_ms,
             &eligibility,
             !no_picture_cache,
+            debug_dir,
         )?,
         Cmd::Edit {
             project,

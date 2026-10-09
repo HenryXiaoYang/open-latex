@@ -156,6 +156,21 @@ impl FastServer {
         generation: u64,
         aux: Option<&Path>,
     ) -> Result<FastServer> {
+        Self::spawn_with(tl, cwd, work_dir, preamble, generation, aux, false)
+    }
+
+    /// `spawn` with the server's own trace on (`rtex-serve-g<generation>.trace` in `work_dir`:
+    /// one line-flushed entry per request stage, so a hang shows the last stage reached even
+    /// when the TeX log's tail is lost with the killed process).
+    pub fn spawn_with(
+        tl: &TexLive,
+        cwd: &Path,
+        work_dir: &Path,
+        preamble: &str,
+        generation: u64,
+        aux: Option<&Path>,
+        trace: bool,
+    ) -> Result<FastServer> {
         std::fs::create_dir_all(work_dir)?;
         let work_dir = &work_dir.canonicalize()?;
         let own_aux = work_dir.join(format!("rtex-serve-g{generation}.aux"));
@@ -207,6 +222,12 @@ impl FastServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if trace {
+            cmd.env(
+                "RTEX_TRACE",
+                work_dir.join(format!("rtex-serve-g{generation}.trace")),
+            );
+        }
         let t0 = Instant::now();
         let mut child = cmd.spawn().context("spawning lualatex server")?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
@@ -243,6 +264,22 @@ impl FastServer {
     pub fn log_path(&self) -> PathBuf {
         self.work_dir
             .join(format!("rtex-serve-g{}.log", self.generation))
+    }
+
+    /// Files that describe this server (driver, preamble copy, TeX log, trace when on), for a
+    /// debug bundle.
+    pub fn debug_files(&self) -> Vec<PathBuf> {
+        let g = self.generation;
+        vec![
+            self.work_dir.join(format!("rtex-serve-g{g}.tex")),
+            self.work_dir.join("rtex-preamble.tex"),
+            self.log_path(),
+            self.work_dir.join(format!("rtex-serve-g{g}.trace")),
+        ]
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     fn send(&mut self, v: &serde_json::Value) -> Result<()> {

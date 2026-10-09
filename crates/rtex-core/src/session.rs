@@ -47,6 +47,12 @@ pub struct SessionConfig {
     /// Background passes reuse unchanged pictures (tikzpicture, circuitikz) from an earlier
     /// pass's PDF instead of drawing them again (default true; `docs/ARCHITECTURE.md`).
     pub picture_cache: bool,
+    /// Debugging: a directory the session writes diagnostics into (default: `$RTEX_DEBUG_DIR`
+    /// when set, else none). Every engine failure (watchdog, state mismatch, crash) leaves a
+    /// bundle there with the request's source, context and picture entries, the server's
+    /// driver, preamble, TeX log and stage trace; `requests.log` gets one line per live
+    /// compile. C ABI `"debug_dir"`, CLI `rtex serve --debug-dir`.
+    pub debug_dir: Option<PathBuf>,
 }
 
 /// Diagnostic view of one layout unit (`Session::layout_units`, `rtex serve` `units`).
@@ -115,6 +121,9 @@ impl SessionConfig {
             warm_background: true,
             eligibility: EligibilityMode::Probe,
             picture_cache: true,
+            debug_dir: std::env::var_os("RTEX_DEBUG_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
         }
     }
 }
@@ -1380,6 +1389,7 @@ fn engine_thread(s: Arc<Shared>) {
                             "engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"
                         ),
                         wanted_gen,
+                        server.as_ref(),
                     );
                     server = None;
                     reset_link(&s);
@@ -1390,12 +1400,13 @@ fn engine_thread(s: Arc<Shared>) {
                         &fl.req,
                         anyhow!("unexpected response {other:?}"),
                         wanted_gen,
+                        server.as_ref(),
                     );
                     server = None;
                     reset_link(&s);
                 }
                 Err(e) => {
-                    engine_failed(&s, &fl.req, e, wanted_gen);
+                    engine_failed(&s, &fl.req, e, wanted_gen, server.as_ref());
                     server = None;
                     reset_link(&s);
                 }
@@ -1466,13 +1477,14 @@ fn engine_thread(s: Arc<Shared>) {
                     .as_ref()
                     .map(|d| d.join(format!("{jobname}.aux")))
             };
-            match FastServer::spawn(
+            match FastServer::spawn_with(
                 &s.tl,
                 &s.cfg.project_root,
                 &s.cfg.build_dir.join("serve"),
                 &preamble,
                 wanted_gen,
                 aux.as_deref(),
+                s.cfg.debug_dir.is_some(),
             ) {
                 Ok(mut srv) => {
                     srv.timeout = s.cfg.compile_timeout.max(Duration::from_secs(30)); // first compile loads fonts
@@ -1656,7 +1668,7 @@ fn engine_thread(s: Arc<Shared>) {
                         }
                         Err(e) => {
                             drop(link);
-                            engine_failed(&s, &req, e, wanted_gen);
+                            engine_failed(&s, &req, e, wanted_gen, server.as_ref());
                             server = None;
                             reset_link(&s);
                             continue;
@@ -1694,7 +1706,7 @@ fn engine_thread(s: Arc<Shared>) {
             }
             Err(e) => {
                 drop(link);
-                engine_failed(&s, &req, e, wanted_gen);
+                engine_failed(&s, &req, e, wanted_gen, server.as_ref());
                 server = None;
                 reset_link(&s);
             }
@@ -1733,12 +1745,22 @@ fn demote_span(s: &Shared, req: &FastRequest, why: &str) {
     s.bg_signal.0.send(BgCmd::Pass).ok();
 }
 
-fn engine_failed(s: &Shared, req: &FastRequest, e: anyhow::Error, wanted_gen: u64) {
+fn engine_failed(
+    s: &Shared,
+    req: &FastRequest,
+    e: anyhow::Error,
+    wanted_gen: u64,
+    srv: Option<&FastServer>,
+) {
+    let mut message = e.to_string();
+    if let Some(dir) = debug_bundle(s, req, &message, wanted_gen, srv) {
+        message = format!("{message} (debug bundle: {})", dir.display());
+    }
     s.events
         .send(Event::EngineState {
             engine_generation: wanted_gen,
             state: "Restarting".into(),
-            reason: Some(e.to_string()),
+            reason: Some(message.clone()),
         })
         .ok();
     s.events
@@ -1748,7 +1770,7 @@ fn engine_failed(s: &Shared, req: &FastRequest, e: anyhow::Error, wanted_gen: u6
                 severity: "error".into(),
                 file: None,
                 line: None,
-                message: e.to_string(),
+                message,
                 context: None,
             }],
         })
@@ -1772,6 +1794,102 @@ fn engine_failed(s: &Shared, req: &FastRequest, e: anyhow::Error, wanted_gen: u6
 /// `slow_units` layout-version marker for a unit quarantined after an engine failure.
 const QUARANTINED: u64 = u64::MAX;
 
+/// With `SessionConfig::debug_dir`: write everything needed to reproduce an engine failure
+/// into `<debug_dir>/engine-<time>-g<generation>-par<id>/` and return that directory.
+fn debug_bundle(
+    s: &Shared,
+    req: &FastRequest,
+    reason: &str,
+    gen: u64,
+    srv: Option<&FastServer>,
+) -> Option<PathBuf> {
+    let base = s.cfg.debug_dir.as_ref()?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = base.join(format!("engine-{ts}-g{gen}-par{}", req.par_id.0));
+    let write = |name: &str, bytes: &[u8]| {
+        let _ = std::fs::write(dir.join(name), bytes);
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    write("source.tex", req.source.as_bytes());
+    if !req.pics.is_empty() {
+        write("pics.json", req.pics.as_bytes());
+    }
+    let ctx = req.ctx.clone().or_else(|| {
+        let layout = s.layout.lock();
+        layout
+            .units
+            .iter()
+            .find(|u| u.uid == req.seq)
+            .map(|u| u.context_json())
+    });
+    if let Some(c) = &ctx {
+        write(
+            "context.json",
+            serde_json::to_string_pretty(c)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+    }
+    let report = serde_json::json!({
+        "reason": reason,
+        "par_id": req.par_id.0,
+        "edit_id": req.edit_id,
+        "context_id": req.seq,
+        "probe": req.probe,
+        "warmup": req.warmup,
+        "pictures_in_source": req.pics_n,
+        "versions": req.versions,
+        "engine_generation": gen,
+        "compile_timeout_ms": s.cfg.compile_timeout.as_millis() as u64,
+        "server": srv.map(|x| serde_json::json!({
+            "banner": x.banner, "pid": x.pid(), "generation": x.generation,
+            "startup_ms": x.startup.as_millis() as u64, "work_dir": x.work_dir,
+        })),
+        "rtex_version": env!("CARGO_PKG_VERSION"),
+    });
+    write(
+        "report.json",
+        serde_json::to_string_pretty(&report)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    if let Some(x) = srv {
+        for f in x.debug_files() {
+            if f.is_file() {
+                if let Some(name) = f.file_name() {
+                    let _ = std::fs::copy(&f, dir.join(name));
+                }
+            }
+        }
+    }
+    Some(dir)
+}
+
+/// With `SessionConfig::debug_dir`: one line per live compile in `<debug_dir>/requests.log`.
+fn debug_request_line(s: &Shared, line: &str) {
+    let Some(base) = s.cfg.debug_dir.as_ref() else {
+        return;
+    };
+    use std::io::Write;
+    let _ = std::fs::create_dir_all(base);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(base.join("requests.log"))
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let _ = writeln!(f, "{ts:.3} {line}");
+    }
+}
+
 fn handle_result(
     s: &Shared,
     req: FastRequest,
@@ -1790,6 +1908,24 @@ fn handle_result(
         s.engine_generation.fetch_add(1, Ordering::SeqCst);
         s.pending_signal.0.send(()).ok();
         return;
+    }
+    if s.cfg.debug_dir.is_some() {
+        debug_request_line(
+            s,
+            &format!(
+                "par {} ctx {} status {} rows {} tex_us {} total_us {} pics {}/{} errors {}{}",
+                req.par_id.0,
+                req.seq,
+                cr.status,
+                cr.dl.as_ref().map(|d| d.lines.len()).unwrap_or(0),
+                rt.t_tex.as_micros(),
+                t0.elapsed().as_micros(),
+                cr.pics_used.unwrap_or(0),
+                cr.pics_seen.unwrap_or(0),
+                cr.errors.len(),
+                if req.warmup { " (warm-up)" } else { "" }
+            ),
+        );
     }
     if req.warmup {
         return;
@@ -2523,8 +2659,10 @@ fn deliver_layout(
                 match std::fs::copy(&cap.pdf, &stable) {
                     Ok(_) => {
                         layout.pdf = Some(stable.clone());
-                        if v >= 2 {
-                            let _ = std::fs::remove_file(bg.join(format!("layout-{}.pdf", v - 2)));
+                        // the two previous copies stay: a host may still be reading the layout
+                        // before the one it is replacing
+                        if v >= 3 {
+                            let _ = std::fs::remove_file(bg.join(format!("layout-{}.pdf", v - 3)));
                         }
                         // build/bg/<jobname>.pdf and .log: the latest layout, for hosts that
                         // name these files themselves (a link to the copy; nothing writes

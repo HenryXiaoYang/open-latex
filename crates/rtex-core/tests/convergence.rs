@@ -233,16 +233,30 @@ fn mixed_document_converges_through_biber_and_degrades_literal_pages() {
     let mut cfg = SessionConfig::new(&project, "main.tex");
     cfg.build_dir = root.join("build");
     let s = Session::open(cfg).unwrap();
-    let Event::LayoutUpdate {
-        convergence,
-        compile,
-        passes,
-        pages_changed,
-        pdf_fallback,
-        ..
-    } = wait_layout(&s, 300)
-    else {
-        unreachable!()
+    // provisional layouts (a pass took long on a loaded machine) deliver pages first; the final
+    // one lists only the pages that changed since, so degraded pages are collected across all
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+    let mut degraded: Vec<i64> = Vec::new();
+    let (convergence, compile, passes, pdf_fallback) = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let (ev, _) = s.wait_for(left, |e| matches!(e, Event::LayoutUpdate { .. }));
+        let Some(Event::LayoutUpdate {
+            convergence,
+            compile,
+            passes,
+            pages_changed,
+            pdf_fallback,
+            ..
+        }) = ev
+        else {
+            panic!("layout update");
+        };
+        degraded.extend(pages_changed.iter().filter(|p| !p.exact).map(|p| p.page));
+        let provisional = matches!(&convergence, Convergence::Converging { reasons, .. }
+            if reasons.iter().any(|r| r == "another pass is running"));
+        if !provisional {
+            break (convergence, compile, passes, pdf_fallback);
+        }
     };
     assert_eq!(compile, CompileStatus::Ok);
     assert_eq!(convergence, Convergence::Converged);
@@ -250,11 +264,6 @@ fn mixed_document_converges_through_biber_and_degrades_literal_pages() {
         passes >= 2,
         "citations need at least two passes, got {passes}"
     );
-    let degraded: Vec<i64> = pages_changed
-        .iter()
-        .filter(|p| !p.exact)
-        .map(|p| p.page)
-        .collect();
     assert!(!degraded.is_empty(), "the literal page must be degraded");
     assert!(
         pdf_fallback.as_ref().map(|p| p.exists()).unwrap_or(false),

@@ -120,8 +120,8 @@ it must never share a directory with the pass that is running (two writers once 
 with gaps that renderers showed as blank pages). Before a pass is released, the previous pass's
 aux family (`.aux .toc .bbl …`, chapter `.aux` files included) is copied into its directory.
 Degraded pages carry a PDF fallback path: `build/bg/layout-<layout_version>.pdf`, a copy of the
-pass PDF made before the layout is delivered (the previous layout's copy is kept, older ones are
-removed); `build/bg/<jobname>.pdf` is a link to the latest one and `<jobname>.log` a copy of its
+pass PDF made before the layout is delivered (the two previous layouts' copies are kept, older ones
+are removed); `build/bg/<jobname>.pdf` is a link to the latest one and `<jobname>.log` a copy of its
 log, for hosts that name these files themselves. Nothing writes those files in place. The path is
 given whenever any page of the layout is degraded, changed in this layout or not.
 
@@ -156,6 +156,21 @@ more pass on it and checks units, placements and (with `--raster`) the rendered 
 reference container a 111-page document with 120 pictures passes in 18 s instead of 45 s. The
 live engine uses the same cache (fast path, step 3), so a paragraph that shares its unit with a
 picture stays within the fast budget.
+
+## Debugging an engine failure
+
+`SessionConfig::debug_dir` (C ABI `"debug_dir"`, `rtex serve --debug-dir`, or `$RTEX_DEBUG_DIR`)
+turns on diagnostics. Every engine failure (watchdog, state fingerprint mismatch, crash, protocol
+error) writes `<debug_dir>/engine-<time>-g<generation>-par<id>/` with `report.json` (reason,
+unit, versions, timeout, server banner), `source.tex` (the exact text sent), `context.json`,
+`pics.json` (picture cache entries), and the server's driver, preamble copy, TeX log and
+`rtex-serve-g<generation>.trace`: one flushed line per request stage (`begin`, `mark` after the
+context replay, `finish`) and per font load with its cost, so a hung request shows the last stage
+it reached and whether a font was loading, even though the killed process's log tail is lost
+(LuaTeX ignores no signal politely: SIGINT ends it without a word, so the watchdog kills
+outright). With the trace on, the server also runs with `\tracingmacros=1`, so a macro loop
+shows in the log's last flushed block. `requests.log` gets one line per live compile (unit,
+status, rows, TeX and total time, cached pictures). The event's `reason` names the bundle.
 
 ## Guarantees and their evidence
 
