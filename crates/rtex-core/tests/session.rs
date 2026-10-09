@@ -1229,3 +1229,92 @@ fn probe_mode_verifies_and_demotes() {
     assert_eq!(r5.routed, "background", "{:?}", r5.reasons);
     s.close();
 }
+
+/// A paragraph typed fresh after a heading, where the paragraph before the heading ends in
+/// a display formula: it is placed below the heading at the text margin, not after the
+/// formula's centered row (what a host saw as the live unit drawn over the formula).
+#[test]
+fn a_fresh_paragraph_after_a_heading_is_placed_below_it() {
+    if let Err(e) = rtex_core::texlive::TexLive::discover() {
+        eprintln!("SKIP: {e}");
+        return;
+    }
+    let root =
+        std::env::temp_dir().join(format!("rtex-fresh-after-heading-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nA paragraph that ends in a display:\n\\[ a = b + c \\]\n\n\\section{Heading}\nBody paragraph after the heading, long enough to be a real line of text.\n\\end{document}\n",
+    )
+    .unwrap();
+    let mut cfg = SessionConfig::new(&project, "main.tex");
+    cfg.build_dir = root.join("build");
+    cfg.fast_budget = Duration::from_millis(5000);
+    let s = Session::open(cfg).unwrap();
+    let Event::LayoutUpdate { placements, .. } = wait_layout(&s) else {
+        unreachable!()
+    };
+    let spans = s.spans("main.tex");
+    let heading = spans
+        .iter()
+        .find(|sp| sp.kind == rtex_core::document::SpanKind::Heading)
+        .expect("a heading span");
+    let body = spans
+        .iter()
+        .find(|sp| sp.range.start >= heading.range.end)
+        .expect("the body span");
+    let place = |id| {
+        placements
+            .iter()
+            .find(|p| p.par_id == id)
+            .and_then(|p| p.fragments.first())
+            .map(|f| (f.xs[0], f.baselines[0], *f.baselines.last().unwrap()))
+            .expect("a placement")
+    };
+    let (body_x, _, _) = place(body.id);
+    let (_, _, heading_last) = place(heading.id);
+    // a new paragraph typed right after the heading line
+    let text = s.document_text("main.tex").unwrap();
+    let pos = text.find("\\section{Heading}\n").unwrap() + "\\section{Heading}\n".len();
+    let r = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: pos,
+                end_byte: pos,
+                text: "A paragraph typed fresh after the heading.\n\n".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(r.routed, "fast", "{:?}", r.reasons);
+    assert_eq!(r.outcome.added.len(), 1, "{:?}", r.outcome);
+    let fresh = r.outcome.added[0];
+    let (ev, _) = wait(
+        &s,
+        60,
+        |e| matches!(e, Event::ParagraphUpdate { par_id, .. } if *par_id == fresh),
+    );
+    let Some(Event::ParagraphUpdate {
+        status, fragments, ..
+    }) = ev
+    else {
+        panic!("no update for the fresh paragraph")
+    };
+    assert_eq!(status, "ok");
+    let f = &fragments[0];
+    assert!(f.approximate);
+    assert_eq!(
+        f.xs[0], body_x,
+        "placed at the text margin, like the body paragraph"
+    );
+    assert!(
+        f.baselines[0] > heading_last,
+        "placed below the heading (baseline {} vs heading {})",
+        f.baselines[0],
+        heading_last
+    );
+    s.close();
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -478,7 +478,9 @@ impl LayoutStore {
     /// neighbouring unit that has one. `after`: the rows follow the parent's rows, of which the
     /// parent currently shows `parent_rows` (its last fast result; its placement count when
     /// unknown) — exact for consecutive paragraphs with the same baselineskip and no parskip;
-    /// otherwise the rows end one baselineskip above the parent's first row. Always approximate.
+    /// otherwise the rows end one baselineskip above the parent's first row. The x is the
+    /// parent's left edge (the leftmost of its rows: a display row or a centered line is not
+    /// where the text starts). Always approximate.
     pub fn fragments_relative(
         &self,
         parent: ParaId,
@@ -493,22 +495,23 @@ impl LayoutStore {
         }
         let bs = eu.baselineskip().max(1);
         let (_, fy) = rows[0];
-        let (page, ax, ay) = if after {
+        let left = pl.iter().map(|p| p.x).min().unwrap();
+        let (page, ay) = if after {
             let idx = parent_rows.unwrap_or(pl.len() as i64).max(0) as usize;
             if idx < pl.len() {
-                (pl[idx].page, pl[idx].x, pl[idx].y)
+                (pl[idx].page, pl[idx].y)
             } else {
                 let last = pl.last().unwrap();
                 (
                     last.page,
-                    last.x,
                     last.y + (idx as i64 - (pl.len() as i64 - 1)) * bs,
                 )
             }
         } else {
             let (_, ly) = rows[rows.len() - 1];
-            (pl[0].page, pl[0].x, pl[0].y - bs - (ly - fy))
+            (pl[0].page, pl[0].y - bs - (ly - fy))
         };
+        let ax = left;
         Some(Self::fragments_at(page, ax, ay, rows))
     }
 

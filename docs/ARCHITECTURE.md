@@ -56,9 +56,10 @@ in order, the first one provides the context, and the fast path typesets the spa
    layout unit), **borrows** the context of the nearest paragraph unit before it (after it when there is none):
    same parameters, fonts and counters, with the paragraph-start state of a paragraph that follows
    a paragraph (or a heading when a heading span precedes it); an environment is told from a
-   paragraph by the context's `kind`/`name`. Its rows are placed right after the parent's current
-   rows (exact for consecutive paragraphs with the same baselineskip and no parskip),
-   `approximate` and `context_stale`; the next layout replaces the borrowed context with a
+   paragraph by the context's `kind`/`name`. Its rows are placed after the nearest span before it
+   that has rows (a heading, an environment, a paragraph, or a unit itself live on a borrowed
+   context such as the other half of a split), at that span's left edge (exact for consecutive
+   paragraphs with the same baselineskip and no parskip), `approximate` and `context_stale`; the next layout replaces the borrowed context with a
    captured one. A float typed fresh waits for the next pass (its box state comes from the
    capture only).
 3. The request goes straight to the server when it is idle and already holds the unit's context

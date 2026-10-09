@@ -1125,11 +1125,12 @@ impl Session {
     /// typed fresh): a plain body paragraph borrows the parameters, fonts and counters of the
     /// nearest paragraph unit before it (after it when there is none) with the paragraph-start
     /// state of a paragraph that follows a paragraph, or a heading when a heading span precedes
-    /// it. A span before it that is itself live on a borrowed context (the other half of a
-    /// split, the previous new paragraph) lends its context's parent and anchors the rows: the
-    /// new unit follows it instead of landing on it. The next layout replaces the borrowed
-    /// context with a captured one. Returns (unit the context came from, span the rows are
-    /// placed against, whether they follow it, context).
+    /// it. The rows are placed after the nearest span before it that has rows at all: a layout
+    /// unit of any kind (a heading, an environment, a paragraph) or a span itself live on a
+    /// borrowed context (the other half of a split, the previous new paragraph), so the new
+    /// unit follows what precedes it instead of landing on a heading or on the other half. The
+    /// next layout replaces the borrowed context with a captured one. Returns (unit the context
+    /// came from, span the rows are placed against, whether they follow it, context).
     fn derive_context(
         &self,
         fb: &FileBuf,
@@ -1161,24 +1162,39 @@ impl Session {
                 && everypar_allowed(&eu.captured.everypar);
             ok.then_some(eu)
         };
-        let before = {
-            // (a split's halves are routed in document order within one edit: the second
-            // chains onto the first before its result exists; the engine delivers them in
-            // that order, and the delivery falls back to the parent's rows otherwise)
-            let derived = self.shared.derived.lock();
-            fb.spans[..idx].iter().rev().find_map(|sp| {
-                if let Some(eu) = usable(sp) {
-                    return Some((sp.id, sp.id, true, eu));
-                }
-                let (parent, _, _) = derived.get(&sp.id)?;
-                layout.unit(*parent).map(|eu| (*parent, sp.id, true, eu))
-            })
-        };
-        let (parent, anchor, after, eu) = match before {
-            Some(b) => b,
+        // the context: the nearest paragraph unit before (after when there is none)
+        let ctx_before = fb.spans[..idx]
+            .iter()
+            .rev()
+            .find_map(|sp| usable(sp).map(|eu| (sp.id, eu)));
+        let (parent, eu, ctx_after) = match ctx_before {
+            Some((id, eu)) => (id, eu, false),
             None => fb.spans[idx + 1..]
                 .iter()
-                .find_map(|sp| usable(sp).map(|eu| (sp.id, sp.id, false, eu)))?,
+                .find_map(|sp| usable(sp).map(|eu| (sp.id, eu, true)))?,
+        };
+        // the anchor: the nearest span before with rows, whatever its kind, or one live on a
+        // borrowed context (a split's halves are routed in document order within one edit: the
+        // second chains onto the first before its result exists; the engine delivers them in
+        // that order, and the delivery falls back to the context's parent otherwise)
+        let anchor = {
+            let derived = self.shared.derived.lock();
+            fb.spans[..idx].iter().rev().find_map(|sp| {
+                if matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) {
+                    return None;
+                }
+                if layout.unit(sp.id).is_some_and(|u| u.rows() > 0) || derived.contains_key(&sp.id)
+                {
+                    Some(sp.id)
+                } else {
+                    None
+                }
+            })
+        };
+        let (anchor, after) = match anchor {
+            Some(a) => (a, true),
+            None if ctx_after => (parent, false),
+            None => (parent, true),
         };
         let mut json = eu.context_json();
         let after_heading = idx > 0 && fb.spans[idx - 1].kind == SpanKind::Heading;

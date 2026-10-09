@@ -27,7 +27,10 @@
   cached pictures in place); before, the split halted the fast path (`NoContext`) until the
   next pass. Floats, and units with vocabulary that only a probe against the layout could
   verify, still wait for the pass; a unit let through for its cached pictures is demoted when
-  the engine drew one after all.
+  the engine drew one after all. A borrowed unit is placed after the nearest preceding span
+  with rows, a heading included, at its left edge (it used to follow the nearest paragraph's
+  last row, which put a paragraph typed after a heading over the heading, at the x of a
+  centered display formula); a split's halves follow each other.
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried
