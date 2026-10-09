@@ -231,3 +231,43 @@ fn leaked_definitions_are_reported() {
     s.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The server must be able to finish writing a result while the host is not reading it yet: a
+/// FIFO holds 64 KB on Linux and less on macOS, where a 9 KB display list blocked the server's
+/// write and the host's watchdog killed it. Here a result larger than any FIFO capacity is
+/// produced and nothing is read for two seconds; the server's trace must show it was sent
+/// (the host drains the FIFO on a reader thread), and the result then arrives intact.
+#[test]
+fn a_large_result_is_drained_while_the_host_is_not_reading() {
+    let Some((tl, root, project)) = setup("drain") else {
+        return;
+    };
+    let cap = run_capture(&tl, &project, "main.tex", &root.join("cap"), true).unwrap();
+    let (seq, ctx) = paragraph_units(&cap, &project).remove(0);
+    let serve = root.join("serve");
+    let mut s =
+        FastServer::spawn_with(&tl, &project, &serve, &preamble(&project), 1, None, true).unwrap();
+    s.set_context(seq, &ctx).unwrap();
+    // a paragraph long enough for a display list well beyond 64 KB
+    let words = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ";
+    let source = words.repeat(150);
+    let req = s.next_req_id();
+    s.send_compile(req, seq, &source, "").unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let trace = std::fs::read_to_string(serve.join("rtex-serve-g1.trace")).unwrap();
+    assert!(
+        trace.contains(&format!("finish: result sent req {req}")),
+        "the server is still blocked writing its result while the host is not reading:\n{}",
+        trace.lines().rev().take(6).collect::<Vec<_>>().join("\n")
+    );
+    match s.recv().unwrap() {
+        Response::Result(cr) => {
+            assert_eq!(cr.status, "ok", "{:?}", cr.errors);
+            assert!(cr.dl_bytes > 64 * 1024, "result of {} bytes", cr.dl_bytes);
+            assert!(cr.dl.map(|d| d.lines.len()).unwrap_or(0) > 20);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let _ = s.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

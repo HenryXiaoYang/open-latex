@@ -143,9 +143,14 @@ server exits with status 3 right after sending this; the host restarts it with a
 
 ## Host-side latency notes
 
-The host (`FastServer`) busy-polls the FIFO for up to 3 ms after sending a compile before
-blocking (`RTEX_SPIN_US` overrides; 0 disables): waking a blocked thread costs tens of µs, more
-in virtual machines, and the reply is known to be imminent. `Session::apply_edit` writes the
+The host (`FastServer`) never polls the FIFO: a reader thread drains it with blocking reads,
+frame by frame, into a channel, and the engine thread waits on that channel (busy-checking it,
+yielding, for up to 3 ms after sending a compile before blocking; `RTEX_SPIN_US` overrides, 0
+disables). On macOS `poll` did not report a frame that arrived while it waited and a FIFO holds
+less than a large display list, so the server blocked writing a 9 KB result while the host
+waited out its watchdog; draining continuously means the server can always finish writing,
+whatever the FIFO's size and whoever is waiting. The hand-off costs about 0.1–0.2 ms on a long
+paragraph and nothing measurable on a short one. `Session::apply_edit` writes the
 compile frame straight to the server's stdin when the server is idle and already holds the
 paragraph's context, so no engine-thread wake-up sits on the keystroke path; otherwise the
 request is queued (coalesced per paragraph) for the engine thread.

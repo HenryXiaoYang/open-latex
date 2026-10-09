@@ -131,10 +131,21 @@ pub struct RoundTrip {
     pub t_pack: Duration,
 }
 
+/// A frame body read from the response FIFO (everything after the `u32` length), or the read
+/// error that ended the stream.
+type Frame = std::io::Result<Vec<u8>>;
+
+/// Largest frame the reader accepts (a corrupt length must not allocate gigabytes).
+const MAX_FRAME: usize = 256 << 20;
+
 pub struct FastServer {
     child: Child,
     stdin: std::process::ChildStdin,
-    resp: BufReader<File>,
+    /// Frames from the response FIFO, in order, drained by a dedicated reader thread with
+    /// blocking reads (see `spawn_reader`).
+    frames: crossbeam_channel::Receiver<Frame>,
+    /// A frame `wait_readable` took off the channel, not yet parsed.
+    pending: Option<Frame>,
     pub generation: u64,
     pub work_dir: PathBuf,
     pub banner: String,
@@ -144,7 +155,46 @@ pub struct FastServer {
     /// How long to busy-poll for a reply before blocking (default 3 ms; zero disables).
     pub spin: Duration,
     next_req: i64,
-    frame_buf: Vec<u8>,
+}
+
+/// Drain the response FIFO on a thread of its own: blocking `read`s, frame by frame, into a
+/// channel. Nothing polls the FIFO: on macOS `poll` did not report a frame that arrived while
+/// it waited (only data already there), and a FIFO there holds less than a large result, so
+/// the server blocked writing a 9 KB display list while the host waited out its watchdog.
+/// Draining continuously also means the server never blocks on a full FIFO. The thread ends at
+/// end of file (the server exited or was killed) or when the server object is dropped.
+fn spawn_reader(f: File) -> Result<crossbeam_channel::Receiver<Frame>> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::Builder::new()
+        .name("rtex-fifo-reader".into())
+        .spawn(move || {
+            let mut r = BufReader::with_capacity(1 << 16, f);
+            loop {
+                let mut hdr = [0u8; 4];
+                if let Err(e) = r.read_exact(&mut hdr) {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+                let n = u32::from_le_bytes(hdr) as usize;
+                if n > MAX_FRAME {
+                    let _ = tx.send(Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("response frame of {n} bytes"),
+                    )));
+                    return;
+                }
+                let mut buf = vec![0u8; n];
+                if let Err(e) = r.read_exact(&mut buf) {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+                if tx.send(Ok(buf)).is_err() {
+                    return;
+                }
+            }
+        })
+        .context("spawning the response reader")?;
+    Ok(rx)
 }
 
 impl FastServer {
@@ -242,7 +292,8 @@ impl FastServer {
         let mut s = FastServer {
             child,
             stdin,
-            resp: BufReader::new(resp),
+            frames: spawn_reader(resp)?,
+            pending: None,
             generation,
             work_dir: work_dir.to_path_buf(),
             banner: String::new(),
@@ -254,7 +305,6 @@ impl FastServer {
                 .map(Duration::from_micros)
                 .unwrap_or(Duration::from_millis(3)),
             next_req: 1,
-            frame_buf: Vec::with_capacity(1 << 16),
         };
         match s.recv()? {
             Response::Ready { banner, .. } => {
@@ -295,41 +345,58 @@ impl FastServer {
         Ok(())
     }
 
-    /// Wait until a frame header is readable or `timeout` elapses (watchdog). On timeout the
-    /// server is killed; the caller restarts it with a new generation.
+    /// Wait until a frame has arrived or `timeout` elapses (watchdog). On timeout the server
+    /// is killed; the caller restarts it with a new generation.
     fn wait_readable(&mut self, timeout: Duration) -> Result<()> {
-        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-        use std::os::fd::AsFd;
-        if self.resp.buffer().len() >= 4 {
+        use crossbeam_channel::{RecvTimeoutError, TryRecvError};
+        if self.pending.is_some() {
             return Ok(());
         }
+        let ended = || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the response reader ended",
+            ))
+        };
         let deadline = Instant::now() + timeout;
-        // Bounded busy-poll: the reply to a compile is expected within a few ms, and waking a
-        // blocked thread costs tens of µs on most systems (more in VMs).
+        // Bounded busy-poll of the channel: the reply to a compile is expected within a few
+        // ms, and waking a blocked thread costs tens of µs on most systems (more in VMs).
         if !self.spin.is_zero() {
             let spin_until = Instant::now() + self.spin;
             while Instant::now() < spin_until {
-                let mut fds = [PollFd::new(self.resp.get_ref().as_fd(), PollFlags::POLLIN)];
-                if poll(&mut fds, PollTimeout::ZERO)? > 0 {
-                    return Ok(());
+                match self.frames.try_recv() {
+                    Ok(f) => {
+                        self.pending = Some(f);
+                        return Ok(());
+                    }
+                    // yield, not a pure spin: the reader thread that delivers the frame
+                    // needs a core, and a busy host must not keep it waiting
+                    Err(TryRecvError::Empty) => std::thread::yield_now(),
+                    Err(TryRecvError::Disconnected) => {
+                        self.pending = Some(ended());
+                        return Ok(());
+                    }
                 }
-                std::hint::spin_loop();
             }
         }
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+        match self
+            .frames
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(f) => {
+                self.pending = Some(f);
+                Ok(())
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                self.pending = Some(ended());
+                Ok(())
+            }
+            Err(RecvTimeoutError::Timeout) => {
                 self.kill();
                 bail!(
                     "engine watchdog: no response within {:?}; server killed",
                     timeout
                 );
-            }
-            let ms = remaining.as_millis().min(u16::MAX as u128) as u16;
-            let mut fds = [PollFd::new(self.resp.get_ref().as_fd(), PollFlags::POLLIN)];
-            let n = poll(&mut fds, PollTimeout::from(ms))?;
-            if n > 0 {
-                return Ok(());
             }
         }
     }
@@ -341,17 +408,17 @@ impl FastServer {
 
     fn recv_timed(&mut self) -> Result<Response> {
         let t0 = Instant::now();
-        let mut hdr = [0u8; 4];
-        self.resp
-            .read_exact(&mut hdr)
-            .context("server closed the response channel")?;
-        let n = u32::from_le_bytes(hdr) as usize;
-        let mut buf = std::mem::take(&mut self.frame_buf);
-        buf.resize(n, 0);
-        let res = self.resp.read_exact(&mut buf);
-        let r = self.parse_frame(&buf, t0, res);
-        self.frame_buf = buf;
-        r
+        let frame = match self.pending.take() {
+            Some(f) => f,
+            None => self.frames.recv().unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the response reader ended",
+                ))
+            }),
+        };
+        let buf = frame.context("server closed the response channel")?;
+        self.parse_frame(&buf, t0, Ok(()))
     }
 
     fn parse_frame(

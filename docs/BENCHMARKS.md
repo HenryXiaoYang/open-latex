@@ -205,7 +205,7 @@ container:
 |---|---|---|---|
 | raw IPC (ping) | 0.090 ms | 0.015 ms | raw compile frame instead of JSON; `string.format` header |
 | server overhead around the box build (decode, prepare, fingerprint, header) | ≈ 90 µs | ≈ 35 µs | `\luafunction` slots, one fingerprint, preprocessed contexts |
-| host wait after sending | blocked `poll` | busy-poll ≤ 3 ms | ≈ 60 µs saved per round trip in this VM |
+| host wait after sending | blocked `poll` | busy-poll ≤ 3 ms | ≈ 60 µs saved per round trip in this VM (since replaced by a FIFO reader thread and a channel wait, for macOS: ≈ +0.15 ms on a long paragraph, none measurable on a short one) |
 | direct round trip | 0.446 ms | 0.33 ms | |
 | session: thread hops + event delivery | 0.111 ms | 0.02–0.05 ms | `apply_edit` writes the frame to the idle server itself |
 | session: `apply_edit` (medium paragraph near the preamble) | 0.140 ms | 0.045 ms | windowed re-segmentation next to the preamble |

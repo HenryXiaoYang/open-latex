@@ -45,6 +45,12 @@
   traceback and answered at once as an `internal` error result; the unit goes to the pass
   until the next layout and the engine keeps running. `finish` traces its stages, so a stall
   shows where it stopped (tests/internal_error.rs).
+- The host drains the server's response FIFO on a reader thread with blocking reads instead of
+  polling it. On macOS the server blocked writing a 9 KB display list (more than the FIFO
+  holds) while the host's `poll` never reported the frame: the watchdog killed the engine
+  after 5 s and the paragraph was quarantined. The traced stages of a bundle showed it
+  (traversal done, result never sent). tests/engine_robustness.rs produces a result larger
+  than any FIFO and reads nothing for two seconds; the old transport fails it.
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried
