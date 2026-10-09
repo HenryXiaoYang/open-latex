@@ -38,19 +38,24 @@ impl Session {
                 reasons.push(reason_str(&r));
             }
         }
-        if let Some(why) = self.shared.leaky.lock().get(&span.id) {
+        if let Some(why) = self
+            .shared
+            .live
+            .lock()
+            .get(span.id)
+            .and_then(|u| u.leak.clone())
+        {
             reasons.push(format!("unverified: {why}"));
         }
-        if let Some((_, why)) = self
+        if let Some(why) = self
             .shared
-            .internal_errors
+            .live
             .lock()
-            .get(&span.id)
-            .filter(|(lv, _)| *lv == layout.layout_version)
+            .internal_error_for(span.id, layout.layout_version)
         {
             reasons.push(format!(
                 "EngineFailed: internal error, retried after the next layout ({})",
-                first_line_of(why)
+                first_line_of(&why)
             ));
         }
         let mut seq = 0i64;
@@ -76,11 +81,9 @@ impl Session {
                 if needs_probe {
                     let verdict = self
                         .shared
-                        .probe
+                        .live
                         .lock()
-                        .get(&span.id)
-                        .filter(|(lv, _)| *lv == layout.layout_version)
-                        .map(|(_, v)| v.clone());
+                        .probe_for(span.id, layout.layout_version);
                     match verdict {
                         Some(ProbeVerdict::Verified) => {}
                         Some(ProbeVerdict::Mismatch(why)) | Some(ProbeVerdict::Leak(why)) => {
@@ -111,7 +114,13 @@ impl Session {
                 if !shape_ok {
                     reasons.push(reason_str(&Reason::KindMismatch));
                 }
-                if let Some((lv, ms)) = self.shared.slow_units.lock().get(&span.id).copied() {
+                if let Some((lv, ms)) = self
+                    .shared
+                    .live
+                    .lock()
+                    .get(span.id)
+                    .and_then(|u| u.over_budget)
+                {
                     if lv == QUARANTINED {
                         reasons.push("EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes".into());
                     } else if lv == layout.layout_version {
@@ -175,7 +184,7 @@ impl Session {
             return (None, reasons);
         }
         if let Some(d) = derived_from {
-            self.shared.derived.lock().insert(span.id, d);
+            self.shared.live.lock().unit(span.id).derived = Some(d);
         }
         let req = FastRequest {
             warmup: false,
@@ -347,13 +356,12 @@ impl Session {
         // second chains onto the first before its result exists; the engine delivers them in
         // that order, and the delivery falls back to the context's parent otherwise)
         let anchor = {
-            let derived = self.shared.derived.lock();
+            let live = self.shared.live.lock();
             fb.spans[..idx].iter().rev().find_map(|sp| {
                 if matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) {
                     return None;
                 }
-                if layout.unit(sp.id).is_some_and(|u| u.rows() > 0) || derived.contains_key(&sp.id)
-                {
+                if layout.unit(sp.id).is_some_and(|u| u.rows() > 0) || live.is_derived(sp.id) {
                     Some(sp.id)
                 } else {
                     None

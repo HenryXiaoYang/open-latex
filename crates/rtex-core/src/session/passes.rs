@@ -560,8 +560,6 @@ pub(super) fn deliver_layout(
         let mut layout = s.layout.lock();
         let changed = match layout.install(&cap, spans, rev) {
             Ok(c) => {
-                // verdicts are keyed by layout version; drop the old ones while the lock is held
-                s.probe.lock().clear();
                 // the PDF hosts render degraded pages from: a copy per layout, since the next
                 // pass (started right after this one, a provisional layout's in particular)
                 // rewrites the pass PDF while the host reads it
@@ -717,13 +715,9 @@ pub(super) fn deliver_layout(
             }
         }
     }
-    // commit overlays older than the snapshot; borrowed contexts and live row counts are
-    // superseded by the new placements
-    s.overlays.lock().retain(|_, r| *r > rev);
-    s.derived.lock().clear();
-    s.live_rows.lock().clear();
-    s.live_place.lock().clear();
-    s.counters_seen.lock().clear();
+    // borrowed contexts, live rows and placements are superseded by the new placements, and
+    // facts tagged with an older layout no longer apply
+    s.live.lock().on_new_layout(versions.layout_version);
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !aux_stable {

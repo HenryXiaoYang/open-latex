@@ -288,12 +288,7 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
                     layout.layout_version,
                 )
             };
-            let cached = s
-                .probe
-                .lock()
-                .get(&req.par_id)
-                .filter(|(v, _)| *v == lv)
-                .map(|(_, v)| v.clone());
+            let cached = s.live.lock().probe_for(req.par_id, lv);
             let verdict = match cached {
                 Some(v) => v,
                 None => {
@@ -373,7 +368,7 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
                             continue;
                         }
                     };
-                    s.probe.lock().insert(req.par_id, (lv, v.clone()));
+                    s.live.lock().unit(req.par_id).probe = Some((lv, v.clone()));
                     v
                 }
             };
@@ -386,7 +381,7 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
                 }
                 ProbeVerdict::Leak(why) => {
                     drop(link);
-                    s.leaky.lock().insert(req.par_id, why.clone());
+                    s.live.lock().unit(req.par_id).leak = Some(why.clone());
                     demote_span(&s, &req, &why);
                     // the server's state is no longer the document's: start over
                     s.engine_generation.fetch_add(1, Ordering::SeqCst);
@@ -418,7 +413,6 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
 /// revision; the change counts as a background change for the spans after it), tell the host,
 /// and schedule the pass that will typeset it.
 pub(super) fn demote_span(s: &Shared, req: &FastRequest, why: &str) {
-    s.overlays.lock().remove(&req.par_id);
     {
         let files = s.files.lock();
         if let Some((name, line)) = files.iter().find_map(|(name, fb)| {
@@ -479,7 +473,7 @@ pub(super) fn engine_failed(
     // retrying a unit that hung or crashed the engine would kill the server on every keystroke
     s.bg_signal.0.send(BgCmd::Pass).ok();
     if !req.warmup {
-        s.slow_units.lock().insert(req.par_id, (QUARANTINED, 0));
+        s.live.lock().unit(req.par_id).over_budget = Some((QUARANTINED, 0));
         s.events
             .send(Event::BackgroundScheduled {
                 par_id: Some(req.par_id),
@@ -489,9 +483,6 @@ pub(super) fn engine_failed(
             .ok();
     }
 }
-
-/// `slow_units` layout-version marker for a unit quarantined after an engine failure.
-pub(super) const QUARANTINED: u64 = u64::MAX;
 
 /// The per-compile watchdog. With macro tracing on (`$RTEX_TRACE_MACROS` with a debug
 /// directory) every macro expansion is written to the TeX log, which makes a heavy compile (a
@@ -525,9 +516,11 @@ pub(super) fn handle_result(
         }
         let lv = s.layout.lock().layout_version;
         let first = s
-            .internal_errors
+            .live
             .lock()
-            .insert(req.par_id, (lv, msg.to_string()))
+            .unit(req.par_id)
+            .internal_error
+            .replace((lv, msg.to_string()))
             .is_none_or(|(prev, _)| prev != lv);
         log::warn!("{:?}: internal error in the server: {msg}", req.par_id);
         // one bundle per unit and layout, not one per keystroke
@@ -546,7 +539,7 @@ pub(super) fn handle_result(
         // mentions, so the server is no longer the document's state whatever else happened.
         // Demote the span until the preamble changes and restart the engine.
         let why = format!("the unit redefines \\{}", cr.leaks.join(", \\"));
-        s.leaky.lock().insert(req.par_id, why.clone());
+        s.live.lock().unit(req.par_id).leak = Some(why.clone());
         demote_span(s, &req, &why);
         s.engine_generation.fetch_add(1, Ordering::SeqCst);
         s.pending_signal.0.send(()).ok();
@@ -662,10 +655,10 @@ pub(super) fn handle_result(
             None => {
                 // a borrowed context: placed relative to the anchor's rows (a layout unit's
                 // placements, or the live placement of a unit on a borrowed context itself)
-                let derived = s.derived.lock().get(&req.par_id).copied();
+                let derived = s.live.lock().get(req.par_id).and_then(|u| u.derived);
                 let frags = derived
                     .and_then(|(parent, anchor, after)| {
-                        let placed = s.live_place.lock().get(&anchor).copied();
+                        let placed = s.live.lock().get(anchor).and_then(|u| u.place);
                         match placed.filter(|_| layout.unit(anchor).is_none()) {
                             Some((page, x, last)) => {
                                 let bs = layout.unit(parent)?.baselineskip().max(1);
@@ -678,7 +671,7 @@ pub(super) fn handle_result(
                                 } else {
                                     parent
                                 };
-                                let live = s.live_rows.lock().get(&a).copied();
+                                let live = s.live.lock().get(a).and_then(|u| u.rows);
                                 layout.fragments_relative(a, live, after, &rows)
                             }
                         }
@@ -719,10 +712,14 @@ pub(super) fn handle_result(
             ),
         );
     }
-    s.live_rows.lock().insert(req.par_id, dl.lines.len() as i64);
-    if let Some(f) = fragments.last() {
-        if let (Some(x), Some(last)) = (f.xs.first(), f.baselines.last()) {
-            s.live_place.lock().insert(req.par_id, (f.page, *x, *last));
+    {
+        let mut live = s.live.lock();
+        let u = live.unit(req.par_id);
+        u.rows = Some(dl.lines.len() as i64);
+        if let Some(f) = fragments.last() {
+            if let (Some(x), Some(last)) = (f.xs.first(), f.baselines.last()) {
+                u.place = Some((f.page, *x, *last));
+            }
         }
     }
     if req.expected_rows != dl.lines.len() as i64 {
@@ -742,9 +739,13 @@ pub(super) fn handle_result(
             .unit(req.par_id)
             .map(|u| u.advanced())
             .unwrap_or_default();
-        let mut seen = s.counters_seen.lock();
-        let prev = seen.get(&req.par_id).cloned().unwrap_or(expected);
-        seen.insert(req.par_id, cr.counters.clone());
+        let prev = s
+            .live
+            .lock()
+            .unit(req.par_id)
+            .counters
+            .replace(cr.counters.clone())
+            .unwrap_or(expected);
         prev != cr.counters
     };
     if stale || counters_changed || !reasons.is_empty() {
@@ -779,14 +780,20 @@ pub(super) fn handle_result(
             // a layout pass is using the CPU: a slow round trip now says nothing about the unit
             return;
         }
-        let mut cand = s.slow_candidates.lock();
-        let n = cand.entry(req.par_id).or_insert(0);
-        *n += 1;
-        if *n >= STRIKES {
-            cand.remove(&req.par_id);
-            s.slow_units
-                .lock()
-                .insert(req.par_id, (req.versions.layout_version, total_us / 1000));
+        // one lock scope: the strikes and the mark are the same record
+        let marked = {
+            let mut live = s.live.lock();
+            let u = live.unit(req.par_id);
+            u.slow_strikes += 1;
+            if u.slow_strikes >= STRIKES {
+                u.slow_strikes = 0;
+                u.over_budget = Some((req.versions.layout_version, total_us / 1000));
+                true
+            } else {
+                false
+            }
+        };
+        if marked {
             s.events
                 .send(Event::BackgroundScheduled {
                     par_id: Some(req.par_id),
@@ -796,6 +803,6 @@ pub(super) fn handle_result(
                 .ok();
         }
     } else {
-        s.slow_candidates.lock().remove(&req.par_id);
+        s.live.lock().unit(req.par_id).slow_strikes = 0;
     }
 }

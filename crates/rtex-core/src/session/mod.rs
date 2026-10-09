@@ -24,12 +24,14 @@ use std::time::{Duration, Instant};
 
 mod diag;
 mod engine_loop;
+mod live;
 mod passes;
 mod route;
 
 pub use diag::parse_log;
 use diag::*;
 use engine_loop::*;
+use live::*;
 use passes::*;
 
 #[derive(Debug, Clone)]
@@ -350,34 +352,11 @@ struct Shared {
     preamble_inputs: Mutex<std::collections::BTreeSet<String>>,
     /// Files read with `\input` anywhere (see `document::fast_source`).
     inputted: Mutex<std::collections::BTreeSet<String>>,
-    /// Units over the fast budget: par id → (layout_version when measured, ms).
-    slow_units: Mutex<HashMap<ParaId, (u64, u64)>>,
-    /// Units whose compile hit an internal error in the server: (layout version, message).
-    /// They wait for the pass until the next layout, then get another chance (the engine is
-    /// not restarted and the unit is not quarantined: the error is ours, not the unit's).
-    internal_errors: Mutex<HashMap<ParaId, (u64, String)>>,
-    /// Consecutive over-budget compiles per unit (the first ones may be loading fonts).
-    slow_candidates: Mutex<HashMap<ParaId, u32>>,
     edit_counter: AtomicU64,
     convergence: Mutex<Option<Convergence>>,
-    overlays: Mutex<HashMap<ParaId, Revision>>,
-    /// Spans typeset with a borrowed context: span → (parent span, rows follow the parent).
-    /// Spans compiled on a borrowed context: (unit the context came from, span the rows are
-    /// placed against, whether they follow it).
-    derived: Mutex<HashMap<ParaId, (ParaId, ParaId, bool)>>,
-    /// Counters the last fast compile of a span advanced (what the layout saw until then): a
-    /// change renumbers what follows and needs a pass.
-    counters_seen: Mutex<HashMap<ParaId, BTreeMap<String, i64>>>,
-    /// Probe verdicts (probe mode): span → (layout version the verdict is for, verdict).
-    probe: Mutex<HashMap<ParaId, (u64, ProbeVerdict)>>,
-    /// Spans whose compile changed the meaning of a control sequence (a definition leaked):
-    /// background-only until the preamble changes.
-    leaky: Mutex<HashMap<ParaId, String>>,
-    /// Row count of the latest fast result per span (anchors paragraphs placed after it).
-    live_rows: Mutex<HashMap<ParaId, i64>>,
-    /// Where the last live result of a span was placed: (page, x of its first row, its last
-    /// baseline); a unit typed after it on a borrowed context chains onto it.
-    live_place: Mutex<HashMap<ParaId, (i64, i64, i64)>>,
+    /// What the live path records per span between layouts (borrowed contexts, live rows
+    /// and placements, probe verdicts, budget marks, leaks...), with their expiry rules.
+    live: Mutex<LiveUnits>,
     /// Standby background engine (preamble loaded, waiting for the body).
     standby: Mutex<Option<WarmEngine>>,
     /// Directory of the last finished background pass (its aux family seeds the next pass;
@@ -474,18 +453,9 @@ impl Session {
             policy: Mutex::new(policy),
             preamble_inputs: Mutex::new(preamble_inputs),
             inputted: Mutex::new(crate::document::inputted_files(&texts)),
-            slow_units: Mutex::new(HashMap::new()),
-            internal_errors: Mutex::new(HashMap::new()),
-            slow_candidates: Mutex::new(HashMap::new()),
             edit_counter: AtomicU64::new(0),
+            live: Mutex::new(LiveUnits::default()),
             convergence: Mutex::new(None),
-            overlays: Mutex::new(HashMap::new()),
-            derived: Mutex::new(HashMap::new()),
-            counters_seen: Mutex::new(HashMap::new()),
-            probe: Mutex::new(HashMap::new()),
-            leaky: Mutex::new(HashMap::new()),
-            live_rows: Mutex::new(HashMap::new()),
-            live_place: Mutex::new(HashMap::new()),
             standby: Mutex::new(None),
             last_pass_dir: Mutex::new(None),
             pic_index: Mutex::new(None),
@@ -712,10 +682,7 @@ impl Session {
             if let Some(w) = self.shared.standby.lock().take() {
                 w.kill();
             }
-            self.shared.overlays.lock().clear();
-            self.shared.slow_units.lock().clear();
-            self.shared.probe.lock().clear();
-            self.shared.leaky.lock().clear();
+            self.shared.live.lock().on_preamble_change();
             self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
             self.shared.pending.lock().clear();
             self.shared.pending_signal.0.send(()).ok();
@@ -838,7 +805,6 @@ impl Session {
             });
         };
         for req in requests {
-            self.shared.overlays.lock().insert(req.par_id, rev);
             self.dispatch_fast(req);
         }
         // a boundary change always needs a pass (pagination of what follows); so does a span

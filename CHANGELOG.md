@@ -45,6 +45,11 @@
   traceback and answered at once as an `internal` error result; the unit goes to the pass
   until the next layout and the engine keeps running. `finish` traces its stages, so a stall
   shows where it stopped (tests/internal_error.rs).
+- Internal: `session.rs` split into `session/{mod,route,engine_loop,passes,diag,live}.rs`; the
+  per-span facts of the live path (borrowed contexts, live rows and placements, counters seen,
+  probe verdicts, budget marks, internal errors, leaks), ten maps with their own clearing rules,
+  are one record per span with three explicit lifetimes (`session/live.rs`); the write-only
+  `overlays` map is gone.
 - The host drains the server's response FIFO on a reader thread with blocking reads instead of
   polling it. On macOS the server blocked writing a 9 KB display list (more than the FIFO
   holds) while the host's `poll` never reported the frame: the watchdog killed the engine

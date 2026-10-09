@@ -10,6 +10,7 @@ host app ──Rust API / C ABI──▶ Session (crates/rtex-core/src/session/m
                                 │  when it is idle
                                 ├─ background thread: snapshot → instrumented passes → LayoutStore
                                 │  (session/passes.rs, background.rs, layout.rs)
+                                ├─ live state: one record per span with its expiry rules (session/live.rs)
                                 ├─ diagnostics: debug bundles, requests.log, TeX log parsing (session/diag.rs)
                                 └─ events: ParagraphUpdate / LayoutUpdate / Diagnostics / EngineState / BackgroundScheduled / PdfExported
 tex/
