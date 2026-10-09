@@ -163,8 +163,10 @@ group (`\global`, `\xdef`, `\savebox`, `\pgfdeclarelayer` …) is never cached, 
 output spans lines or pages, one whose `\begin` does not start its line, pictures of a file
 `\input` twice, or anything when the sources (the preamble included) mention `remember picture`.
 Entries unused for four passes are evicted; a picture whose cached body did not end where the
-scan said is drawn for four passes before it is cached again. In trace mode (debug directory)
-`\tracingmacros` slows every compile: the fast budget is measured with it on. `rtex verify --pic-cache` builds a cache from a converged pass, runs one
+scan said is drawn for four passes before it is cached again. In probe mode a unit whose only
+vocabulary beyond the allow-list is picture environments the cache holds is not probed (a probe
+compiles the snapshot's text, whose pictures the current entries need not match, and would draw
+them); a compile of such a unit that draws a picture after all is demoted. `rtex verify --pic-cache` builds a cache from a converged pass, runs one
 more pass on it and checks units, placements and (with `--raster`) the rendered pages. On the
 reference container a 111-page document with 120 pictures passes in 18 s instead of 45 s. The
 live engine uses the same cache (fast path, step 3), so a paragraph that shares its unit with a
@@ -181,8 +183,10 @@ unit, versions, timeout, server banner), `source.tex` (the exact text sent), `co
 context replay, `finish`) and per font load with its cost, so a hung request shows the last stage
 it reached and whether a font was loading, even though the killed process's log tail is lost
 (LuaTeX ignores no signal politely: SIGINT ends it without a word, so the watchdog kills
-outright). With the trace on, the server also runs with `\tracingmacros=1`, so a macro loop
-shows in the log's last flushed block. `requests.log` gets one line per live compile (unit,
+outright). With `$RTEX_TRACE_MACROS=1` as well (opt-in), the server also runs with
+`\tracingmacros=1`, so a macro loop shows in the log's last flushed block; it makes a heavy
+compile (a pgfplots axis drawn) many times slower and the log grows without bound, so the
+watchdog is ten times longer while it is on. `requests.log` gets one line per live compile (unit,
 status, rows, TeX and total time, cached pictures). The event's `reason` names the bundle.
 
 ## Guarantees and their evidence

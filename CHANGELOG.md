@@ -11,8 +11,9 @@
   in the display list, never an image (hosts render the page from the PDF as for a drawn picture).
 - Debugging: `SessionConfig::debug_dir` (`"debug_dir"`, `rtex serve --debug-dir`,
   `$RTEX_DEBUG_DIR`) writes a bundle per engine failure (request source, context, picture
-  entries, server driver, preamble, TeX log, per-stage and per-font-load trace, `\tracingmacros`
-  on) and a `requests.log`; a server that fails to start leaves a bundle too. The debug extras
+  entries, server driver, preamble, TeX log, per-stage and per-font-load trace; `\tracingmacros`
+  only with `$RTEX_TRACE_MACROS=1`, with a ten times longer watchdog, since it made a drawn
+  pgfplots axis slow enough to trip the watchdog and kill the engine) and a `requests.log`; a server that fails to start leaves a bundle too. The debug extras
   install after the server's `ready` and under `pcall` (with luatexja loaded, wrapping
   luaotfload's font callback by name failed and kept the engine from ever starting).
 - The live engine reuses cached pictures too: a unit that contains a picture the cache holds
@@ -33,7 +34,10 @@
   centered display formula); a split's halves follow each other. A live placement that would
   fall off its page (above the top, past the bottom) is dropped and the unit waits for the
   pass, rather than drawing its rows and pictures at the page edge (a plot pinned to the page
-  top, a figure past the last line).
+  top, a figure past the last line). In probe mode a unit whose only unknown vocabulary is
+  cached pictures (a sentence and its plot) is no longer probed after each layout: the probe
+  compiled the snapshot's text with entries scanned from the current text, drew the plot when
+  they did not match and, with the debug trace on, timed out and quarantined the unit.
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried

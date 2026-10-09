@@ -655,8 +655,10 @@ function S.init(boxnum, countnum, cctnum)
     -- Debug extras, after "ready" and under pcall: nothing here may keep the server from
     -- starting. Font loads with their cost (a first use of a big font can take seconds): the
     -- define_font callback is wrapped whoever registered it (luaotfload, or luatexja which
-    -- replaces luaotfload's). Every macro expansion goes to the TeX log (\tracingmacros), so a
-    -- loop shows in the log's last flushed block even though the killed process loses the tail.
+    -- replaces luaotfload's). With $RTEX_TRACE_MACROS (opt-in) every macro expansion goes to
+    -- the TeX log (\tracingmacros), so a loop shows in the log's last flushed block even though
+    -- the killed process loses the tail; it makes heavy compiles many times slower and the log
+    -- grows without bound, so it is not part of the default trace.
     local ok, err = pcall(function()
       local descs = luatexbase.callback_descriptions("define_font")
       local name = descs and descs[1]
@@ -669,8 +671,12 @@ function S.init(boxnum, countnum, cctnum)
         trace(format("font %s size %s id %s: %.1f ms", tostring(fname), tostring(size), tostring(id), (gettime() - t) * 1000))
         return f
       end, name)
-      tex.tracingmacros = 1
-      tex.tracingonline = 0
+      local tm = os.getenv("RTEX_TRACE_MACROS")
+      if tm and tm ~= "" and tm ~= "0" then
+        tex.tracingmacros = 1
+        tex.tracingonline = 0
+        trace("macro tracing on")
+      end
     end)
     if not ok then trace("debug extras not installed: " .. tostring(err)) end
   end

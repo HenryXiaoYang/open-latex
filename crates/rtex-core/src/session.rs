@@ -278,6 +278,10 @@ struct FastRequest {
     /// Probe mode: the unit must be proven first (its snapshot text, fetched from the layout
     /// current when the engine thread gets to it, compiled and compared with that layout).
     probe: bool,
+    /// The unit was let through unproven because every picture in it comes from the cache
+    /// (its only vocabulary beyond the allow-list): a result that drew a picture after all is
+    /// unverified and the unit waits for the pass.
+    pics_required: bool,
 }
 
 /// A compile the server is working on (sent either by the engine thread or directly by the
@@ -558,6 +562,12 @@ impl Session {
     pub fn document_text(&self, rel_path: &str) -> Option<String> {
         let key = self.rel_key(rel_path);
         self.shared.files.lock().get(&key).map(|f| f.text.clone())
+    }
+
+    /// Probe compiles run so far (probe mode): a unit whose only vocabulary beyond the
+    /// allow-list is cached pictures needs none.
+    pub fn probes(&self) -> u64 {
+        self.shared.link.lock().probes
     }
 
     pub fn spans(&self, rel_path: &str) -> Vec<crate::document::Span> {
@@ -900,6 +910,17 @@ impl Session {
         let mut probe = false;
         let (pics, pics_n, pics_cached) =
             self.unit_pics(rel_path, files, fb, span, rev, layout.layout_version);
+        // the unit's only vocabulary beyond the allow-list is picture environments, and the
+        // cache holds every one of them: their bodies are not run, so there is nothing for a
+        // probe to prove (a probe compiles the snapshot's text, whose pictures the entries of
+        // the current text need not match: it would draw them, a pgfplots axis for seconds)
+        let pictures_only = !vocab.is_empty()
+            && vocab.iter().all(|r| {
+                matches!(r, Reason::DisallowedEnvironment(e)
+                    if crate::piccache::PICTURE_ENVS.contains(&e.as_str()))
+            });
+        let cache_vouched = pictures_only && pics_n > 0 && pics_cached == pics_n;
+        let mut pics_required = false;
         match layout.unit(span.id) {
             Some(eu) => {
                 if needs_probe {
@@ -915,6 +936,7 @@ impl Session {
                         Some(ProbeVerdict::Mismatch(why)) | Some(ProbeVerdict::Leak(why)) => {
                             reasons.push(format!("unverified: {why}"))
                         }
+                        None if cache_vouched => pics_required = true,
                         None => {
                             if layout.snapshot_text(span.id).is_some() {
                                 probe = true;
@@ -958,18 +980,14 @@ impl Session {
                 // picture environments the cache holds, every one of them, whose bodies the
                 // engine does not run (the result delivery drops the compile when a picture
                 // was drawn after all).
-                let pictures_only = !vocab.is_empty()
-                    && vocab.iter().all(|r| {
-                        matches!(r, Reason::DisallowedEnvironment(e)
-                            if crate::piccache::PICTURE_ENVS.contains(&e.as_str()))
-                    });
                 let derivable = matches!(span.kind, SpanKind::Body | SpanKind::Env)
                     && match &shape {
                         UnitShape::Par => true,
                         UnitShape::Env(n) => !crate::eligibility::FLOAT_ENVS.contains(&n.as_str()),
                         UnitShape::Heading(_) => false,
                     }
-                    && (!needs_probe || (pictures_only && pics_n > 0 && pics_cached == pics_n));
+                    && (!needs_probe || cache_vouched);
+                pics_required = needs_probe && derivable;
                 if !derivable && needs_probe {
                     reasons.push("unverified: no layout unit to compare with".into());
                 }
@@ -1032,6 +1050,7 @@ impl Session {
             context_stale: stale,
             expected_rows,
             probe,
+            pics_required,
         };
         (Some(req), reasons)
     }
@@ -1483,7 +1502,7 @@ fn engine_thread(s: Arc<Shared>) {
             }
             let srv = server.as_mut().unwrap();
             let result = srv.recv();
-            srv.timeout = s.cfg.compile_timeout;
+            srv.timeout = compile_timeout(&s.cfg);
             let Some(fl) = s.link.lock().inflight.take() else {
                 continue;
             };
@@ -1609,7 +1628,7 @@ fn engine_thread(s: Arc<Shared>) {
                 s.cfg.debug_dir.is_some(),
             ) {
                 Ok(mut srv) => {
-                    srv.timeout = s.cfg.compile_timeout.max(Duration::from_secs(30)); // first compile loads fonts
+                    srv.timeout = compile_timeout(&s.cfg).max(Duration::from_secs(30)); // first compile loads fonts
                     {
                         let mut l = s.link.lock();
                         l.writer = srv.stdin_clone().ok();
@@ -2045,6 +2064,18 @@ fn debug_bundle_startup(s: &Shared, gen: u64, reason: &str) -> String {
     format!("{reason} (debug bundle: {})", dir.display())
 }
 
+/// The per-compile watchdog. With macro tracing on (`$RTEX_TRACE_MACROS` with a debug
+/// directory) every macro expansion is written to the TeX log, which makes a heavy compile (a
+/// pgfplots axis drawn) many times slower: the watchdog is lengthened rather than letting the
+/// debug setting itself kill the engine.
+fn compile_timeout(cfg: &SessionConfig) -> Duration {
+    if cfg.debug_dir.is_some() && std::env::var_os("RTEX_TRACE_MACROS").is_some_and(|v| v != "0") {
+        cfg.compile_timeout * 10
+    } else {
+        cfg.compile_timeout
+    }
+}
+
 /// With `SessionConfig::debug_dir`: one line per live compile in `<debug_dir>/requests.log`.
 fn debug_request_line(s: &Shared, line: &str) {
     let Some(base) = s.cfg.debug_dir.as_ref() else {
@@ -2105,14 +2136,11 @@ fn handle_result(
     if req.warmup {
         return;
     }
-    // a unit on a borrowed context was let through unprobed because every picture in it comes
-    // from the cache: when the engine drew one after all (a state mismatch, a picture the scan
-    // did not see), the result is unverified and the unit waits for the pass
-    if req.seq < 0
-        && req.pics_n > 0
-        && cr.status != "error"
-        && cr.pics_used != Some(req.pics_n as i64)
-    {
+    // a unit let through unprobed (a borrowed context, or a probe skipped) because every
+    // picture in it comes from the cache: when the engine drew one after all (a state
+    // mismatch, a picture the scan did not see), the result is unverified and the unit waits
+    // for the pass
+    if req.pics_required && cr.status != "error" && cr.pics_used != Some(req.pics_n as i64) {
         demote_span(
             s,
             &req,
@@ -3042,6 +3070,7 @@ fn deliver_layout(
                         context_stale: false,
                         expected_rows: 0,
                         probe: false,
+                        pics_required: false,
                     },
                 );
                 s.pending_signal.0.send(()).ok();
