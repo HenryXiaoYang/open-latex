@@ -153,7 +153,7 @@ local function new_state(opts)
     -- picture cache: boxes tagged with attr_pic are reported with their page position
     -- (outermost box per id); images in pic_images are cached pictures (page degraded for
     -- hosts, which then use the PDF)
-    attr_pic = opts and opts.attr_pic, pic_images = opts and opts.pic_images, pics = {}, pic_seen = {}, pic_in = 0,
+    attr_pic = opts and opts.attr_pic, pic_images = (opts and opts.pic_images) or M.pic_images, pics = {}, pic_seen = {}, pic_in = 0,
     glyphs = 0, images = 0, inserts = 0,
   }, State)
 end

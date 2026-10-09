@@ -9,6 +9,11 @@
   the font, color and width in force, and taken from per-page extracts of the pass PDF. A 111-page
   document with 120 pictures: 45 s → 18 s per pass. A cached picture is `UNSUPPORTED{cached_picture}`
   in the display list, never an image (hosts render the page from the PDF as for a drawn picture).
+- The live engine reuses cached pictures too: a unit that contains a picture the cache holds
+  (same text, definitions and font/color/width state) is compiled with the cached region in
+  place of the drawing, so editing a sentence that shares its unit with a pgfplots axis stays
+  within the fast budget (compile frame field `<plen>`, result `pics_seen`/`pics_used`; shared
+  `rtex-pic.lua`/`rtex-pic.tex`).
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried

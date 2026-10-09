@@ -1,0 +1,30 @@
+% rtex-pic.tex: TeX side of the picture cache, shared by rtex-capture.sty and the live server
+% (rtex-serve). Before \input: \def\rtex@picns{<Lua global>} names the Lua table providing
+% pic_arm(env), pic_begin(env), pic_write() and pic_end() (rtex-capture / rtex_serve, built on
+% rtex-pic.lua), and \rtex@picenvs lists the environments (comma separated).
+\begingroup\catcode`\@=11\relax
+\gdef\rtex@picreplace{\leavevmode\lower\rtex@picdepth\hbox{\directlua{\rtex@picns.pic_write()}}}%
+% Gobble the environment body: scan \end<arg> by \end<arg> (a `{` may not appear in a macro's
+% delimiter) until the argument is the environment's own name, then put the cached box in
+% its place and end the environment properly (\long: picture bodies contain blank lines).
+\long\gdef\rtex@gobbleto#1\end#2{%
+  \def\rtex@tmpa{#2}%
+  \ifx\rtex@tmpa\rtex@gobbleenv
+    \expandafter\rtex@gobbledone
+  \else
+    \expandafter\rtex@gobbleto
+  \fi}%
+\gdef\rtex@gobblesetup#1{%
+  \def\rtex@gobbleenv{#1}%
+  \def\rtex@gobbledone{\directlua{\rtex@picns.pic_end()}\rtex@picreplace
+    \expandafter\let\csname end#1\endcsname\relax\end{#1}}%
+  \rtex@gobbleto}%
+% Wrap one environment's begin macro and arm the wrapper from the environment's begin hook.
+\gdef\rtex@wrappic#1{%
+  \ifcsname #1\endcsname
+    \expandafter\let\csname rtex@orig@#1\expandafter\endcsname\csname #1\endcsname
+    \expandafter\def\csname #1\endcsname{\directlua{\rtex@picns.pic_begin("#1")}}%
+    \AddToHook{env/#1/begin}{\directlua{\rtex@picns.pic_arm("#1")}}%
+  \fi}%
+\gdef\rtex@wrappicall{\@for\rtex@n:=\rtex@picenvs\do{\expandafter\rtex@wrappic\expandafter{\rtex@n}}}%
+\endgroup

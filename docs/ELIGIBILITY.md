@@ -146,4 +146,6 @@ Cost: one extra compile (1–5 ms) per not-allow-listed unit per layout, on its 
 the background path until the next layout. Session config `SessionConfig::fast_budget`, C ABI
 JSON `"fast_budget_ms"`, CLI `rtex serve --fast-budget-ms`. TikZ-style units would want a
 larger value (a three-node flowchart costs about 17 ms in the engine, a 100-sample plot
-about 56 ms): the budget is per session for now.
+about 56 ms): the budget is per session for now. A picture the picture cache holds costs
+nothing to draw in the live engine (ARCHITECTURE.md), so only a picture being edited, or one
+the cache does not hold, pays that price.

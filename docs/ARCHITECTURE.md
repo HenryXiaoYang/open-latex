@@ -60,6 +60,12 @@ in order, the first one provides the context, and the fast path typesets the spa
    (no engine-thread wake-up on the keystroke path); otherwise it is queued, latest per unit. The
    server replays the context, typesets the source in a `\vbox`, restores the counters, checks
    its state fingerprint, traverses the box and returns the display list with stage timings.
+   When the source contains picture environments the picture cache holds (same hash, same
+   font/color/width state), the request carries their entries and the server places the cached
+   regions instead of drawing (`rtex-pic.lua`, shared with the capture): a sentence followed by a
+   pgfplots axis in one unit costs the sentence, not the plot (280 ms → ~1 ms on a real-world
+   document). The engine reports how many pictures it began; a count that differs from the
+   source scan (a picture made by a macro) repeats the compile without the cache.
 4. The result is discarded if the span changed meanwhile; otherwise fragments are built from the
    cached row placements (page positions anchored at each page's first row, the fast box's own
    geometry within the page) and a `ParagraphUpdate` is emitted. Row-count changes mark
@@ -147,7 +153,9 @@ cached, nor is one whose output spans lines or pages, one whose `\begin` does no
 or anything when the body text contains `remember picture`. Entries unused for
 four passes are evicted. `rtex verify --pic-cache` builds a cache from a converged pass, runs one
 more pass on it and checks units, placements and (with `--raster`) the rendered pages. On the
-reference container a 111-page document with 120 pictures passes in 18 s instead of 45 s.
+reference container a 111-page document with 120 pictures passes in 18 s instead of 45 s. The
+live engine uses the same cache (fast path, step 3), so a paragraph that shares its unit with a
+picture stays within the fast budget.
 
 ## Guarantees and their evidence
 

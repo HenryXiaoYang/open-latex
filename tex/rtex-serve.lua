@@ -8,6 +8,7 @@ local S = { contexts = {}, errors = {}, requests = 0 }
 local json = dofile(kpse.find_file("rtex-json.lua", "lua") or "rtex-json.lua")
 local dl = dofile(kpse.find_file("rtex-dl.lua", "lua") or "rtex-dl.lua")
 local dlbin = dofile(kpse.find_file("rtex-dl-bin.lua", "lua") or "rtex-dl-bin.lua")
+local P = dofile(kpse.find_file("rtex-pic.lua", "lua") or "rtex-pic.lua")
 local gettime = os.gettimeofday
 local pack, format, floor = string.pack, string.format, math.floor
 local stdin = io.stdin
@@ -274,7 +275,31 @@ local function meanings_of(names)
   return m
 end
 
-function S.begin_compile(req_id, ctx_id, source)
+-- Picture cache in the live engine: a compile may come with cache entries for the picture
+-- environments of its source, in order (null for one not cached). The wrapped begin macro
+-- (rtex-pic.tex) takes the next entry for every \begin{<picture env>} it sees, when the
+-- font/color/width state matches, and places the cached region instead of drawing. The result
+-- reports how many pictures were seen and how many came from the cache.
+S.cache_images = {}
+function S.pic_arm(env) P.arm(S.picctl, env) end
+function S.pic_begin(env)
+  local cur = S.current
+  local lookup = function(_, state)
+    if not cur then return nil end
+    cur.pics_seen = cur.pics_seen + 1
+    local e = cur.pics and cur.pics[cur.pics_seen] or nil
+    if e and e ~= json.null and type(e) == "table" and (e.state or "") == state then
+      cur.pics_used = cur.pics_used + 1
+      return e
+    end
+    return nil
+  end
+  P.begin(S.picctl, env, lookup, nil)
+end
+function S.pic_write() P.write(S.picctl, S.cache_images) end
+function S.pic_end() end
+
+function S.begin_compile(req_id, ctx_id, source, pics)
   local ctx = S.contexts[ctx_id]
   if not ctx then
     send_error_result(req_id, ctx_id, "unknown context " .. tostring(ctx_id))
@@ -294,7 +319,8 @@ function S.begin_compile(req_id, ctx_id, source)
   for line in (source .. "\n"):gmatch("(.-)\n") do n = n + 1; lines[n] = line end
   if n > 0 and lines[n] == "" then lines[n] = nil end
   S.current = { req = req_id, ctx_id = ctx_id, ctx = ctx, font_changed = font_changed, t0 = 0,
-                t_read = S.t_read, t_decoded = S.t_decoded, names = cs_names(source) }
+                t_read = S.t_read, t_decoded = S.t_decoded, names = cs_names(source),
+                pics = pics, pics_seen = 0, pics_used = 0 }
   S.current.meanings = meanings_of(S.current.names)
   S.images_used = false
   -- our own tokens use @ as a letter (kernel switches, float emulation); the source keeps the
@@ -388,6 +414,7 @@ function S.finish()
     if S.images_used and next(S.images) then images = '"images":' .. json.encode(S.images) .. ',' end
     if cur.advanced then images = images .. '"counters":' .. json.encode(cur.advanced) .. ',' end
     if cur.leaks then images = images .. '"leaks":' .. json.encode(cur.leaks) .. ',' end
+    if cur.pics then images = images .. '"pics_seen":' .. cur.pics_seen .. ',"pics_used":' .. cur.pics_used .. ',' end
     send_result_json(format(HEADER_FMT, cur.req, cur.ctx_id, st, nlines, nglyphs, images, bw, bh, bd, t_tex, t_trav,
       cur.font_changed and "true" or "false", #bytes,
       floor(((cur.t_decoded or 0) - (cur.t_read or 0)) * 1e6 + 0.5), floor(((cur.t_printed or 0) - (cur.t_decoded or 0)) * 1e6 + 0.5),
@@ -566,6 +593,12 @@ function S.init(boxnum, countnum, cctnum)
   -- catcode table for the tokens we print around the source: LaTeX's catcodes with @ a letter
   -- (the driver allocates and saves it: \newcatcodetable\rtexcct{\makeatletter\savecatcodetable\rtexcct})
   S.cct = cctnum
+  -- picture cache: wrap the picture environments' begin macros (rtex-pic.tex) and mark cached
+  -- images for the display-list traversal
+  S.picctl = P.new(cctnum)
+  dl.pic_images = S.cache_images
+  tex.print(cctnum, "\\def\\rtex@picns{rtex_serve}\\def\\rtex@picenvs{" .. table.concat(P.PICTURE_ENVS, ",") ..
+            "}\\input{rtex-pic.tex}\\rtex@wrappicall ")
   -- LaTeX counters: idle values restored after every compile
   local ck = token.get_macro("cl@@ckpt") or ""
   for name in ck:gmatch("\\@elt%s*{([^}]*)}") do
@@ -625,16 +658,25 @@ function S.step()
   if not line then log("stdin closed"); S.stop(); return end
   local c = line:byte(1)
   if c == 67 then -- 'C': compile frame
-    local req_id, ctx_id, len = line:match("^C (%d+) (%-?%d+) (%d+)$")
+    local req_id, ctx_id, len, plen = line:match("^C (%d+) (%-?%d+) (%d+) ?(%d*)$")
     if not req_id then
       send{ op = "error", message = "bad compile frame: " .. line }
       return
     end
     len = tonumber(len)
+    plen = tonumber(plen) or 0
     local source = len > 0 and stdin:read(len) or ""
     if not source or #source ~= len then log("stdin closed mid-frame"); S.stop(); return end
+    -- optional picture cache entries (JSON array) after the source
+    local pics = nil
+    if plen > 0 then
+      local pj = stdin:read(plen)
+      if not pj or #pj ~= plen then log("stdin closed mid-frame"); S.stop(); return end
+      local ok, v = pcall(json.decode, pj)
+      if ok and type(v) == "table" then pics = v end
+    end
     S.t_decoded = gettime()
-    local hok, herr = pcall(S.begin_compile, tonumber(req_id), tonumber(ctx_id), source)
+    local hok, herr = pcall(S.begin_compile, tonumber(req_id), tonumber(ctx_id), source, pics)
     if not hok then
       log("handler error: " .. tostring(herr))
       S.current = nil

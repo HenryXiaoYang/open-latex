@@ -72,6 +72,15 @@ picture's hash includes that definition, so changing the radius redraws the pict
   \item A plain item after it.
 \end{itemize}
 
+A sentence right before a plot, with no blank line between them, so the two are one unit:
+\begin{center}
+\begin{tikzpicture}
+  \begin{axis}[width=6cm,height=4cm,xlabel=$u$,ylabel=$v$]
+    \addplot[domain=0:3,samples=30,blue] {exp(-x)};
+  \end{axis}
+\end{tikzpicture}
+\end{center}
+
 \subsection{A circuit}
 
 \begin{figure}[htbp]

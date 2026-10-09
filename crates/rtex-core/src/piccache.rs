@@ -118,20 +118,10 @@ impl PicCache {
         let mut m: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         for p in pics.iter().filter(|p| p.cacheable) {
             if let Some(e) = self.index.entries.get_mut(&p.hash.to_string()) {
-                if e.env != p.env || !self.dir.join(&e.pdf).exists() {
-                    continue;
-                }
                 e.last_used = serial;
-                m.insert(
-                    p.key.clone(),
-                    serde_json::json!({
-                        "env": e.env,
-                        "state": e.state,
-                        "end_line": p.end_line,
-                        "pdf": self.dir.join(&e.pdf).to_string_lossy(),
-                        "page": e.page, "bbox": e.bbox, "w": e.w, "h": e.h, "d": e.d,
-                    }),
-                );
+            }
+            if let Some(v) = self.entry_json(p) {
+                m.insert(p.key.clone(), v);
             }
         }
         if m.is_empty() {
@@ -142,6 +132,25 @@ impl PicCache {
         }
         let _ = self.save();
         Ok(m.len())
+    }
+
+    /// The cache entry for a picture, as the capture and the live engine read it (`pdf` by
+    /// absolute path, `bbox` in PDF user space, `state` to compare, `end_line` of the source).
+    pub fn entry_json(&self, p: &PictureRef) -> Option<serde_json::Value> {
+        if !p.cacheable {
+            return None;
+        }
+        let e = self.index.entries.get(&p.hash.to_string())?;
+        if e.env != p.env || !self.dir.join(&e.pdf).exists() {
+            return None;
+        }
+        Some(serde_json::json!({
+            "env": e.env,
+            "state": e.state,
+            "end_line": p.end_line,
+            "pdf": self.dir.join(&e.pdf).to_string_lossy(),
+            "page": e.page, "bbox": e.bbox, "w": e.w, "h": e.h, "d": e.d,
+        }))
     }
 
     /// After a pass: remember every current picture the pass drew (its page of `pass_pdf`,

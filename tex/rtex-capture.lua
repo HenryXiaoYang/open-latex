@@ -9,6 +9,8 @@
 local C = { seq = 0, stack = {}, begins = {}, paras = {}, pages = {}, page = 0, units = {}, uid = 0, cur = nil, env_depth = 0 }
 local json = dofile(kpse.find_file("rtex-json.lua", "lua") or "rtex-json.lua")
 local dl = dofile(kpse.find_file("rtex-dl.lua", "lua") or "rtex-dl.lua")
+-- picture cache mechanics shared with the live server (rtex-pic.lua, rtex-pic.tex)
+local P = dofile(kpse.find_file("rtex-pic.lua", "lua") or "rtex-pic.lua")
 
 local INT_PARAMS = { "looseness", "tolerance", "pretolerance", "hyphenpenalty", "exhyphenpenalty",
   "adjdemerits", "doublehyphendemerits", "finalhyphendemerits", "linepenalty", "lastlinefit",
@@ -151,7 +153,8 @@ C.outer = nil
 -- Called at \begin{document} (counters are all defined by then).
 -- catcode table for tokens the capture prints (LaTeX's, with @ a letter): allocated by
 -- rtex-capture.sty (\rtexcapturecct)
-function C.set_cct(n) C.cct = n end
+function C.set_cct(n) C.cct = n; C.picctl = P.new(n) end
+C.PICTURE_ENVS = P.PICTURE_ENVS
 
 function C.begin_document()
   local ck = macro("cl@@ckpt") or ""
@@ -249,16 +252,8 @@ end
 
 -- env/<block>/begin and /after hooks (inside and after the environment group).
 local DEBUG_ENV = os.getenv("RTEX_DEBUG_ENV")
--- Picture environments (the same list as piccache::PICTURE_ENVS; rtex-capture.sty wraps
--- their begin macros from it).
-C.PICTURE_ENVS = { "tikzpicture", "circuitikz", "pgfpicture" }
-local PICTURE_ENVS = {}
-for _, e in ipairs(C.PICTURE_ENVS) do PICTURE_ENVS[e] = true end
 function C.envbegin(name)
   local cur = C.cur
-  -- the picture wrapper (pic_begin) acts only for \begin{<env>}, not for a direct call of
-  -- the begin macro (\tikz, pgfplots' inner picture): arm it here, right before the macro
-  if PICTURE_ENVS[name] then C.pic_armed = name end
   if DEBUG_ENV then texio.write_nl("RTEXENV begin " .. name .. " line " .. tex.inputlineno .. " depth " .. C.env_depth .. " nest " .. tex.nest.ptr .. " cur " .. tostring(cur and cur.uid)) end
   if cur and cur.kind == "heading" and tex.nest.ptr == 0 then unit_close(); cur = nil end
   if not cur and tex.nest.ptr == 0 then
@@ -422,18 +417,6 @@ local function pic_key()
   f = f:gsub("^%./", "")
   return f .. ":" .. tex.inputlineno
 end
--- State the picture inherits from its surroundings and that its text does not show: the
--- current font and color, the line width (pgfplots `width=\linewidth`). A cached picture is
--- used only when it was drawn under the same state.
-local function pic_state()
-  local lw = ""
-  pcall(function() lw = tostring(tex.dimen.linewidth) end)
-  -- the font by name and size (ids are allocation order, different from run to run)
-  local f = font.current()
-  local name = tex.fontname(f) or tostring(f)
-  return name .. "/" .. tostring(token.get_macro("current@color") or "") ..
-         "/" .. tostring(tex.hsize) .. "/" .. lw
-end
 local function load_manifest()
   if C.manifest ~= nil then return C.manifest end
   C.manifest = false
@@ -471,42 +454,33 @@ local function line_begins_env(env)
   local marker = "\\begin{" .. env .. "}"
   return l:sub(1, #marker) == marker
 end
--- Called by the wrapper of the environment's begin macro (rtex-capture.sty), inside the
--- environment's group. Prints either the original begin macro (picture tagged for recording)
--- or the gobbling macro that replaces the body with the cached image.
+-- env/<env>/begin hook and the wrapped begin macro (rtex-pic.tex). A manifest entry is used
+-- when its key, environment and state match and the executing line starts with the \begin;
+-- a drawn picture gets an id every node it makes inherits.
+function C.pic_arm(env) P.arm(C.picctl, env) end
 function C.pic_begin(env)
-  if C.pic_armed ~= env then
-    -- a direct call of the begin macro (no \begin{<env>}, so no env/after hook): draw it
-    tex.sprint(C.cct, "\\csname rtex@orig@" .. env .. "\\endcsname")
-    return
-  end
-  C.pic_armed = nil
   C.pic_id = C.pic_id + 1
   local id = C.pic_id
   local key = pic_key()
-  local state = pic_state()
-  C.pic_keys[id] = { key = key, env = env, state = state }
-  local m = load_manifest()
-  local e = m and m[key]
-  if DEBUG_ENV then texio.write_nl("RTEXPIC begin " .. key .. " state " .. state .. " manifest " .. tostring(e and e.state)) end
-  if e and not C.manifest_used[key] and e.env == env and (e.state or "") == state and line_begins_env(env) then
-    local ok, im = pcall(function()
-      local im = img.new{ filename = e.pdf, page = e.page, bbox = { e.bbox[1], e.bbox[2], e.bbox[3], e.bbox[4] } }
-      return img.scan(im)
-    end)
-    if ok and im then
+  local lookup = function(env, state)
+    C.pic_keys[id] = { key = key, env = env, state = state }
+    local m = load_manifest()
+    local e = m and m[key]
+    if DEBUG_ENV then texio.write_nl("RTEXPIC begin " .. key .. " state " .. state .. " manifest " .. tostring(e and e.state)) end
+    if e and not C.manifest_used[key] and e.env == env and (e.state or "") == state and line_begins_env(env) then
       C.manifest_used[key] = true
-      C.pending_pic = { img = im, entry = e }
       C.pic_hit = { key = key, end_line = e.end_line }
-      token.set_macro("rtex@picdepth", tostring(e.d) .. "sp")
-      tex.sprint(C.cct, "\\rtex@gobblesetup{" .. env .. "}")
-      return
+      return e
     end
+    return nil
   end
-  -- drawn: every node the environment makes carries the picture's id (restored with the
-  -- environment's group)
-  tex.setattribute(C.attr_pic, id)
-  tex.sprint(C.cct, "\\csname rtex@orig@" .. env .. "\\endcsname")
+  local on_draw = function()
+    -- every node the environment makes carries the picture's id (restored with the group)
+    tex.setattribute(C.attr_pic, id)
+  end
+  if not P.begin(C.picctl, env, lookup, on_draw) then
+    C.pic_hit = nil
+  end
 end
 -- After the body of a cached picture was skipped (rtex-capture.sty): it must have ended on
 -- the line the session's scan found its \end on; otherwise the skipped text was not the
@@ -521,16 +495,8 @@ function C.pic_end()
   end
 end
 -- Writes the cached picture's image node (inside \hbox{...} of \rtex@picreplace).
-function C.pic_write()
-  local p = C.pending_pic
-  C.pending_pic = nil
-  if not p then return end
-  local n = img.node(p.img)
-  local idx = n.index
-  -- not listed in images_info: hosts never see a cached picture as an image
-  if idx then C.cache_images[idx] = true end
-  node.write(n)
-end
+-- not listed in images_info: hosts never see a cached picture as an image
+function C.pic_write() P.write(C.picctl, C.cache_images) end
 
 function C.shipout(boxnum)
   C.page = C.page + 1

@@ -46,7 +46,7 @@ first frame) before or while the server starts; closing and reopening it loses f
 |---|---|---|
 | `context` | `id` (int), `ctx` (object, see below) | `{"op":"ok","id":…}` |
 | `labels` | `labels`: array of `[name, body]` (`r@<label>` → `{label}{page}…`, `b@<key>` → cite text) from the last pass's aux | `{"op":"ok","id":count}` |
-| compile frame | `C <req> <ctx> <len>\n` + `<len>` source bytes (JSON `{"op":"compile","req","ctx","source"}` also accepted) | `result` frame or `fatal` |
+| compile frame | `C <req> <ctx> <len>\n` + `<len>` source bytes (JSON `{"op":"compile","req","ctx","source"}` also accepted); with a fifth field, `C <req> <ctx> <len> <plen>\n`, `<plen>` bytes of JSON follow the source: picture cache entries for the source's picture environments in order (`null` for one not cached; see ARCHITECTURE.md, picture cache) | `result` frame or `fatal` |
 | `profile` | `ctx`, `source`, `n` | `{"op":"profile","us":{…}}` in-engine micro-timings (diagnostic; uses `tex.runtoks`) |
 | `ping` | — | `{"op":"pong"}` |
 | `stats` | — | `{"op":"stats","requests","font_nextid","node_mem","grouplevel","nest","luastate"}` |
@@ -118,7 +118,11 @@ server then restores its idle values, and the session compares the map with what
 the unit advance, scheduling a pass when it differs.
 When the compile changed the meaning of a control sequence the source mentions (`\gdef`,
 `\global\let`), the header carries `"leaks": [names]`; the session demotes the unit and restarts
-the engine (docs/ELIGIBILITY.md).
+the engine (docs/ELIGIBILITY.md). When the request carried picture cache entries, the header
+carries `"pics_seen"` (picture environments the compile began) and `"pics_used"` (taken from the
+cache); a `pics_seen` that differs from the number of entries means the entries may have gone to
+the wrong pictures, and the session repeats the compile without them. A cached picture appears
+in the display list as `UNSUPPORTED{kind: "cached_picture"}` (not an image).
 followed by `dl_bytes` of binary display list (paragraph framing; empty when `status` is `error`
 and no box was produced).
 Error `line` numbers count from the first printed line; line 1 is the replay head, so source line

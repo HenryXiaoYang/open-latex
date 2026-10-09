@@ -252,6 +252,10 @@ struct FastRequest {
     edit_id: u64,
     span_hash: u64,
     source: String,
+    /// Picture cache entries for the source's picture environments, in order (JSON array;
+    /// empty when none is cached), and how many pictures the source has.
+    pics: String,
+    pics_n: usize,
     seq: i64,
     /// Context object for the server; None when the engine link already holds this context
     /// (the engine thread builds it from the layout store when it must send it).
@@ -342,6 +346,8 @@ struct Shared {
     /// Directory of the last finished background pass (its aux family seeds the next pass;
     /// its PDF and capture files stay until a later pass reuses the directory).
     last_pass_dir: Mutex<Option<PathBuf>>,
+    /// The picture cache index as of a layout version (the live engine reuses cached pictures).
+    pic_index: Mutex<Option<(u64, crate::piccache::PicCache)>>,
 }
 
 enum BgCmd {
@@ -430,6 +436,7 @@ impl Session {
             live_rows: Mutex::new(HashMap::new()),
             standby: Mutex::new(None),
             last_pass_dir: Mutex::new(None),
+            pic_index: Mutex::new(None),
         });
         let mut threads = Vec::new();
         {
@@ -706,7 +713,7 @@ impl Session {
             for id in cands {
                 let Some(span) = fb.span(id) else { continue };
                 let (req, reasons) =
-                    self.route_span(rel_path, fb, span, rev, edit_id, &layout, &policy);
+                    self.route_span(rel_path, &files, fb, span, rev, edit_id, &layout, &policy);
                 let live = req.is_some();
                 any_background |= !live;
                 if primary.is_none() {
@@ -812,9 +819,11 @@ impl Session {
     /// Decide the fast path for one span: the allow-list on its source, the capture facts of
     /// its unit (or a borrowed context when the layout does not know it yet), the budget and the
     /// context staleness. Returns the request to send, or the reasons it goes to the background.
+    #[allow(clippy::too_many_arguments)]
     fn route_span(
         &self,
         rel_path: &str,
+        files: &BTreeMap<String, FileBuf>,
         fb: &FileBuf,
         span: &Span,
         rev: Revision,
@@ -937,6 +946,7 @@ impl Session {
         if let Some(d) = derived_from {
             self.shared.derived.lock().insert(span.id, d);
         }
+        let (pics, pics_n) = self.unit_pics(rel_path, files, fb, span, layout.layout_version);
         let req = FastRequest {
             warmup: false,
             par_id: span.id,
@@ -947,6 +957,8 @@ impl Session {
                 span,
                 self.shared.inputted.lock().contains(rel_path),
             ),
+            pics,
+            pics_n,
             seq,
             ctx,
             versions: Versions {
@@ -960,6 +972,71 @@ impl Session {
             probe,
         };
         (Some(req), reasons)
+    }
+
+    /// Picture cache entries for the picture environments of a span, in document order (the
+    /// live engine replaces a matching picture with the cached region instead of drawing it:
+    /// the compile of a paragraph followed by a plot costs the text, not the plot). Entries are
+    /// looked up by the same hash the background pass uses; a picture without one is `null`.
+    /// Returns the JSON array and the number of pictures, or nothing when no entry applies.
+    fn unit_pics(
+        &self,
+        rel_path: &str,
+        files: &BTreeMap<String, FileBuf>,
+        fb: &FileBuf,
+        span: &Span,
+        layout_version: u64,
+    ) -> (String, usize) {
+        use crate::piccache::{preamble_hash, scan_pictures, PicCache, PICTURE_ENVS};
+        let text = &fb.text[span.range.clone()];
+        if !self.shared.cfg.picture_cache
+            || !PICTURE_ENVS
+                .iter()
+                .any(|e| text.contains(&format!("\\begin{{{e}}}")))
+        {
+            return (String::new(), 0);
+        }
+        let texts: BTreeMap<String, String> = files
+            .iter()
+            .map(|(n, f)| (n.clone(), f.text.clone()))
+            .collect();
+        let main = &self.shared.cfg.main_file;
+        let pics = scan_pictures(&texts, main, preamble_hash(&texts, main));
+        let (first, last) = fb.line_range(span);
+        let file = rel_path.trim_start_matches("./");
+        let mut idx = self.shared.pic_index.lock();
+        if idx
+            .as_ref()
+            .map(|(v, _)| *v != layout_version)
+            .unwrap_or(true)
+        {
+            *idx = Some((
+                layout_version,
+                PicCache::open(&self.shared.cfg.build_dir.join("bg").join("pic-cache")),
+            ));
+        }
+        let cache = &idx.as_ref().unwrap().1;
+        let mut entries = Vec::new();
+        let mut any = false;
+        for p in &pics {
+            let Some((f, line)) = p.key.rsplit_once(':') else {
+                continue;
+            };
+            let Ok(line) = line.parse::<i64>() else {
+                continue;
+            };
+            if f != file || line < first || line > last {
+                continue;
+            }
+            let e = cache.entry_json(p);
+            any |= e.is_some();
+            entries.push(e.unwrap_or(serde_json::Value::Null));
+        }
+        if !any {
+            return (String::new(), 0);
+        }
+        let n = entries.len();
+        (serde_json::to_string(&entries).unwrap_or_default(), n)
     }
 
     /// Context for a paragraph the layout does not know yet (created by a split or a merge, or
@@ -1028,7 +1105,7 @@ impl Session {
         if direct {
             let req_id = link.next_req;
             link.next_req += 1;
-            let frame = FastServer::encode_compile(req_id, req.seq, &req.source);
+            let frame = FastServer::encode_compile(req_id, req.seq, &req.source, &req.pics);
             let t0 = Instant::now();
             use std::io::Write;
             if link.writer.as_mut().unwrap().write_all(&frame).is_ok() {
@@ -1536,7 +1613,7 @@ fn engine_thread(s: Arc<Shared>) {
                     link.probing = true;
                     drop(link);
                     let t_probe = Instant::now();
-                    let res = srv.compile(req.seq, &text);
+                    let res = srv.compile_with_pics(req.seq, &text, &req.pics);
                     let mut relock = s.link.lock();
                     relock.probing = false;
                     relock.probes += 1;
@@ -1611,7 +1688,7 @@ fn engine_thread(s: Arc<Shared>) {
         let req_id = link.next_req;
         link.next_req += 1;
         let t0 = Instant::now();
-        match srv.send_compile(req_id, req.seq, &req.source) {
+        match srv.send_compile(req_id, req.seq, &req.source, &req.pics) {
             Ok(()) => {
                 link.inflight = Some(InFlight { req, t0 });
             }
@@ -1715,6 +1792,25 @@ fn handle_result(
         return;
     }
     if req.warmup {
+        return;
+    }
+    // the engine saw a different number of picture environments than the source scan (a
+    // picture made by a macro, a nested one): its cache entries may have gone to the wrong
+    // pictures, so the result is dropped and the compile repeated without them
+    if req.pics_n > 0 && cr.pics_seen != Some(req.pics_n as i64) {
+        log::warn!(
+            "{:?}: {} pictures scanned, engine saw {:?}; compiling without the cache",
+            req.par_id,
+            req.pics_n,
+            cr.pics_seen
+        );
+        let mut again = req;
+        again.pics.clear();
+        again.pics_n = 0;
+        let mut pending = s.pending.lock();
+        pending.entry(again.par_id).or_insert(again);
+        drop(pending);
+        s.pending_signal.0.send(()).ok();
         return;
     }
     // discard rule: the span changed meanwhile, or the generation moved on
@@ -2551,6 +2647,8 @@ fn deliver_layout(
                         edit_id: 0,
                         span_hash: 0,
                         source: warm,
+                        pics: String::new(),
+                        pics_n: 0,
                         seq: eu.uid,
                         ctx: None,
                         versions: Versions {

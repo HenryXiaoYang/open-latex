@@ -55,6 +55,12 @@ pub struct CompileResult {
     /// or \let that leaked out of the unit's box).
     #[serde(default)]
     pub leaks: Vec<String>,
+    /// Picture environments the compile began, and how many of them came from the picture
+    /// cache (present when the request carried cache entries).
+    #[serde(default)]
+    pub pics_seen: Option<i64>,
+    #[serde(default)]
+    pub pics_used: Option<i64>,
     /// Host-side stage times (µs): send, wait, read, parse.
     #[serde(skip)]
     pub host_us: [u64; 4],
@@ -360,10 +366,19 @@ impl FastServer {
     }
 
     /// Encode a compile request frame: `C <req> <ctx> <len>\n` followed by the raw source.
-    pub fn encode_compile(req: i64, ctx: i64, source: &str) -> Vec<u8> {
-        let mut v = Vec::with_capacity(source.len() + 32);
-        v.extend_from_slice(format!("C {req} {ctx} {}\n", source.len()).as_bytes());
+    /// `pics`: picture cache entries for the source's picture environments, in order, as a
+    /// JSON array (empty string: none). They follow the source in the frame.
+    pub fn encode_compile(req: i64, ctx: i64, source: &str, pics: &str) -> Vec<u8> {
+        let mut v = Vec::with_capacity(source.len() + pics.len() + 40);
+        if pics.is_empty() {
+            v.extend_from_slice(format!("C {req} {ctx} {}\n", source.len()).as_bytes());
+        } else {
+            v.extend_from_slice(
+                format!("C {req} {ctx} {} {}\n", source.len(), pics.len()).as_bytes(),
+            );
+        }
         v.extend_from_slice(source.as_bytes());
+        v.extend_from_slice(pics.as_bytes());
         v
     }
 
@@ -383,17 +398,27 @@ impl FastServer {
     }
 
     /// Submit a compile without waiting; the result is read with `recv`.
-    pub fn send_compile(&mut self, req: i64, ctx: i64, source: &str) -> Result<()> {
-        let frame = Self::encode_compile(req, ctx, source);
+    pub fn send_compile(&mut self, req: i64, ctx: i64, source: &str, pics: &str) -> Result<()> {
+        let frame = Self::encode_compile(req, ctx, source, pics);
         self.stdin.write_all(&frame)?;
         Ok(())
     }
 
     /// Compile one paragraph; blocking. Returns the result and host-side timing.
     pub fn compile(&mut self, ctx: i64, source: &str) -> Result<(CompileResult, RoundTrip)> {
+        self.compile_with_pics(ctx, source, "")
+    }
+
+    /// `compile` with picture cache entries (see `encode_compile`).
+    pub fn compile_with_pics(
+        &mut self,
+        ctx: i64,
+        source: &str,
+        pics: &str,
+    ) -> Result<(CompileResult, RoundTrip)> {
         let req = self.next_req_id();
         let t0 = Instant::now();
-        self.send_compile(req, ctx, source)?;
+        self.send_compile(req, ctx, source, pics)?;
         let t_sent = t0.elapsed();
         self.wait_readable(self.timeout)?;
         let t_ready = t0.elapsed();
