@@ -1,12 +1,16 @@
 # Architecture
 
 ```
-host app ──Rust API / C ABI──▶ Session (crates/rtex-core/src/session.rs)
+host app ──Rust API / C ABI──▶ Session (crates/rtex-core/src/session/mod.rs: API, shared state)
                                 ├─ documents: FileBuf per file, spans with stable ParaIds (document.rs)
-                                ├─ eligibility: allow-list over the unit's source + capture facts (eligibility.rs)
-                                ├─ engine thread: one persistent lualatex unit server (engine.rs); apply_edit
-                                │  writes to it directly when it is idle
-                                ├─ background thread: snapshot → instrumented passes → LayoutStore (background.rs, layout.rs)
+                                ├─ routing: live or not, own or borrowed context, picture entries (session/route.rs)
+                                │  over the allow-list and capture facts (eligibility.rs)
+                                ├─ engine thread: one persistent lualatex unit server (engine.rs), results into
+                                │  updates or demotions (session/engine_loop.rs); apply_edit writes to it directly
+                                │  when it is idle
+                                ├─ background thread: snapshot → instrumented passes → LayoutStore
+                                │  (session/passes.rs, background.rs, layout.rs)
+                                ├─ diagnostics: debug bundles, requests.log, TeX log parsing (session/diag.rs)
                                 └─ events: ParagraphUpdate / LayoutUpdate / Diagnostics / EngineState / BackgroundScheduled / PdfExported
 tex/
   rtex-serve.lua       serve loop inside \begin{document}: context replay (parameters, fonts, counters,
