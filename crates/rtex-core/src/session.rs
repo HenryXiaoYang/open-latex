@@ -88,7 +88,10 @@ pub enum EligibilityMode {
     /// its text as the last pass typeset it is compiled once and compared row by row with the
     /// pass; a match verifies it for this layout, anything else keeps it on the background
     /// path (`BackgroundScheduled` with an `unverified:` reason). Allow-listed units skip the
-    /// probe.
+    /// probe. A unit the layout does not know yet (typed fresh, split off) has nothing to
+    /// compare with: it is compiled on a borrowed context only when its vocabulary is
+    /// allow-listed, or when what is not are picture environments the cache holds (their
+    /// bodies are not run); otherwise it waits for the pass.
     #[default]
     Probe,
 }
@@ -315,7 +318,9 @@ struct Shared {
     layout: Mutex<LayoutStore>,
     engine_generation: AtomicU64,
     events: Sender<Event>,
-    pending: Mutex<HashMap<ParaId, FastRequest>>,
+    /// Queued requests, latest per unit, served smallest id first (a split's halves in
+    /// document order: the second chains its placement onto the first).
+    pending: Mutex<BTreeMap<ParaId, FastRequest>>,
     pending_signal: (Sender<()>, Receiver<()>),
     bg_signal: (Sender<BgCmd>, Receiver<BgCmd>),
     shutdown: AtomicBool,
@@ -339,7 +344,9 @@ struct Shared {
     convergence: Mutex<Option<Convergence>>,
     overlays: Mutex<HashMap<ParaId, Revision>>,
     /// Spans typeset with a borrowed context: span → (parent span, rows follow the parent).
-    derived: Mutex<HashMap<ParaId, (ParaId, bool)>>,
+    /// Spans compiled on a borrowed context: (unit the context came from, span the rows are
+    /// placed against, whether they follow it).
+    derived: Mutex<HashMap<ParaId, (ParaId, ParaId, bool)>>,
     /// Counters the last fast compile of a span advanced (what the layout saw until then): a
     /// change renumbers what follows and needs a pass.
     counters_seen: Mutex<HashMap<ParaId, BTreeMap<String, i64>>>,
@@ -350,6 +357,9 @@ struct Shared {
     leaky: Mutex<HashMap<ParaId, String>>,
     /// Row count of the latest fast result per span (anchors paragraphs placed after it).
     live_rows: Mutex<HashMap<ParaId, i64>>,
+    /// Where the last live result of a span was placed: (page, x of its first row, its last
+    /// baseline); a unit typed after it on a borrowed context chains onto it.
+    live_place: Mutex<HashMap<ParaId, (i64, i64, i64)>>,
     /// Standby background engine (preamble loaded, waiting for the body).
     standby: Mutex<Option<WarmEngine>>,
     /// Directory of the last finished background pass (its aux family seeds the next pass;
@@ -357,6 +367,9 @@ struct Shared {
     last_pass_dir: Mutex<Option<PathBuf>>,
     /// The picture cache index as of a layout version (the live engine reuses cached pictures).
     pic_index: Mutex<Option<(u64, crate::piccache::PicCache)>>,
+    /// The source scan for pictures at a revision (the whole project; one scan per edit, not
+    /// one per routed span).
+    pic_scan: Mutex<Option<(Revision, Arc<Vec<crate::piccache::PictureRef>>)>>,
 }
 
 enum BgCmd {
@@ -386,6 +399,16 @@ impl Session {
             build_dir: cfg.build_dir.canonicalize()?,
             ..cfg
         };
+        // layout PDFs are numbered per session: an earlier session's copies would stay for
+        // as long as this one takes to reach their numbers
+        if let Ok(rd) = std::fs::read_dir(cfg.build_dir.join("bg")) {
+            for ent in rd.flatten() {
+                let name = ent.file_name().to_string_lossy().into_owned();
+                if name.starts_with("layout-") && name.ends_with(".pdf") {
+                    let _ = std::fs::remove_file(ent.path());
+                }
+            }
+        }
         // the main file and, transitively, every file it \input/\includes
         let texts = crate::document::load_project_files(&cfg.project_root, &cfg.main_file)
             .with_context(|| format!("reading {}", cfg.main_file))?;
@@ -421,7 +444,7 @@ impl Session {
             layout: Mutex::new(LayoutStore::default()),
             engine_generation: AtomicU64::new(0),
             events: tx,
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(BTreeMap::new()),
             pending_signal: unbounded(),
             bg_signal: unbounded(),
             shutdown: AtomicBool::new(false),
@@ -443,9 +466,11 @@ impl Session {
             probe: Mutex::new(HashMap::new()),
             leaky: Mutex::new(HashMap::new()),
             live_rows: Mutex::new(HashMap::new()),
+            live_place: Mutex::new(HashMap::new()),
             standby: Mutex::new(None),
             last_pass_dir: Mutex::new(None),
             pic_index: Mutex::new(None),
+            pic_scan: Mutex::new(None),
         });
         let mut threads = Vec::new();
         {
@@ -725,6 +750,12 @@ impl Session {
                     self.route_span(rel_path, &files, fb, span, rev, edit_id, &layout, &policy);
                 let live = req.is_some();
                 any_background |= !live;
+                if !live && self.shared.cfg.debug_dir.is_some() {
+                    debug_request_line(
+                        &self.shared,
+                        &format!("par {} refused: {}", id.0, reasons.join("; ")),
+                    );
+                }
                 if primary.is_none() {
                     primary = Some((id, live, reasons));
                 }
@@ -849,10 +880,12 @@ impl Session {
         let probe_mode = self.shared.cfg.eligibility == EligibilityMode::Probe;
         let (shape, src_reasons) = classify_source_with(text, policy, false);
         let mut needs_probe = false;
+        let mut vocab: Vec<Reason> = Vec::new();
         for r in src_reasons {
             if probe_mode && crate::eligibility::is_vocabulary_reason(&r) {
                 // not a verdict: the probe compile decides
                 needs_probe = true;
+                vocab.push(r);
             } else {
                 reasons.push(reason_str(&r));
             }
@@ -863,8 +896,10 @@ impl Session {
         let mut seq = 0i64;
         let mut ctx: Option<serde_json::Value> = None;
         let mut expected_rows = 0i64;
-        let mut derived_from: Option<(ParaId, bool)> = None;
+        let mut derived_from: Option<(ParaId, ParaId, bool)> = None;
         let mut probe = false;
+        let (pics, pics_n, pics_cached) =
+            self.unit_pics(rel_path, files, fb, span, rev, layout.layout_version);
         match layout.unit(span.id) {
             Some(eu) => {
                 if needs_probe {
@@ -915,17 +950,36 @@ impl Session {
                 expected_rows = eu.rows();
             }
             None => {
-                if needs_probe {
-                    // a borrowed context has no layout rows to prove the result against
+                // a unit the layout does not know yet (a split's second half, a paragraph or a
+                // block environment typed fresh) borrows a context: a paragraph, or a block
+                // environment that is not a float (a float's box state comes from the capture
+                // only). It cannot be probed (no layout rows to compare with), so vocabulary
+                // beyond the allow-list keeps it on the background path, with one exception:
+                // picture environments the cache holds, every one of them, whose bodies the
+                // engine does not run (the result delivery drops the compile when a picture
+                // was drawn after all).
+                let pictures_only = !vocab.is_empty()
+                    && vocab.iter().all(|r| {
+                        matches!(r, Reason::DisallowedEnvironment(e)
+                            if crate::piccache::PICTURE_ENVS.contains(&e.as_str()))
+                    });
+                let derivable = matches!(span.kind, SpanKind::Body | SpanKind::Env)
+                    && match &shape {
+                        UnitShape::Par => true,
+                        UnitShape::Env(n) => !crate::eligibility::FLOAT_ENVS.contains(&n.as_str()),
+                        UnitShape::Heading(_) => false,
+                    }
+                    && (!needs_probe || (pictures_only && pics_n > 0 && pics_cached == pics_n));
+                if !derivable && needs_probe {
                     reasons.push("unverified: no layout unit to compare with".into());
                 }
-                if reasons.is_empty() && shape == UnitShape::Par && span.kind == SpanKind::Body {
-                    match self.derive_context(fb, span, layout) {
-                        Some((parent, after, json)) => {
+                if reasons.is_empty() && derivable {
+                    match self.derive_context(fb, span, layout, &shape) {
+                        Some((parent, anchor, after, json)) => {
                             // negative context ids never collide with unit ids
                             seq = -(span.id.0 as i64);
                             ctx = Some(json);
-                            derived_from = Some((parent, after));
+                            derived_from = Some((parent, anchor, after));
                         }
                         None => reasons.push("NoContext".into()),
                     }
@@ -955,7 +1009,6 @@ impl Session {
         if let Some(d) = derived_from {
             self.shared.derived.lock().insert(span.id, d);
         }
-        let (pics, pics_n) = self.unit_pics(rel_path, files, fb, span, layout.layout_version);
         let req = FastRequest {
             warmup: false,
             par_id: span.id,
@@ -985,17 +1038,21 @@ impl Session {
 
     /// Picture cache entries for the picture environments of a span, in document order (the
     /// live engine replaces a matching picture with the cached region instead of drawing it:
-    /// the compile of a paragraph followed by a plot costs the text, not the plot). Entries are
-    /// looked up by the same hash the background pass uses; a picture without one is `null`.
-    /// Returns the JSON array and the number of pictures, or nothing when no entry applies.
+    /// the compile of a paragraph followed by a plot costs the text, not the plot). Returns the
+    /// entries the cache holds, each with the 1-based `line` of its `\begin` within the unit's
+    /// source (the server matches a picture by the line it begins on, never by position), the
+    /// number of pictures scanned in the span and the number of entries. Entries are looked up
+    /// by the same hash the background pass uses; a picture without one is left out (drawn).
+    /// Returns an empty string and zeros when no entry applies.
     fn unit_pics(
         &self,
         rel_path: &str,
         files: &BTreeMap<String, FileBuf>,
         fb: &FileBuf,
         span: &Span,
+        rev: Revision,
         layout_version: u64,
-    ) -> (String, usize) {
+    ) -> (String, usize, usize) {
         use crate::piccache::{preamble_hash, scan_pictures, PicCache, PICTURE_ENVS};
         let text = &fb.text[span.range.clone()];
         if !self.shared.cfg.picture_cache
@@ -1003,14 +1060,24 @@ impl Session {
                 .iter()
                 .any(|e| text.contains(&format!("\\begin{{{e}}}")))
         {
-            return (String::new(), 0);
+            return (String::new(), 0, 0);
         }
-        let texts: BTreeMap<String, String> = files
-            .iter()
-            .map(|(n, f)| (n.clone(), f.text.clone()))
-            .collect();
-        let main = &self.shared.cfg.main_file;
-        let pics = scan_pictures(&texts, main, preamble_hash(&texts, main));
+        let pics = {
+            let mut scan = self.shared.pic_scan.lock();
+            match scan.as_ref().filter(|(r, _)| *r == rev) {
+                Some((_, pics)) => pics.clone(),
+                None => {
+                    let texts: BTreeMap<String, String> = files
+                        .iter()
+                        .map(|(n, f)| (n.clone(), f.text.clone()))
+                        .collect();
+                    let main = &self.shared.cfg.main_file;
+                    let pics = Arc::new(scan_pictures(&texts, main, preamble_hash(&texts, main)));
+                    *scan = Some((rev, pics.clone()));
+                    pics
+                }
+            }
+        };
         let (first, last) = fb.line_range(span);
         let file = rel_path.trim_start_matches("./");
         let mut idx = self.shared.pic_index.lock();
@@ -1026,8 +1093,8 @@ impl Session {
         }
         let cache = &idx.as_ref().unwrap().1;
         let mut entries = Vec::new();
-        let mut any = false;
-        for p in &pics {
+        let (mut scanned, mut cached) = (0usize, 0usize);
+        for p in pics.iter() {
             let Some((f, line)) = p.key.rsplit_once(':') else {
                 continue;
             };
@@ -1037,36 +1104,54 @@ impl Session {
             if f != file || line < first || line > last {
                 continue;
             }
-            let e = cache.entry_json(p);
-            any |= e.is_some();
-            entries.push(e.unwrap_or(serde_json::Value::Null));
+            scanned += 1;
+            if let Some(mut e) = cache.entry_json(p) {
+                e["line"] = serde_json::Value::from(line - first + 1);
+                entries.push(e);
+                cached += 1;
+            }
         }
-        if !any {
-            return (String::new(), 0);
+        if cached == 0 {
+            return (String::new(), 0, 0);
         }
-        let n = entries.len();
-        (serde_json::to_string(&entries).unwrap_or_default(), n)
+        (
+            serde_json::to_string(&entries).unwrap_or_default(),
+            scanned,
+            cached,
+        )
     }
 
     /// Context for a paragraph the layout does not know yet (created by a split or a merge, or
     /// typed fresh): a plain body paragraph borrows the parameters, fonts and counters of the
     /// nearest paragraph unit before it (after it when there is none) with the paragraph-start
     /// state of a paragraph that follows a paragraph, or a heading when a heading span precedes
-    /// it. The next layout replaces the borrowed context with a captured one. Returns (parent
-    /// span, whether the rows follow the parent, context).
+    /// it. A span before it that is itself live on a borrowed context (the other half of a
+    /// split, the previous new paragraph) lends its context's parent and anchors the rows: the
+    /// new unit follows it instead of landing on it. The next layout replaces the borrowed
+    /// context with a captured one. Returns (unit the context came from, span the rows are
+    /// placed against, whether they follow it, context).
     fn derive_context(
         &self,
         fb: &FileBuf,
         span: &Span,
         layout: &LayoutStore,
-    ) -> Option<(ParaId, bool, serde_json::Value)> {
+        shape: &UnitShape,
+    ) -> Option<(ParaId, ParaId, bool, serde_json::Value)> {
         let idx = fb.spans.iter().position(|sp| sp.id == span.id)?;
         let usable = |sp: &Span| -> Option<&EngineUnit> {
             if sp.kind != SpanKind::Body {
                 return None;
             }
             let eu = layout.unit(sp.id)?;
-            let ok = eu.kind() == "par"
+            // a unit that ran past its span's last line (the blank line after it at most)
+            // swallowed what follows (`\noindent` on a line of its own before a picture): the
+            // span after it is already inside this unit, not a new one to place after it
+            let within = match (layout.snapshot_span(sp.id), eu.captured.end_line) {
+                (Some(ss), Some(end)) => end <= ss.last_line + 1,
+                _ => true,
+            };
+            let ok = within
+                && eu.kind() == "par"
                 && eu.rows() > 0
                 && eu
                     .first_para
@@ -1076,15 +1161,24 @@ impl Session {
                 && everypar_allowed(&eu.captured.everypar);
             ok.then_some(eu)
         };
-        let before = fb.spans[..idx]
-            .iter()
-            .rev()
-            .find_map(|sp| usable(sp).map(|eu| (sp.id, true, eu)));
-        let (parent, after, eu) = match before {
+        let before = {
+            // (a split's halves are routed in document order within one edit: the second
+            // chains onto the first before its result exists; the engine delivers them in
+            // that order, and the delivery falls back to the parent's rows otherwise)
+            let derived = self.shared.derived.lock();
+            fb.spans[..idx].iter().rev().find_map(|sp| {
+                if let Some(eu) = usable(sp) {
+                    return Some((sp.id, sp.id, true, eu));
+                }
+                let (parent, _, _) = derived.get(&sp.id)?;
+                layout.unit(*parent).map(|eu| (*parent, sp.id, true, eu))
+            })
+        };
+        let (parent, anchor, after, eu) = match before {
             Some(b) => b,
             None => fb.spans[idx + 1..]
                 .iter()
-                .find_map(|sp| usable(sp).map(|eu| (sp.id, false, eu)))?,
+                .find_map(|sp| usable(sp).map(|eu| (sp.id, sp.id, false, eu)))?,
         };
         let mut json = eu.context_json();
         let after_heading = idx > 0 && fb.spans[idx - 1].kind == SpanKind::Heading;
@@ -1096,7 +1190,19 @@ impl Session {
         json["nobreak"] = serde_json::Value::Bool(after_heading);
         json["afterindent"] = serde_json::Value::Bool(false);
         json["noskipsec"] = serde_json::Value::Bool(false);
-        Some((parent, after, json))
+        // a block environment starts in vertical mode with the same parameters; the server
+        // tells environments from paragraphs by kind (floats, which are not borrowed, by name)
+        match shape {
+            UnitShape::Env(name) => {
+                json["kind"] = serde_json::Value::String("env".into());
+                json["name"] = serde_json::Value::String(name.clone());
+            }
+            _ => {
+                json["kind"] = serde_json::Value::String("par".into());
+                json["name"] = serde_json::Value::Null;
+            }
+        }
+        Some((parent, anchor, after, json))
     }
 
     /// Hand a fast request to the server: written straight to its stdin when the server is idle
@@ -1413,7 +1519,7 @@ fn engine_thread(s: Arc<Shared>) {
             }
             continue;
         }
-        // 2. next queued request (any)
+        // 2. next queued request (the smallest unit id)
         let req = {
             let mut p = s.pending.lock();
             let key = p.keys().next().copied();
@@ -1633,6 +1739,21 @@ fn engine_thread(s: Arc<Shared>) {
                     relock.probe_us += t_probe.elapsed().as_micros() as u64;
                     link = relock;
                     let v = match res {
+                        Ok((cr, _))
+                            if req.pics_n > 0
+                                && cr.pics_seen.is_some_and(|n| n != req.pics_n as i64) =>
+                        {
+                            // the cache entries were scanned from the current text, the probe
+                            // compiles the snapshot's: when they do not pair up the probe is
+                            // repeated without them (the pictures are drawn)
+                            let mut req = req;
+                            req.pics.clear();
+                            req.pics_n = 0;
+                            drop(link);
+                            s.pending.lock().insert(req.par_id, req);
+                            s.pending_signal.0.send(()).ok();
+                            continue;
+                        }
                         Ok((cr, _)) => {
                             if !cr.leaks.is_empty() {
                                 ProbeVerdict::Leak(format!(
@@ -1968,10 +2089,25 @@ fn handle_result(
     if req.warmup {
         return;
     }
+    // a unit on a borrowed context was let through unprobed because every picture in it comes
+    // from the cache: when the engine drew one after all (a state mismatch, a picture the scan
+    // did not see), the result is unverified and the unit waits for the pass
+    if req.seq < 0
+        && req.pics_n > 0
+        && cr.status != "error"
+        && cr.pics_used != Some(req.pics_n as i64)
+    {
+        demote_span(
+            s,
+            &req,
+            "a picture drawn outside the cache on a borrowed context",
+        );
+        return;
+    }
     // the engine saw a different number of picture environments than the source scan (a
     // picture made by a macro, a nested one): its cache entries may have gone to the wrong
     // pictures, so the result is dropped and the compile repeated without them
-    if req.pics_n > 0 && cr.pics_seen != Some(req.pics_n as i64) {
+    if req.pics_n > 0 && cr.pics_seen.is_some_and(|n| n != req.pics_n as i64) {
         log::warn!(
             "{:?}: {} pictures scanned, engine saw {:?}; compiling without the cache",
             req.par_id,
@@ -2043,12 +2179,28 @@ fn handle_result(
         match layout.fragments(req.par_id, &rows) {
             Some(x) => x,
             None => {
-                // a borrowed context: placed relative to the parent unit's rows
-                let parent = s.derived.lock().get(&req.par_id).copied();
-                let frags = parent
-                    .and_then(|(parent, after)| {
-                        let live = s.live_rows.lock().get(&parent).copied();
-                        layout.fragments_relative(parent, live, after, &rows)
+                // a borrowed context: placed relative to the anchor's rows (a layout unit's
+                // placements, or the live placement of a unit on a borrowed context itself)
+                let derived = s.derived.lock().get(&req.par_id).copied();
+                let frags = derived
+                    .and_then(|(parent, anchor, after)| {
+                        let placed = s.live_place.lock().get(&anchor).copied();
+                        match placed.filter(|_| layout.unit(anchor).is_none()) {
+                            Some((page, x, last)) => {
+                                let bs = layout.unit(parent)?.baselineskip().max(1);
+                                Some(LayoutStore::fragments_at(page, x, last + bs, &rows))
+                            }
+                            None => {
+                                // a layout unit, or a chained unit not delivered (yet)
+                                let a = if layout.unit(anchor).is_some() {
+                                    anchor
+                                } else {
+                                    parent
+                                };
+                                let live = s.live_rows.lock().get(&a).copied();
+                                layout.fragments_relative(a, live, after, &rows)
+                            }
+                        }
                     })
                     .unwrap_or_default();
                 (frags, true)
@@ -2056,6 +2208,11 @@ fn handle_result(
         }
     };
     s.live_rows.lock().insert(req.par_id, dl.lines.len() as i64);
+    if let Some(f) = fragments.last() {
+        if let (Some(x), Some(last)) = (f.xs.first(), f.baselines.last()) {
+            s.live_place.lock().insert(req.par_id, (f.page, *x, *last));
+        }
+    }
     if req.expected_rows != dl.lines.len() as i64 {
         stale = true;
     }
@@ -2441,7 +2598,8 @@ fn run_background_pass_inner(s: &Shared) {
     let spans_for_provisional = spans.clone();
     let mut pass_started = Instant::now();
     let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
-        absorb(cap);
+        // the host sees the provisional layout before the cache absorbs the pass's pictures
+        // (a PDF round trip)
         if pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
             deliver_layout(
                 s,
@@ -2454,6 +2612,7 @@ fn run_background_pass_inner(s: &Shared) {
                 true,
             );
         }
+        absorb(cap);
         pass_started = Instant::now();
     };
     let result = if s.cfg.warm_background {
@@ -2847,6 +3006,7 @@ fn deliver_layout(
     s.overlays.lock().retain(|_, r| *r > rev);
     s.derived.lock().clear();
     s.live_rows.lock().clear();
+    s.live_place.lock().clear();
     s.counters_seen.lock().clear();
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();

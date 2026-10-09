@@ -285,11 +285,13 @@ local function meanings_of(names)
   return m
 end
 
--- Picture cache in the live engine: a compile may come with cache entries for the picture
--- environments of its source, in order (null for one not cached). The wrapped begin macro
--- (rtex-pic.tex) takes the next entry for every \begin{<picture env>} it sees, when the
--- font/color/width state matches, and places the cached region instead of drawing. The result
--- reports how many pictures were seen and how many came from the cache.
+-- Picture cache in the live engine: a compile may come with cache entries for picture
+-- environments of its source, each naming the 1-based source line its \begin starts (an
+-- entry is matched by line, never by position: a picture an entry does not name is drawn).
+-- The wrapped begin macro (rtex-pic.tex) takes the entry of the line it runs on when the
+-- \begin starts that line (as the source scan keyed it: not a wrapper environment's inner
+-- begin) and the font/color/width state matches, and places the cached region instead of
+-- drawing. The result reports how many pictures were seen and how many came from the cache.
 S.cache_images = {}
 function S.pic_arm(env) P.arm(S.picctl, env) end
 function S.pic_begin(env)
@@ -297,8 +299,12 @@ function S.pic_begin(env)
   local lookup = function(_, state)
     if not cur then return nil end
     cur.pics_seen = cur.pics_seen + 1
-    local e = cur.pics and cur.pics[cur.pics_seen] or nil
-    if e and e ~= json.null and type(e) == "table" and (e.state or "") == state then
+    -- line 1 of the input is the replay head, the source starts on line 2
+    local ln = tex.inputlineno - 1
+    local e = cur.pics_by_line and cur.pics_by_line[ln] or nil
+    local text = cur.lines and cur.lines[ln] or ""
+    if e and (e.state or "") == state and e.env == env
+       and text:match("^%s*\\begin%s*{" .. env .. "}") then
       cur.pics_used = cur.pics_used + 1
       return e
     end
@@ -328,9 +334,16 @@ function S.begin_compile(req_id, ctx_id, source, pics)
   local n = 0
   for line in (source .. "\n"):gmatch("(.-)\n") do n = n + 1; lines[n] = line end
   if n > 0 and lines[n] == "" then lines[n] = nil end
+  local pics_by_line = nil
+  if type(pics) == "table" then
+    pics_by_line = {}
+    for _, e in ipairs(pics) do
+      if type(e) == "table" and type(e.line) == "number" then pics_by_line[e.line] = e end
+    end
+  end
   S.current = { req = req_id, ctx_id = ctx_id, ctx = ctx, font_changed = font_changed, t0 = 0,
                 t_read = S.t_read, t_decoded = S.t_decoded, names = cs_names(source),
-                pics = pics, pics_seen = 0, pics_used = 0 }
+                lines = lines, pics_by_line = pics_by_line, pics_seen = 0, pics_used = 0 }
   S.current.meanings = meanings_of(S.current.names)
   S.images_used = false
   if trace_file then trace(format("begin req %s ctx %s bytes %d lines %d pics %s", tostring(req_id), tostring(ctx_id), #source, n, pics and #pics or 0)) end
@@ -427,7 +440,7 @@ function S.finish()
     if S.images_used and next(S.images) then images = '"images":' .. json.encode(S.images) .. ',' end
     if cur.advanced then images = images .. '"counters":' .. json.encode(cur.advanced) .. ',' end
     if cur.leaks then images = images .. '"leaks":' .. json.encode(cur.leaks) .. ',' end
-    if cur.pics then images = images .. '"pics_seen":' .. cur.pics_seen .. ',"pics_used":' .. cur.pics_used .. ',' end
+    if cur.pics_by_line then images = images .. '"pics_seen":' .. cur.pics_seen .. ',"pics_used":' .. cur.pics_used .. ',' end
     send_result_json(format(HEADER_FMT, cur.req, cur.ctx_id, st, nlines, nglyphs, images, bw, bh, bd, t_tex, t_trav,
       cur.font_changed and "true" or "false", #bytes,
       floor(((cur.t_decoded or 0) - (cur.t_read or 0)) * 1e6 + 0.5), floor(((cur.t_printed or 0) - (cur.t_decoded or 0)) * 1e6 + 0.5),

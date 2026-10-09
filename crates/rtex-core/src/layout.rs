@@ -378,6 +378,13 @@ impl LayoutStore {
         self.by_span.get(&id).map(|i| &self.units[*i])
     }
 
+    /// What the host recorded about span `id` when the installed pass was started.
+    pub fn snapshot_span(&self, id: ParaId) -> Option<&SnapshotSpan> {
+        self.snapshot_index
+            .get(&id)
+            .map(|i| &self.snapshot_spans[*i])
+    }
+
     /// The text of span `id` as the installed pass typeset it.
     pub fn snapshot_text(&self, id: ParaId) -> Option<&str> {
         self.snapshot_index
@@ -485,7 +492,7 @@ impl LayoutStore {
             return None;
         }
         let bs = eu.baselineskip().max(1);
-        let (fx, fy) = rows[0];
+        let (_, fy) = rows[0];
         let (page, ax, ay) = if after {
             let idx = parent_rows.unwrap_or(pl.len() as i64).max(0) as usize;
             if idx < pl.len() {
@@ -502,9 +509,16 @@ impl LayoutStore {
             let (_, ly) = rows[rows.len() - 1];
             (pl[0].page, pl[0].x, pl[0].y - bs - (ly - fy))
         };
+        Some(Self::fragments_at(page, ax, ay, rows))
+    }
+
+    /// The rows of a unit placed with its first row at (`ax`, `ay`) of `page`, keeping the
+    /// box's own geometry: one approximate fragment.
+    pub fn fragments_at(page: i64, ax: Sp, ay: Sp, rows: &[(Sp, Sp)]) -> Vec<Fragment> {
+        let (fx, fy) = rows[0];
         let xs: Vec<Sp> = rows.iter().map(|(rx, _)| ax + (rx - fx)).collect();
         let baselines: Vec<Sp> = rows.iter().map(|(_, ry)| ay + (ry - fy)).collect();
-        Some(vec![Fragment {
+        vec![Fragment {
             page,
             first_line: 1,
             last_line: rows.len() as i64,
@@ -512,7 +526,7 @@ impl LayoutStore {
             xs,
             baselines,
             approximate: true,
-        }])
+        }]
     }
 
     /// Page positions for the rows of a fast result. `rows` are the (x, baseline) of each row in
@@ -617,7 +631,12 @@ pub fn compare_unit_rows(
         };
         let cached_row = is_cached(rl) || is_cached(fl);
         if cached_row {
-            if fl.w != rl.w || fl.h != rl.h || fl.d != rl.d {
+            // the box is what is compared: a matching one counts (a unit made of pictures
+            // alone has nothing else to prove itself with)
+            total += 1;
+            if fl.w == rl.w && fl.h == rl.h && fl.d == rl.d {
+                same += 1;
+            } else {
                 notes.push(format!(
                     "row {} box differs (cached picture): fast ({},{},{}) capture ({},{},{})",
                     k + 1,

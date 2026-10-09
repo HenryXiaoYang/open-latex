@@ -1661,6 +1661,33 @@ struct Frame {
     depth_at_entry: i32,
 }
 
+/// The position after the `\end{env}` that closes an environment whose body starts at `from`
+/// (`\begin{env}` already consumed), counting nested environments of the same name. None when
+/// the environment is not closed.
+fn skip_env_body(text: &str, from: usize, env: &str) -> Option<usize> {
+    let begin = format!("\\begin{{{env}}}");
+    let end = format!("\\end{{{env}}}");
+    let mut depth = 1usize;
+    let mut i = from;
+    loop {
+        let e = text[i..].find(&end)?;
+        let b = text[i..].find(&begin);
+        match b {
+            Some(b) if b < e => {
+                depth += 1;
+                i += b + begin.len();
+            }
+            _ => {
+                depth -= 1;
+                i += e + end.len();
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+    }
+}
+
 /// Lexical check of a unit's source. Returns its shape and the (possibly empty) list of reasons.
 /// Reasons about the unit's vocabulary (what the allow-list knows), as opposed to its structure.
 /// In probe mode these do not decide eligibility: the fast result is compared with the layout.
@@ -1767,7 +1794,6 @@ pub fn classify_source_with(
     }];
     let mut env_depth = 0; // block environments open
     let mut block_env_closed_at: Option<usize> = None; // index after the last `\end{block}` at env_depth 0
-    let mut inline_picture = false; // a picture environment inside the paragraph's text is open
     let mut text_group_pending = false; // next brace group is text mode (\text{...} in math)
     let mut line_start = 0usize;
     while i < b.len() {
@@ -1924,25 +1950,34 @@ pub fn classify_source_with(
                     if in_math {
                         push(&mut reasons, Reason::UnbalancedMath);
                     }
-                    if PICTURE_ENVS.contains(&env.as_str()) {
-                        // a unit of its own (block), but its drawing commands are not
-                        // allow-listed: probe mode compiles and compares it
-                        push(&mut reasons, Reason::DisallowedEnvironment(env.clone()));
-                        // inside a paragraph's text it is an inline box: the paragraph goes on
-                        // after it (the capture keeps one unit)
-                        if env_depth == 0
-                            && shape == UnitShape::Par
-                            && !text[content_start(&text).min(begin_pos)..begin_pos]
-                                .trim()
-                                .is_empty()
-                        {
-                            inline_picture = true;
-                        }
-                    }
                     if block_env_closed_at.is_some() && env_depth == 0 && shape == UnitShape::Par {
                         // text (or another environment) after a block environment: the capture
                         // closes the paragraph unit at the first environment's end
                         push(&mut reasons, Reason::TextAfterEnvironment);
+                    }
+                    if PICTURE_ENVS.contains(&env.as_str()) {
+                        // a unit of its own (block), but its drawing commands are not
+                        // allow-listed: probe mode compiles and compares it, or takes it from
+                        // the picture cache. The body is the environment's business (one
+                        // reason, not one per drawing command): skipped to its \end.
+                        push(&mut reasons, Reason::DisallowedEnvironment(env.clone()));
+                        // inside a paragraph's text it is an inline box: the paragraph goes on
+                        // after it (the capture keeps one unit)
+                        let inline = env_depth == 0
+                            && shape == UnitShape::Par
+                            && !text[content_start(&text).min(begin_pos)..begin_pos]
+                                .trim()
+                                .is_empty();
+                        match skip_env_body(&text, i, &env) {
+                            Some(e) => {
+                                i = e;
+                                if env_depth == 0 && !inline {
+                                    block_env_closed_at = Some(i);
+                                }
+                            }
+                            None => push(&mut reasons, Reason::UnbalancedEnvironment),
+                        }
+                        continue;
                     }
                     env_depth += 1;
                     stack.push(Frame {
@@ -2002,11 +2037,7 @@ pub fn classify_source_with(
                         if policy.is_block_env(&env) {
                             env_depth -= 1;
                             if env_depth == 0 {
-                                if inline_picture {
-                                    inline_picture = false;
-                                } else {
-                                    block_env_closed_at = Some(i);
-                                }
+                                block_env_closed_at = Some(i);
                             }
                         }
                     }
@@ -2665,6 +2696,33 @@ mod tests {
             &p,
         );
         assert!(r.contains(&Reason::TextAfterEnvironment), "{r:?}");
+        // the body of a picture is the environment's business: one reason for the picture,
+        // none for its drawing commands (a cached picture is then the unit's only unknown)
+        let (shape, r) = classify_source(
+            "\\begin{center}\n\\begin{tikzpicture}\n\\begin{axis}[xlabel=$u$]\n\\addplot[blue] {x};\n\\end{axis}\n\\end{tikzpicture}\n\\end{center}",
+            &p,
+        );
+        assert_eq!(shape, UnitShape::Env("center".into()));
+        assert_eq!(r, vec![Reason::DisallowedEnvironment("tikzpicture".into())]);
+        let (_, r) = classify_source(
+            "A plot: \\begin{tikzpicture}\\foo{x}\\end{tikzpicture} and \\bar.",
+            &p,
+        );
+        assert_eq!(
+            r,
+            vec![
+                Reason::DisallowedEnvironment("tikzpicture".into()),
+                Reason::DisallowedMacro("bar".into())
+            ]
+        );
+        // an unclosed picture
+        assert!(reasons("\\begin{tikzpicture}\\draw;").contains(&Reason::UnbalancedEnvironment));
+        assert_eq!(
+            skip_env_body("a\\begin{x}b\\end{x}c\\end{x}d", 0, "x"),
+            Some(26)
+        );
+        assert_eq!(skip_env_body("a\\end{x}", 0, "x"), Some(8));
+        assert_eq!(skip_env_body("a\\begin{x}", 0, "x"), None);
         // setup statements before a block environment: the unit's shape is the environment
         let (shape, r) = classify_source("\\def\\R{1.2}\n\\begin{center}\nx\n\\end{center}", &p);
         assert_eq!(shape, UnitShape::Env("center".into()));

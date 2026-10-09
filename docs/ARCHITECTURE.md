@@ -49,20 +49,26 @@ in order, the first one provides the context, and the fast path typesets the spa
 2. Every touched or created span is classified (paragraph / environment / heading) and checked
    against the allow-list; it must map to exactly one unit of the latest layout whose capture
    facts are clean (replayable `\everypar`, no direction changes, placed rows, a context). A
-   plain paragraph the layout does not know yet (a split's second half, a paragraph typed fresh)
-   **borrows** the context of the nearest paragraph unit before it (after it when there is none):
+   plain paragraph or a block environment (not a float) the layout does not know yet (a split's
+   second half, a paragraph or environment typed fresh, a blank line typed before a `center`)
+   whose vocabulary is allow-listed, or whose only non-allow-listed content is picture
+   environments the picture cache holds (in probe mode nothing else can be verified without a
+   layout unit), **borrows** the context of the nearest paragraph unit before it (after it when there is none):
    same parameters, fonts and counters, with the paragraph-start state of a paragraph that follows
-   a paragraph (or a heading when a heading span precedes it). Its rows are placed right after the
-   parent's current rows (exact for consecutive paragraphs with the same baselineskip and no
-   parskip), `approximate` and `context_stale`; the next layout replaces the borrowed context with
-   a captured one.
+   a paragraph (or a heading when a heading span precedes it); an environment is told from a
+   paragraph by the context's `kind`/`name`. Its rows are placed right after the parent's current
+   rows (exact for consecutive paragraphs with the same baselineskip and no parskip),
+   `approximate` and `context_stale`; the next layout replaces the borrowed context with a
+   captured one. A float typed fresh waits for the next pass (its box state comes from the
+   capture only).
 3. The request goes straight to the server when it is idle and already holds the unit's context
    (no engine-thread wake-up on the keystroke path); otherwise it is queued, latest per unit. The
    server replays the context, typesets the source in a `\vbox`, restores the counters, checks
    its state fingerprint, traverses the box and returns the display list with stage timings.
    When the source contains picture environments the picture cache holds (same hash, same
-   font/color/width state), the request carries their entries and the server places the cached
-   regions instead of drawing (`rtex-pic.lua`, shared with the capture): a sentence followed by a
+   font/color/width state), the request carries their entries, each keyed by the source line its
+   `\begin` starts on, and the server places the cached regions instead of drawing
+   (`rtex-pic.lua`, shared with the capture; a picture without an entry is drawn): a sentence followed by a
    pgfplots axis in one unit costs the sentence, not the plot (280 ms → ~1 ms on a real-world
    document). The engine reports how many pictures it began; a count that differs from the
    source scan (a picture made by a macro) repeats the compile without the cache.
@@ -148,10 +154,14 @@ text, the current font (by name and size), color, `\hsize` and `\linewidth`, is 
 picture and compared before a cached copy is used: a picture inside `{\small …}` is drawn again
 when that becomes `\Large`, and the new drawing replaces the cached one. A picture that mentions `\ref`, `\cite`, `\label`, counters, `\today`,
 `remember picture`/`overlay`, `\includegraphics`, `\input`, `\verb`, data files (`\addplot
-table`/`file`), or assignments that escape its group (`\global`, `\xdef`, `\savebox` …) is never
-cached, nor is one whose output spans lines or pages, one whose `\begin` does not start its line,
-or anything when the body text contains `remember picture`. Entries unused for
-four passes are evicted. `rtex verify --pic-cache` builds a cache from a converged pass, runs one
+table`/`file`), counters and links (`\thesection`, `\thepage`, `\href`, `\footnotemark`),
+pgf material outside the picture box (`trim axis left/right`), or assignments that escape its
+group (`\global`, `\xdef`, `\savebox`, `\pgfdeclarelayer` …) is never cached, nor is one whose
+output spans lines or pages, one whose `\begin` does not start its line, pictures of a file
+`\input` twice, or anything when the sources (the preamble included) mention `remember picture`.
+Entries unused for four passes are evicted; a picture whose cached body did not end where the
+scan said is drawn for four passes before it is cached again. In trace mode (debug directory)
+`\tracingmacros` slows every compile: the fast budget is measured with it on. `rtex verify --pic-cache` builds a cache from a converged pass, runs one
 more pass on it and checks units, placements and (with `--raster`) the rendered pages. On the
 reference container a 111-page document with 120 pictures passes in 18 s instead of 45 s. The
 live engine uses the same cache (fast path, step 3), so a paragraph that shares its unit with a

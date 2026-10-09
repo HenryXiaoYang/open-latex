@@ -25,7 +25,9 @@ span (or the preamble) changed and where it was.
    background-only span or the preamble *before* it in the same file changed after the layout's
    snapshot revision; with `fast_on_stale_context = true` (default) results are still delivered
    with `context_stale = true`, otherwise the paragraph is background-only until the next pass.
-   A span with no mapped engine paragraph has no context: background-only (`NoContext`).
+   A span with no mapped engine paragraph borrows a neighbouring paragraph's context when it is
+   a paragraph or a non-float block environment (delivered `context_stale`, placements
+   `approximate`); otherwise it has no context and is background-only (`NoContext`).
 3. **Background pass.** Compiled from a snapshot at `source_revision = S`; always delivered.
    If the current revision is `> S` the layout is `Stale{pending_since}` and another pass is
    scheduled. Overlays with `last_revision ≤ S` are committed (dropped); newer overlays are kept

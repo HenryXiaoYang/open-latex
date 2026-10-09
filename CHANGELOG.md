@@ -21,6 +21,13 @@
   within the fast budget (compile frame field `<plen>`, result `pics_seen`/`pics_used`; shared
   `rtex-pic.lua`/`rtex-pic.tex`). The `cached_picture` item carries the picture's rectangle, so a
   host can carry the picture along when it redraws the unit live.
+- A block environment the layout does not know yet (a blank line typed between a sentence and
+  its `center`/`itemize`/`equation`, a new environment) borrows a neighbouring paragraph's
+  context like a new paragraph does and is delivered live (`context_stale`, `approximate`,
+  cached pictures in place); before, the split halted the fast path (`NoContext`) until the
+  next pass. Floats, and units with vocabulary that only a probe against the layout could
+  verify, still wait for the pass; a unit let through for its cached pictures is demoted when
+  the engine drew one after all.
 - `LayoutUpdate.pdf_fallback` is a per-layout copy of the pass PDF (`build/bg/layout-N.pdf`) and is
   set whenever any page is degraded: the next pass no longer rewrites the file a host is reading.
   Background passes run in `build/bg/pass-0`/`pass-1` alternately (the aux family is carried

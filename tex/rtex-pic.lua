@@ -62,6 +62,9 @@ function P.begin(c, env, lookup, on_draw)
   c.armed = nil
   local state = P.state()
   local e = lookup(env, state)
+  -- img.new/img.scan on a missing or unreadable file is a fatal TeX error that no pcall
+  -- catches: the file is checked first (the cache may have evicted it meanwhile)
+  if e and not (e.pdf and lfs.attributes(e.pdf, "mode") == "file") then e = nil end
   if e then
     local ok, im = pcall(P.image, e)
     if ok and im then

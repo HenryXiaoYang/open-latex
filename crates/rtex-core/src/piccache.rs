@@ -73,7 +73,15 @@ pub struct CacheEntry {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Index {
     serial: u64,
+    /// Names the PDFs of this index's lifetime (`p<epoch>-<serial>.pdf`): an index lost and
+    /// rebuilt from scratch never reuses a name a reader may still hold.
+    #[serde(default)]
+    epoch: u64,
     entries: BTreeMap<String, CacheEntry>, // hash (decimal) -> entry
+    /// `file:line` keys whose cached body did not end where the source scan said (a pass
+    /// reported them mismatched), with the serial until which they are drawn, not cached.
+    #[serde(default)]
+    bad: BTreeMap<String, u64>,
 }
 
 pub struct PicCache {
@@ -89,10 +97,17 @@ impl PicCache {
         // the manifest names the cached PDFs by absolute path: lualatex runs in the snapshot
         // directory, not where the host started
         let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
-        let index = std::fs::read_to_string(dir.join("index.json"))
+        let mut index: Index = std::fs::read_to_string(dir.join("index.json"))
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        if index.epoch == 0 {
+            index.epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(1)
+                .max(1);
+        }
         PicCache { dir, index }
     }
 
@@ -102,11 +117,10 @@ impl PicCache {
 
     fn save(&self) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        std::fs::write(
-            self.dir.join("index.json"),
-            serde_json::to_vec(&self.index)?,
-        )?;
-        Ok(())
+        write_atomic(
+            &self.dir.join("index.json"),
+            &serde_json::to_vec(&self.index)?,
+        )
     }
 
     /// Write the manifest the next capture pass reads: every current picture the cache holds,
@@ -127,8 +141,7 @@ impl PicCache {
         if m.is_empty() {
             let _ = std::fs::remove_file(manifest);
         } else {
-            std::fs::write(manifest, serde_json::to_vec(&m)?)
-                .with_context(|| format!("writing {}", manifest.display()))?;
+            write_atomic(manifest, &serde_json::to_vec(&m)?)?;
         }
         let _ = self.save();
         Ok(m.len())
@@ -137,7 +150,7 @@ impl PicCache {
     /// The cache entry for a picture, as the capture and the live engine read it (`pdf` by
     /// absolute path, `bbox` in PDF user space, `state` to compare, `end_line` of the source).
     pub fn entry_json(&self, p: &PictureRef) -> Option<serde_json::Value> {
-        if !p.cacheable {
+        if !p.cacheable || self.index.bad.contains_key(&p.key) {
             return None;
         }
         let e = self.index.entries.get(&p.hash.to_string())?;
@@ -166,25 +179,33 @@ impl PicCache {
         pass_pdf: &Path,
     ) -> Result<usize> {
         let serial = self.index.serial;
+        // a mismatched key is drawn for a while instead of cached again right away (the
+        // mismatch would repeat on every other pass)
+        self.index.bad.retain(|_, until| *until >= serial);
         for k in stale_keys {
             if let Some(p) = pics.iter().find(|p| &p.key == k) {
                 self.index.entries.remove(&p.hash.to_string());
             }
+            self.index.bad.insert(k.clone(), serial + KEEP_PASSES);
         }
         let mut new: Vec<(&PictureRef, &RecordedPic)> = Vec::new();
-        for p in pics.iter().filter(|p| p.cacheable) {
+        for p in pics
+            .iter()
+            .filter(|p| p.cacheable && !self.index.bad.contains_key(&p.key))
+        {
             let Some(r) = recorded.get(&p.key) else {
                 continue;
             };
             if r.env != p.env || r.w <= 0 || r.h + r.d <= 0 {
                 continue;
             }
-            // an entry drawn under another state (font, color, width) is replaced
+            // an entry drawn under another state (font, color, width), or whose PDF is gone,
+            // is replaced
             if self
                 .index
                 .entries
                 .get(&p.hash.to_string())
-                .map(|e| e.state == r.state)
+                .map(|e| e.state == r.state && self.dir.join(&e.pdf).exists())
                 .unwrap_or(false)
             {
                 continue;
@@ -194,7 +215,7 @@ impl PicCache {
         let added = new.len();
         if !new.is_empty() {
             std::fs::create_dir_all(&self.dir)?;
-            let name = format!("p{serial}.pdf");
+            let name = format!("p{}-{serial}.pdf", self.index.epoch);
             // only the pages that carry new pictures (a 100-page PDF per edited picture
             // would fill the disk); page numbers are remapped onto the extract
             let pages: Vec<i64> = new
@@ -211,7 +232,7 @@ impl PicCache {
                         .map(|(i, p)| (*p, i as i64 + 1))
                         .collect(),
                     Err(e) => {
-                        log::debug!(
+                        log::warn!(
                             "picture cache: page extraction failed ({e:#}), copying the pass PDF"
                         );
                         std::fs::copy(pass_pdf, self.dir.join(&name)).with_context(|| {
@@ -271,6 +292,14 @@ impl PicCache {
     }
 }
 
+/// Write `data` to `path` through a temporary file and a rename: a reader (the live engine's
+/// index lookup, the capture's manifest read) never sees a torn file.
+fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, data).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))
+}
+
 /// Write the given pages (1-based, ascending) of `src` as `dst`, in that order.
 fn extract_pages(src: &Path, pages: &[i64], dst: &Path) -> Result<()> {
     let mut doc = lopdf::Document::load(src).context("loading the pass PDF")?;
@@ -295,6 +324,14 @@ const UNCACHEABLE_WORDS: &[&str] = &[
     "ref",
     "pageref",
     "eqref",
+    "footnotemark",
+    "footnotetext",
+    // links and anchors (not in the page content an image carries)
+    "href",
+    "hyperref",
+    "hyperlink",
+    "hypertarget",
+    "url",
     "autoref",
     "cref",
     "Cref",
@@ -318,6 +355,10 @@ const UNCACHEABLE_WORDS: &[&str] = &[
     // other files, verbatim, notes
     "verb",
     "input",
+    "pgfimage",
+    "includesvg",
+    "includepdf",
+    "lstinputlisting",
     "include",
     "footnote",
     "index",
@@ -337,6 +378,8 @@ const UNCACHEABLE_WORDS: &[&str] = &[
     "gdef",
     "savebox",
     "sbox",
+    "pgfdeclarelayer",
+    "newbox",
     "newsavebox",
     "usebox",
     "setbox",
@@ -345,8 +388,17 @@ const UNCACHEABLE_WORDS: &[&str] = &[
 /// Control-word prefixes (`\citep`, `\includegraphics*`, `\pgfplotstableread` …).
 const UNCACHEABLE_PREFIXES: &[&str] = &["cite", "includegraphics", "pgfplotstable", "footcite"];
 
-/// Plain text.
-const UNCACHEABLE_TEXT: &[&str] = &["remember picture", "overlay"];
+/// Plain text. `trim left`/`trim right` (pgfplots `trim axis left/right`) are kerns pgf puts
+/// outside the picture box, which a cached box does not carry; `legend to name` writes a
+/// label.
+const UNCACHEABLE_TEXT: &[&str] = &[
+    "remember picture",
+    "overlay",
+    "trim left",
+    "trim right",
+    "trim axis",
+    "legend to name",
+];
 
 /// Body-level statements whose effect a later picture may depend on (hashed into every
 /// picture after them, the whole statement when it spans lines).
@@ -401,6 +453,27 @@ fn has_cs(text: &str, name: &str) -> bool {
     false
 }
 
+/// Does `text` print a counter with `\the<counter>` (`\thesection`, `\thepage`, `\theequation`
+/// and every user `\the…`)? `\theta` and `\therefore` are symbols, `\the` itself is a word of
+/// its own.
+fn has_the_counter(text: &str) -> bool {
+    let b = text.as_bytes();
+    let mut from = 0;
+    while let Some(k) = text[from..].find("\\the") {
+        let start = from + k + 4;
+        let mut end = start;
+        while end < b.len() && is_letter(b[end]) {
+            end += 1;
+        }
+        let rest = &text[start..end];
+        if !rest.is_empty() && !matches!(rest, "ta" | "refore") {
+            return true;
+        }
+        from = start;
+    }
+    false
+}
+
 /// Does `text` contain a control word starting with `\name`?
 fn has_cs_prefix(text: &str, name: &str) -> bool {
     text.contains(&format!("\\{name}"))
@@ -435,6 +508,7 @@ fn word_before_arg(text: &str, word: &str) -> bool {
 /// definitions before it?
 pub fn uncacheable(text: &str) -> bool {
     UNCACHEABLE_WORDS.iter().any(|w| has_cs(text, w))
+        || has_the_counter(text)
         || UNCACHEABLE_PREFIXES.iter().any(|w| has_cs_prefix(text, w))
         || UNCACHEABLE_TEXT.iter().any(|t| text.contains(t))
         || word_before_arg(text, "table")
@@ -500,11 +574,11 @@ pub fn scan_pictures(
             .map(|k| k + 1)
             .unwrap_or(0)
     };
-    // `remember picture` anywhere in the body (comments aside) disables the cache: such
-    // pictures place material relative to others
-    let has_remember = texts.iter().any(|(name, text)| {
+    // `remember picture` anywhere (comments aside; the preamble too: `\tikzset{every
+    // picture/.style={remember picture}}`) disables the cache: such pictures place material
+    // relative to others
+    let has_remember = texts.values().any(|text| {
         text.lines()
-            .skip(body_start(name))
             .any(|l| strip_comment(l).contains("remember picture"))
     });
     struct Walker<'a> {
@@ -513,12 +587,16 @@ pub fn scan_pictures(
         out: Vec<PictureRef>,
         has_remember: bool,
         stack: Vec<String>,
+        /// How often each file was read: a file `\input` twice yields two pictures per
+        /// `file:line` key, which the capture cannot tell apart.
+        visits: BTreeMap<String, u32>,
     }
     impl Walker<'_> {
         fn walk(&mut self, name: &str, start: usize) {
             if self.stack.len() > 8 || self.stack.iter().any(|s| s == name) {
                 return;
             }
+            *self.visits.entry(name.to_string()).or_default() += 1;
             self.stack.push(name.to_string());
             let text = &self.texts[name];
             let lines: Vec<&str> = text.lines().collect();
@@ -599,9 +677,26 @@ pub fn scan_pictures(
         out: Vec::new(),
         has_remember,
         stack: Vec::new(),
+        visits: BTreeMap::new(),
     };
     if texts.contains_key(main) {
         w.walk(main, body_start(main));
+    }
+    let twice: Vec<&str> = w
+        .visits
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(f, _)| f.trim_start_matches("./"))
+        .collect();
+    if !twice.is_empty() {
+        for p in &mut w.out {
+            if p.key
+                .rsplit_once(':')
+                .is_some_and(|(f, _)| twice.contains(&f))
+            {
+                p.cacheable = false;
+            }
+        }
     }
     w.out
 }
@@ -650,6 +745,42 @@ mod tests {
         let t = texts.get_mut("main.tex").unwrap();
         *t = t.replace("Other text.", "Other text. % use remember picture one day");
         assert!(scan_pictures(&texts, "main.tex", 1)[0].cacheable);
+        // remember picture set in the preamble (tikzmark, overlays) disables it as well
+        let t = texts.get_mut("main.tex").unwrap();
+        *t = t.replace(
+            "\\documentclass{article}\n",
+            "\\documentclass{article}\n\\tikzset{every picture/.style={remember picture}}\n",
+        );
+        assert!(!scan_pictures(&texts, "main.tex", 1)[0].cacheable);
+    }
+
+    #[test]
+    fn counters_links_and_double_inputs_are_not_cached() {
+        // \the<counter> prints a number the picture's text does not show
+        assert!(uncacheable("\\node {Section \\thesection};"));
+        assert!(uncacheable("\\node {p.~\\thepage};"));
+        assert!(!uncacheable("\\draw (0,0) -- (\\theta:1);"));
+        assert!(!uncacheable("\\node {$\\therefore x$};"));
+        assert!(uncacheable("\\node {\\href{https://x.y}{link}};"));
+        assert!(uncacheable("\\node {text\\footnotemark};"));
+        assert!(uncacheable("\\pgfimage{fig}"));
+        // a file read twice: its pictures share their file:line keys
+        let mut texts = texts_of(
+            "\\begin{document}\n\\input{fig}\n\\def\\H{2}\n\\input{fig}\n\\end{document}\n",
+        );
+        texts.insert(
+            "fig.tex".into(),
+            "\\begin{tikzpicture}\n\\draw (0,0) -- (\\H,1);\n\\end{tikzpicture}\n".into(),
+        );
+        let pics = scan_pictures(&texts, "main.tex", 1);
+        assert_eq!(pics.len(), 2);
+        assert_eq!(pics[0].key, pics[1].key);
+        assert!(!pics[0].cacheable && !pics[1].cacheable);
+        let t = texts.get_mut("main.tex").unwrap();
+        *t = t.replacen("\\input{fig}\n", "", 1);
+        let pics = scan_pictures(&texts, "main.tex", 1);
+        assert_eq!(pics.len(), 1);
+        assert!(pics[0].cacheable);
     }
 
     #[test]
@@ -781,7 +912,15 @@ mod tests {
             0
         );
         assert_eq!(cache.entries(), 0);
+        // and draws it (no entry) for KEEP_PASSES passes before caching it again
+        assert_eq!(cache.absorb(&pics, &rec, &[], &pdf).unwrap(), 0);
+        for _ in 0..KEEP_PASSES {
+            assert_eq!(cache.write_manifest(&pics, &manifest).unwrap(), 0);
+            assert_eq!(cache.absorb(&pics, &rec, &[], &pdf).unwrap(), 0);
+        }
+        cache.write_manifest(&pics, &manifest).unwrap();
         assert_eq!(cache.absorb(&pics, &rec, &[], &pdf).unwrap(), 1);
+        assert_eq!(cache.write_manifest(&pics, &manifest).unwrap(), 1);
         // a changed picture: no hit; after KEEP_PASSES unwanted passes the entry and its PDF go
         let changed = vec![PictureRef {
             hash: 43,
