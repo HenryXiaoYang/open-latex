@@ -7,248 +7,341 @@ use super::*;
 // Engine thread: owns the fast server; coalesces pending requests (latest per paragraph).
 // ---------------------------------------------------------------------------------------------
 pub(super) fn engine_thread(s: Arc<Shared>) {
-    let mut server: Option<FastServer> = None;
-    let mut server_generation: u64 = u64::MAX;
-    let mut labels_sent: u64 = 0;
-    let reset_link = |s: &Shared| {
-        let mut l = s.link.lock();
-        l.writer = None;
-        l.inflight = None;
-        l.contexts_sent.clear();
-    };
-    loop {
-        if s.shutdown.load(Ordering::SeqCst) {
-            reset_link(&s);
-            if let Some(mut srv) = server.take() {
-                let _ = srv.shutdown();
+    EngineLoop {
+        s,
+        server: None,
+        server_generation: u64::MAX,
+        labels_sent: 0,
+    }
+    .run();
+}
+
+/// The engine thread's own state: the server it owns and what it has sent to that server.
+struct EngineLoop {
+    s: Arc<Shared>,
+    server: Option<FastServer>,
+    server_generation: u64,
+    labels_sent: u64,
+}
+
+/// The link fields that describe the current server, cleared when it goes away.
+fn reset_link(s: &Shared) {
+    let mut l = s.link.lock();
+    l.writer = None;
+    l.inflight = None;
+    l.contexts_sent.clear();
+}
+
+/// What the probe of a unit decided for this iteration.
+enum ProbeOutcome {
+    /// Proven (now or earlier for this layout): send the compile.
+    Send(FastRequest),
+    /// Handled (demoted, requeued, or the engine failed): next iteration.
+    Done,
+}
+
+impl EngineLoop {
+    /// One iteration per request or event: 1. collect a result in flight; 2. take the next
+    /// queued request; 3. (re)start the server; 3b. send labels; 4. send the context; 4b. probe
+    /// (probe mode); 5. send the compile. A step that settles the iteration returns false (or
+    /// nothing to go on with) and the loop starts over.
+    fn run(mut self) {
+        loop {
+            if self.s.shutdown.load(Ordering::SeqCst) {
+                reset_link(&self.s);
+                if let Some(mut srv) = self.server.take() {
+                    let _ = srv.shutdown();
+                }
+                return;
             }
-            return;
+            let wanted_gen = self.s.engine_generation.load(Ordering::SeqCst);
+            if self.collect_inflight(wanted_gen) {
+                continue;
+            }
+            let Some(req) = self.next_request(wanted_gen) else {
+                continue;
+            };
+            if !self.ensure_server(wanted_gen) || !self.sync_labels(wanted_gen) {
+                continue;
+            }
+            let Some(req) = req else { continue };
+            self.serve(req, wanted_gen);
         }
-        let wanted_gen = s.engine_generation.load(Ordering::SeqCst);
-        // 1. a compile is in flight (sent by us or directly by the host): read its result
+    }
+
+    /// Drop the server (its process is killed) and the link's view of it.
+    fn drop_server(&mut self) {
+        self.server = None;
+        reset_link(&self.s);
+    }
+
+    /// 1. A compile is in flight (sent by us or directly by the host): read its result. True
+    /// when there was one (the iteration is settled).
+    fn collect_inflight(&mut self, wanted_gen: u64) -> bool {
+        let s = self.s.clone();
         let inflight_gen = s
             .link
             .lock()
             .inflight
             .as_ref()
             .map(|f| f.req.versions.engine_generation);
-        if let Some(gen) = inflight_gen {
-            let srv_ok = server.is_some() && server_generation == gen && gen == wanted_gen;
-            if !srv_ok {
-                s.link.lock().inflight = None;
-                continue;
-            }
-            let srv = server.as_mut().unwrap();
-            let result = srv.recv();
-            srv.timeout = compile_timeout(&s.cfg);
-            let Some(fl) = s.link.lock().inflight.take() else {
-                continue;
-            };
-            match result {
-                Ok(Response::Result(cr)) => {
-                    let rt = crate::engine::RoundTrip {
-                        total: fl.t0.elapsed(),
-                        t_tex: Duration::from_micros(cr.t_tex_us as u64),
-                        t_traverse: Duration::from_micros(cr.t_traverse_us as u64),
-                        t_pack: Duration::from_micros(cr.t_pack_us as u64),
-                    };
-                    handle_result(&s, fl.req, cr, rt, fl.t0, wanted_gen);
-                }
-                Ok(Response::Fatal {
-                    reason,
-                    errors,
-                    before,
-                    after,
-                    ..
-                }) => {
-                    engine_failed(
-                        &s,
-                        &fl.req,
-                        anyhow!(
-                            "engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"
-                        ),
-                        wanted_gen,
-                        server.as_ref(),
-                    );
-                    server = None;
-                    reset_link(&s);
-                }
-                Ok(other) => {
-                    engine_failed(
-                        &s,
-                        &fl.req,
-                        anyhow!("unexpected response {other:?}"),
-                        wanted_gen,
-                        server.as_ref(),
-                    );
-                    server = None;
-                    reset_link(&s);
-                }
-                Err(e) => {
-                    engine_failed(&s, &fl.req, e, wanted_gen, server.as_ref());
-                    server = None;
-                    reset_link(&s);
-                }
-            }
-            continue;
+        let Some(gen) = inflight_gen else {
+            return false;
+        };
+        let srv_ok = self.server.is_some() && self.server_generation == gen && gen == wanted_gen;
+        if !srv_ok {
+            s.link.lock().inflight = None;
+            return true;
         }
-        // 2. next queued request (the smallest unit id)
+        let srv = self.server.as_mut().unwrap();
+        let result = srv.recv();
+        srv.timeout = compile_timeout(&s.cfg);
+        let Some(fl) = s.link.lock().inflight.take() else {
+            return true;
+        };
+        let failure = match result {
+            Ok(Response::Result(cr)) => {
+                let rt = crate::engine::RoundTrip {
+                    total: fl.t0.elapsed(),
+                    t_tex: Duration::from_micros(cr.t_tex_us as u64),
+                    t_traverse: Duration::from_micros(cr.t_traverse_us as u64),
+                    t_pack: Duration::from_micros(cr.t_pack_us as u64),
+                };
+                handle_result(&s, fl.req, cr, rt, fl.t0, wanted_gen);
+                return true;
+            }
+            Ok(Response::Fatal {
+                reason,
+                errors,
+                before,
+                after,
+                ..
+            }) => anyhow!("engine fatal: {reason} {errors:?} before=[{before}] after=[{after}]"),
+            Ok(other) => anyhow!("unexpected response {other:?}"),
+            Err(e) => e,
+        };
+        engine_failed(&s, &fl.req, failure, wanted_gen, self.server.as_ref());
+        self.drop_server();
+        true
+    }
+
+    /// 2. The next queued request (the smallest unit id). None: the iteration is settled
+    /// (nothing to do and the server is fine: waited for a signal; or the request was
+    /// superseded). Some(None): nothing queued but the server needs attention.
+    fn next_request(&mut self, wanted_gen: u64) -> Option<Option<FastRequest>> {
+        let s = &self.s;
         let req = {
             let mut p = s.pending.lock();
             let key = p.keys().next().copied();
             key.and_then(|k| p.remove(&k))
         };
         if req.is_none()
-            && server.is_some()
-            && server_generation == wanted_gen
-            && server.as_mut().unwrap().is_alive()
+            && self.server.is_some()
+            && self.server_generation == wanted_gen
+            && self.server.as_mut().unwrap().is_alive()
         {
             let _ = s.pending_signal.1.recv_timeout(Duration::from_millis(200));
-            continue;
+            return None;
         }
         if let Some(r) = &req {
             if r.versions.engine_generation != wanted_gen {
-                continue; // superseded by a preamble change
+                return None; // superseded by a preamble change
             }
         }
-        // 3. (re)start the server when the generation changed or it died. A preamble edit bumps
-        //    the generation per keystroke; wait until it has been quiet for the debounce time so
-        //    a burst of preamble keystrokes costs one restart, not one per keystroke.
-        if server.is_none()
-            || server_generation != wanted_gen
-            || !server.as_mut().unwrap().is_alive()
-        {
-            if server.is_some() && server_generation != wanted_gen {
-                let mut g = wanted_gen;
-                loop {
-                    let _ = s.pending_signal.1.recv_timeout(s.cfg.debounce);
-                    let now = s.engine_generation.load(Ordering::SeqCst);
-                    if now == g || s.shutdown.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    g = now;
+        Some(req)
+    }
+
+    /// 3. (Re)start the server when the generation changed or it died. A preamble edit bumps
+    /// the generation per keystroke; wait until it has been quiet for the debounce time so a
+    /// burst of preamble keystrokes costs one restart, not one per keystroke. False: the
+    /// iteration is settled (the generation moved on, or the start failed).
+    fn ensure_server(&mut self, wanted_gen: u64) -> bool {
+        let s = self.s.clone();
+        let healthy = self.server_generation == wanted_gen
+            && self.server.as_mut().is_some_and(|srv| srv.is_alive());
+        if healthy {
+            return true;
+        }
+        if self.server.is_some() && self.server_generation != wanted_gen {
+            let mut g = wanted_gen;
+            loop {
+                let _ = s.pending_signal.1.recv_timeout(s.cfg.debounce);
+                let now = s.engine_generation.load(Ordering::SeqCst);
+                if now == g || s.shutdown.load(Ordering::SeqCst) {
+                    break;
                 }
-                if g != wanted_gen {
-                    continue; // re-evaluate with the settled generation
-                }
+                g = now;
             }
-            reset_link(&s);
-            if let Some(mut old) = server.take() {
-                old.kill();
-            }
-            let preamble = effective_preamble(&texts_of(&s.files.lock()), &s.cfg.main_file);
-            s.events
-                .send(Event::EngineState {
-                    engine_generation: wanted_gen,
-                    state: "Starting".into(),
-                    reason: None,
-                })
-                .ok();
-            let aux = {
-                let layout = s.layout.lock();
-                let jobname = Path::new(&s.cfg.main_file)
-                    .file_stem()
-                    .and_then(|x| x.to_str())
-                    .unwrap_or("main")
-                    .to_string();
-                layout
-                    .capture_dir
-                    .as_ref()
-                    .map(|d| d.join(format!("{jobname}.aux")))
-            };
-            match FastServer::spawn_with(
-                &s.tl,
-                &s.cfg.project_root,
-                &s.cfg.build_dir.join("serve"),
-                &preamble,
-                wanted_gen,
-                aux.as_deref(),
-                s.cfg.debug_dir.is_some(),
-            ) {
-                Ok(mut srv) => {
-                    srv.timeout = compile_timeout(&s.cfg).max(Duration::from_secs(30)); // first compile loads fonts
-                    {
-                        let mut l = s.link.lock();
-                        l.writer = srv.stdin_clone().ok();
-                        l.generation = wanted_gen;
-                        l.contexts_sent.clear();
-                        l.inflight = None;
-                    }
-                    server = Some(srv);
-                    server_generation = wanted_gen;
-                    labels_sent = 0;
-                    s.events
-                        .send(Event::EngineState {
-                            engine_generation: wanted_gen,
-                            state: "Ready".into(),
-                            reason: None,
-                        })
-                        .ok();
-                }
-                Err(e) => {
-                    let reason = debug_bundle_startup(&s, wanted_gen, &format!("{e:#}"));
-                    s.events
-                        .send(Event::EngineState {
-                            engine_generation: wanted_gen,
-                            state: "Failed".into(),
-                            reason: Some(reason),
-                        })
-                        .ok();
-                    std::thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
+            if g != wanted_gen {
+                return false; // re-evaluate with the settled generation
             }
         }
-        let srv = server.as_mut().unwrap();
-        // 3b. labels (\newlabel/\bibcite of the last pass) when they changed; done while idle
-        // when possible, and before a compile otherwise
+        reset_link(&s);
+        if let Some(mut old) = self.server.take() {
+            old.kill();
+        }
+        let preamble = effective_preamble(&texts_of(&s.files.lock()), &s.cfg.main_file);
+        s.events
+            .send(Event::EngineState {
+                engine_generation: wanted_gen,
+                state: "Starting".into(),
+                reason: None,
+            })
+            .ok();
+        let aux = {
+            let layout = s.layout.lock();
+            let jobname = Path::new(&s.cfg.main_file)
+                .file_stem()
+                .and_then(|x| x.to_str())
+                .unwrap_or("main")
+                .to_string();
+            layout
+                .capture_dir
+                .as_ref()
+                .map(|d| d.join(format!("{jobname}.aux")))
+        };
+        match FastServer::spawn_with(
+            &s.tl,
+            &s.cfg.project_root,
+            &s.cfg.build_dir.join("serve"),
+            &preamble,
+            wanted_gen,
+            aux.as_deref(),
+            s.cfg.debug_dir.is_some(),
+        ) {
+            Ok(mut srv) => {
+                srv.timeout = compile_timeout(&s.cfg).max(Duration::from_secs(30)); // first compile loads fonts
+                {
+                    let mut l = s.link.lock();
+                    l.writer = srv.stdin_clone().ok();
+                    l.generation = wanted_gen;
+                    l.contexts_sent.clear();
+                    l.inflight = None;
+                }
+                self.server = Some(srv);
+                self.server_generation = wanted_gen;
+                self.labels_sent = 0;
+                s.events
+                    .send(Event::EngineState {
+                        engine_generation: wanted_gen,
+                        state: "Ready".into(),
+                        reason: None,
+                    })
+                    .ok();
+                true
+            }
+            Err(e) => {
+                let reason = debug_bundle_startup(&s, wanted_gen, &format!("{e:#}"));
+                s.events
+                    .send(Event::EngineState {
+                        engine_generation: wanted_gen,
+                        state: "Failed".into(),
+                        reason: Some(reason),
+                    })
+                    .ok();
+                std::thread::sleep(Duration::from_secs(1));
+                false
+            }
+        }
+    }
+
+    /// 3b. Labels (\newlabel/\bibcite of the last pass) when they changed; done while idle
+    /// when possible, and before a compile otherwise. False: the server failed (dropped).
+    fn sync_labels(&mut self, wanted_gen: u64) -> bool {
+        let s = self.s.clone();
         let (labels, labels_hash) = {
             let layout = s.layout.lock();
             (layout.labels.clone(), layout.labels_hash)
         };
-        if labels_hash != labels_sent && !labels.is_empty() {
-            let mut link = s.link.lock();
-            if link.inflight.is_none() {
-                match srv.set_labels(&labels) {
-                    Ok(()) => labels_sent = labels_hash,
-                    Err(e) => {
-                        drop(link);
-                        s.events
-                            .send(Event::EngineState {
-                                engine_generation: wanted_gen,
-                                state: "Restarting".into(),
-                                reason: Some(format!("labels: {e}")),
-                            })
-                            .ok();
-                        server = None;
-                        reset_link(&s);
-                        continue;
-                    }
-                }
-                link.labels_sent = labels_sent;
+        if labels_hash == self.labels_sent || labels.is_empty() {
+            return true;
+        }
+        let mut link = s.link.lock();
+        if link.inflight.is_some() {
+            return true;
+        }
+        let srv = self.server.as_mut().unwrap();
+        match srv.set_labels(&labels) {
+            Ok(()) => {
+                self.labels_sent = labels_hash;
+                link.labels_sent = labels_hash;
+                true
+            }
+            Err(e) => {
+                drop(link);
+                s.events
+                    .send(Event::EngineState {
+                        engine_generation: wanted_gen,
+                        state: "Restarting".into(),
+                        reason: Some(format!("labels: {e}")),
+                    })
+                    .ok();
+                self.drop_server();
+                false
             }
         }
-        let Some(mut req) = req else { continue };
-        // 4. send the context when the server does not hold it, then the compile frame
+    }
+
+    /// 4., 4b., 5.: context, probe, compile frame, under the link lock (released around the
+    /// probe compile and every side effect that takes it again).
+    fn serve(&mut self, mut req: FastRequest, wanted_gen: u64) {
+        let s = self.s.clone();
         let mut link = s.link.lock();
+        if !self.ensure_context(&mut link, &mut req, wanted_gen) {
+            return;
+        }
+        if req.probe {
+            match self.prove(&mut link, req, wanted_gen) {
+                ProbeOutcome::Send(r) => req = r,
+                ProbeOutcome::Done => return,
+            }
+        }
+        // 5. the compile frame; the result is collected by step 1
+        let req_id = link.next_req;
+        link.next_req += 1;
+        let t0 = Instant::now();
+        let srv = self.server.as_mut().unwrap();
+        match srv.send_compile(req_id, req.seq, &req.source, &req.pics) {
+            Ok(()) => {
+                link.inflight = Some(InFlight { req, t0 });
+            }
+            Err(e) => {
+                drop(link);
+                engine_failed(&s, &req, e, wanted_gen, self.server.as_ref());
+                self.drop_server();
+            }
+        }
+    }
+
+    /// 4. Send the context when the server does not hold it. False: the iteration is settled
+    /// (the context is gone, or the server failed).
+    fn ensure_context(
+        &mut self,
+        link: &mut parking_lot::MutexGuard<'_, EngineLink>,
+        req: &mut FastRequest,
+        wanted_gen: u64,
+    ) -> bool {
+        let s = self.s.clone();
         if link.context_rev_sent != req.versions.context_revision {
             link.contexts_sent.clear();
             link.context_rev_sent = req.versions.context_revision;
         }
-        if !link.contexts_sent.contains(&req.seq) {
-            let ctx = match req.ctx.take() {
-                Some(c) => Some(c),
-                None => {
-                    // built lazily from the current layout; the unit may have a new id there
-                    let layout = s.layout.lock();
-                    layout.unit(req.par_id).map(|eu| {
-                        req.seq = eu.uid;
-                        eu.context_json()
-                    })
-                }
-            };
-            let Some(ctx) = ctx else {
-                drop(link);
+        if link.contexts_sent.contains(&req.seq) {
+            return true;
+        }
+        let ctx = match req.ctx.take() {
+            Some(c) => Some(c),
+            None => {
+                // built lazily from the current layout; the unit may have a new id there
+                let layout = s.layout.lock();
+                layout.unit(req.par_id).map(|eu| {
+                    req.seq = eu.uid;
+                    eu.context_json()
+                })
+            }
+        };
+        let Some(ctx) = ctx else {
+            parking_lot::MutexGuard::unlocked(link, || {
                 s.events
                     .send(Event::BackgroundScheduled {
                         par_id: Some(req.par_id),
@@ -256,153 +349,155 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
                         edit_id: req.edit_id,
                     })
                     .ok();
-                continue;
-            };
-            if link.contexts_sent.contains(&req.seq) {
-                // the lazy lookup mapped to a context already installed
-            } else if let Err(e) = srv.set_context(req.seq, &ctx) {
-                drop(link);
-                s.events
-                    .send(Event::EngineState {
-                        engine_generation: wanted_gen,
-                        state: "Restarting".into(),
-                        reason: Some(format!("set_context: {e}")),
-                    })
-                    .ok();
-                server = None;
-                reset_link(&s);
-                continue;
-            } else {
+            });
+            return false;
+        };
+        if link.contexts_sent.contains(&req.seq) {
+            // the lazy lookup mapped to a context already installed
+            return true;
+        }
+        let srv = self.server.as_mut().unwrap();
+        match srv.set_context(req.seq, &ctx) {
+            Ok(()) => {
                 link.contexts_sent.insert(req.seq);
+                true
+            }
+            Err(e) => {
+                parking_lot::MutexGuard::unlocked(link, || {
+                    s.events
+                        .send(Event::EngineState {
+                            engine_generation: wanted_gen,
+                            state: "Restarting".into(),
+                            reason: Some(format!("set_context: {e}")),
+                        })
+                        .ok();
+                    self.drop_server();
+                });
+                false
             }
         }
-        // 4b. probe mode: prove the unit first — its snapshot text (from the layout current
-        // now) compiled and compared with that layout's rows. The compile runs without the
-        // link lock (the host's apply_edit must not wait on it); `probing` keeps the direct
-        // dispatch path off the server meanwhile.
-        if req.probe {
-            let (text, lv) = {
-                let layout = s.layout.lock();
-                (
-                    layout.snapshot_text(req.par_id).map(|t| t.to_string()),
-                    layout.layout_version,
-                )
-            };
-            let cached = s.live.lock().probe_for(req.par_id, lv);
-            let verdict = match cached {
-                Some(v) => v,
-                None => {
-                    let Some(text) = text else {
-                        drop(link);
-                        demote_span(&s, &req, "no snapshot to compare with");
-                        continue;
-                    };
-                    link.probing = true;
-                    drop(link);
-                    let t_probe = Instant::now();
-                    let res = srv.compile_with_pics(req.seq, &text, &req.pics);
-                    let mut relock = s.link.lock();
-                    relock.probing = false;
-                    relock.probes += 1;
-                    relock.probe_us += t_probe.elapsed().as_micros() as u64;
-                    link = relock;
-                    let v = match res {
-                        Ok((cr, _))
-                            if req.pics_n > 0
-                                && cr.pics_seen.is_some_and(|n| n != req.pics_n as i64) =>
-                        {
-                            // the cache entries were scanned from the current text, the probe
-                            // compiles the snapshot's: when they do not pair up the probe is
-                            // repeated without them (the pictures are drawn)
-                            let mut req = req;
-                            req.pics.clear();
-                            req.pics_n = 0;
-                            drop(link);
-                            s.pending.lock().insert(req.par_id, req);
-                            s.pending_signal.0.send(()).ok();
-                            continue;
-                        }
-                        Ok((cr, _)) if cr.internal.is_some() => ProbeVerdict::Mismatch(format!(
-                            "internal error ({})",
-                            first_line_of(cr.internal.as_deref().unwrap_or_default())
-                        )),
-                        Ok((cr, _)) => {
-                            if !cr.leaks.is_empty() {
-                                ProbeVerdict::Leak(format!(
-                                    "the unit redefines \\{}",
-                                    cr.leaks.join(", \\")
-                                ))
-                            } else if cr.status == "error" {
-                                ProbeVerdict::Mismatch(format!(
-                                    "probe compile failed: {}",
-                                    cr.errors
-                                        .first()
-                                        .and_then(|e| e.message.clone())
-                                        .unwrap_or_default()
-                                ))
-                            } else {
-                                let layout = s.layout.lock();
-                                if layout.layout_version != lv {
-                                    // the layout moved while the probe ran: judge against the
-                                    // new one (the request goes back to the queue)
-                                    drop(layout);
-                                    drop(link);
-                                    s.pending.lock().insert(req.par_id, req);
-                                    s.pending_signal.0.send(()).ok();
-                                    continue;
-                                }
-                                match &cr.dl {
-                                    Some(dl) => match layout.probe_check(req.par_id, dl) {
-                                        Ok(()) => ProbeVerdict::Verified,
-                                        Err(why) => ProbeVerdict::Mismatch(why),
-                                    },
-                                    None => ProbeVerdict::Mismatch("probe produced no box".into()),
-                                }
+    }
+
+    /// 4b. Probe mode: prove the unit first — its snapshot text (from the layout current now)
+    /// compiled and compared with that layout's rows. The compile runs without the link lock
+    /// (the host's apply_edit must not wait on it); `probing` keeps the direct dispatch path
+    /// off the server meanwhile. A verdict is kept for the layout version.
+    fn prove(
+        &mut self,
+        link: &mut parking_lot::MutexGuard<'_, EngineLink>,
+        req: FastRequest,
+        wanted_gen: u64,
+    ) -> ProbeOutcome {
+        let s = self.s.clone();
+        let (text, lv) = {
+            let layout = s.layout.lock();
+            (
+                layout.snapshot_text(req.par_id).map(|t| t.to_string()),
+                layout.layout_version,
+            )
+        };
+        // bound first: a guard in a `match` scrutinee would live through the arms, and the
+        // arm that stores the verdict takes the same lock again (a self-deadlock)
+        let cached = s.live.lock().probe_for(req.par_id, lv);
+        let verdict = match cached {
+            Some(v) => v,
+            None => {
+                let Some(text) = text else {
+                    parking_lot::MutexGuard::unlocked(link, || {
+                        demote_span(&s, &req, "no snapshot to compare with")
+                    });
+                    return ProbeOutcome::Done;
+                };
+                link.probing = true;
+                let t_probe = Instant::now();
+                let srv = self.server.as_mut().unwrap();
+                let res = parking_lot::MutexGuard::unlocked(link, || {
+                    srv.compile_with_pics(req.seq, &text, &req.pics)
+                });
+                link.probing = false;
+                link.probes += 1;
+                link.probe_us += t_probe.elapsed().as_micros() as u64;
+                let requeue = |req: FastRequest| {
+                    s.pending.lock().insert(req.par_id, req);
+                    s.pending_signal.0.send(()).ok();
+                };
+                let v = match res {
+                    Ok((cr, _))
+                        if req.pics_n > 0
+                            && cr.pics_seen.is_some_and(|n| n != req.pics_n as i64) =>
+                    {
+                        // the cache entries were scanned from the current text, the probe
+                        // compiles the snapshot's: when they do not pair up the probe is
+                        // repeated without them (the pictures are drawn)
+                        let mut req = req;
+                        req.pics.clear();
+                        req.pics_n = 0;
+                        parking_lot::MutexGuard::unlocked(link, || requeue(req));
+                        return ProbeOutcome::Done;
+                    }
+                    Ok((cr, _)) if cr.internal.is_some() => ProbeVerdict::Mismatch(format!(
+                        "internal error ({})",
+                        first_line_of(cr.internal.as_deref().unwrap_or_default())
+                    )),
+                    Ok((cr, _)) => {
+                        if !cr.leaks.is_empty() {
+                            ProbeVerdict::Leak(format!(
+                                "the unit redefines \\{}",
+                                cr.leaks.join(", \\")
+                            ))
+                        } else if cr.status == "error" {
+                            ProbeVerdict::Mismatch(format!(
+                                "probe compile failed: {}",
+                                cr.errors
+                                    .first()
+                                    .and_then(|e| e.message.clone())
+                                    .unwrap_or_default()
+                            ))
+                        } else {
+                            let layout = s.layout.lock();
+                            if layout.layout_version != lv {
+                                // the layout moved while the probe ran: judge against the new
+                                // one (the request goes back to the queue)
+                                drop(layout);
+                                parking_lot::MutexGuard::unlocked(link, || requeue(req));
+                                return ProbeOutcome::Done;
+                            }
+                            match &cr.dl {
+                                Some(dl) => match layout.probe_check(req.par_id, dl) {
+                                    Ok(()) => ProbeVerdict::Verified,
+                                    Err(why) => ProbeVerdict::Mismatch(why),
+                                },
+                                None => ProbeVerdict::Mismatch("probe produced no box".into()),
                             }
                         }
-                        Err(e) => {
-                            drop(link);
-                            engine_failed(&s, &req, e, wanted_gen, server.as_ref());
-                            server = None;
-                            reset_link(&s);
-                            continue;
-                        }
-                    };
-                    s.live.lock().unit(req.par_id).probe = Some((lv, v.clone()));
-                    v
-                }
-            };
-            match verdict {
-                ProbeVerdict::Verified => {}
-                ProbeVerdict::Mismatch(why) => {
-                    drop(link);
-                    demote_span(&s, &req, &why);
-                    continue;
-                }
-                ProbeVerdict::Leak(why) => {
-                    drop(link);
+                    }
+                    Err(e) => {
+                        parking_lot::MutexGuard::unlocked(link, || {
+                            engine_failed(&s, &req, e, wanted_gen, self.server.as_ref());
+                            self.drop_server();
+                        });
+                        return ProbeOutcome::Done;
+                    }
+                };
+                s.live.lock().unit(req.par_id).probe = Some((lv, v.clone()));
+                v
+            }
+        };
+        match verdict {
+            ProbeVerdict::Verified => ProbeOutcome::Send(req),
+            ProbeVerdict::Mismatch(why) => {
+                parking_lot::MutexGuard::unlocked(link, || demote_span(&s, &req, &why));
+                ProbeOutcome::Done
+            }
+            ProbeVerdict::Leak(why) => {
+                parking_lot::MutexGuard::unlocked(link, || {
                     s.live.lock().unit(req.par_id).leak = Some(why.clone());
                     demote_span(&s, &req, &why);
                     // the server's state is no longer the document's: start over
                     s.engine_generation.fetch_add(1, Ordering::SeqCst);
-                    server = None;
-                    reset_link(&s);
-                    continue;
-                }
-            }
-        }
-        let req_id = link.next_req;
-        link.next_req += 1;
-        let t0 = Instant::now();
-        match srv.send_compile(req_id, req.seq, &req.source, &req.pics) {
-            Ok(()) => {
-                link.inflight = Some(InFlight { req, t0 });
-            }
-            Err(e) => {
-                drop(link);
-                engine_failed(&s, &req, e, wanted_gen, server.as_ref());
-                server = None;
-                reset_link(&s);
+                    self.drop_server();
+                });
+                ProbeOutcome::Done
             }
         }
     }

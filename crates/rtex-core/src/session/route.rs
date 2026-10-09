@@ -38,21 +38,20 @@ impl Session {
                 reasons.push(reason_str(&r));
             }
         }
-        if let Some(why) = self
-            .shared
-            .live
-            .lock()
-            .get(span.id)
-            .and_then(|u| u.leak.clone())
-        {
+        // read the live record once, into locals: no lock guard lives in a scrutinee (one
+        // there stays held through the whole block)
+        let (leak, internal_error, over_budget) = {
+            let live = self.shared.live.lock();
+            (
+                live.get(span.id).and_then(|u| u.leak.clone()),
+                live.internal_error_for(span.id, layout.layout_version),
+                live.get(span.id).and_then(|u| u.over_budget),
+            )
+        };
+        if let Some(why) = leak {
             reasons.push(format!("unverified: {why}"));
         }
-        if let Some(why) = self
-            .shared
-            .live
-            .lock()
-            .internal_error_for(span.id, layout.layout_version)
-        {
+        if let Some(why) = internal_error {
             reasons.push(format!(
                 "EngineFailed: internal error, retried after the next layout ({})",
                 first_line_of(&why)
@@ -114,13 +113,7 @@ impl Session {
                 if !shape_ok {
                     reasons.push(reason_str(&Reason::KindMismatch));
                 }
-                if let Some((lv, ms)) = self
-                    .shared
-                    .live
-                    .lock()
-                    .get(span.id)
-                    .and_then(|u| u.over_budget)
-                {
+                if let Some((lv, ms)) = over_budget {
                     if lv == QUARANTINED {
                         reasons.push("EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes".into());
                     } else if lv == layout.layout_version {
