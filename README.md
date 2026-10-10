@@ -1,5 +1,7 @@
 # realtime-tex (rtex)
 
+English | [简体中文](README.zh-CN.md)
+
 **See your LaTeX document update as you type, in about a millisecond, without leaving LuaLaTeX.**
 
 rtex is a library for editors. When you type, it re-typesets only the paragraph you are editing,
@@ -19,6 +21,18 @@ are identical to a normal LuaLaTeX build.
 
 The approach follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*
 (TUGboat 2026).
+
+## Use it in VS Code
+
+The quickest way to use rtex is the **[Realtime TeX Live Preview](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)**
+extension for VS Code. It shows a live preview next to your editor and installs rtex (and, if
+needed, a minimal TeX Live) for you on first use. Open a `.tex` file, click the preview icon in
+the editor title bar (or press Ctrl+Alt+V, Cmd+Alt+V on a Mac), and start typing. On Windows, the
+extension currently runs rtex inside WSL.
+
+![The VS Code extension: live preview next to the editor](https://raw.githubusercontent.com/HenryXiaoYang/realtime-tex-vsc-plugin/main/docs/screenshot.png)
+
+The rest of this page is about rtex itself: the library the extension is built on.
 
 ## How fast
 
@@ -65,17 +79,19 @@ target/release/rtex verify --project build/fx/book-10
 target/release/rtex export --project build/fx/book-10 --out build/book-10.pdf --check
 ```
 
-To edit your own document live, use an editor that embeds rtex, such as the
-[VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), or drive a
-session yourself with `rtex serve --project path/to/your/project` (JSON lines on stdin/stdout).
+To edit your own document live, use the
+[VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), or drive a session
+yourself with `rtex serve --project path/to/your/project` (JSON lines on stdin/stdout).
 
-## Use it in your editor
+## Build it into your own editor
 
 rtex can be used as a Rust crate, as a C library (`include/rtex.h`), or as a subprocess speaking
 JSON lines. The editor sends edits and gets events: *this paragraph now looks like this* and
 *here are the new pages*. Each comes with display lists: glyphs from font files at exact
 positions, ready to draw. Pages that contain something a display list cannot describe, such as
-TikZ drawings, come with a PDF to draw them from. See the [embedding guide](docs/embedding.md).
+TikZ drawings, come with a PDF to draw them from. See the [embedding guide](docs/embedding.md);
+the [VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin) is a complete
+example of a host.
 
 ## Platforms
 
