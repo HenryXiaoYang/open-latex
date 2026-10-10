@@ -1,3 +1,8 @@
 # LF everywhere, also in Windows checkouts (fixtures, golden files and byte offsets in tests
 # assume it; CRLF sources are tested explicitly)
 * text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.webp binary
+*.pdf binary

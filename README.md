@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 **See your LaTeX document update as you type, in about a millisecond, without leaving LuaLaTeX.**
 
+![rtex in VS Code: the paragraph being edited updates in the preview as you type](docs/images/demo.gif)
+
 rtex is a library for editors. When you type, it re-typesets only the paragraph you are editing,
 using a LuaLaTeX process that has already loaded your preamble, and hands the editor the new
 lines to draw. A full compile runs in the background and takes care of what really is global:
@@ -29,8 +31,6 @@ extension for VS Code. It shows a live preview next to your editor and installs 
 needed, a minimal TeX Live) for you on first use. Open a `.tex` file, click the preview icon in
 the editor title bar (or press Ctrl+Alt+V, Cmd+Alt+V on a Mac), and start typing. On Windows, the
 extension currently runs rtex inside WSL.
-
-![The VS Code extension: live preview next to the editor](https://raw.githubusercontent.com/HenryXiaoYang/realtime-tex-vsc-plugin/main/docs/screenshot.png)
 
 The rest of this page is about rtex itself: the library the extension is built on.
 

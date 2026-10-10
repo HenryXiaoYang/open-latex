@@ -4,6 +4,8 @@
 
 **边打字边看到 LaTeX 文档更新，大约一毫秒，而且始终是 LuaLaTeX 的排版结果。**
 
+![VS Code 中的 rtex：正在编辑的段落随输入在预览中更新](docs/images/demo.gif)
+
 rtex 是一个供编辑器使用的库。你输入时，它只重新排版你正在编辑的那个段落：用的是一个已经加载好导言区的
 LuaLaTeX 进程，然后把排好的新行交给编辑器绘制。完整编译在后台进行，负责真正全局性的内容：分页、浮动体、
 目录、交叉引用和参考文献。
@@ -26,8 +28,6 @@ LuaLaTeX 进程，然后把排好的新行交给编辑器绘制。完整编译�
 **[Realtime TeX Live Preview](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)**。它在编辑器旁显示实时预览，
 并在首次使用时自动为你安装 rtex（需要时还会安装一个精简版 TeX Live）。打开一个 `.tex` 文件，点击编辑器标题栏上的
 预览图标（或按 Ctrl+Alt+V，Mac 上为 Cmd+Alt+V），然后开始输入即可。在 Windows 上，该插件目前在 WSL 中运行 rtex。
-
-![VS Code 插件：编辑器旁的实时预览](https://raw.githubusercontent.com/HenryXiaoYang/realtime-tex-vsc-plugin/main/docs/screenshot.png)
 
 本页其余部分介绍 rtex 本身，也就是该插件所基于的库。
 
