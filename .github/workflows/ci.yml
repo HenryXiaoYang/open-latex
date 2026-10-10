@@ -119,7 +119,7 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then bin="$(cygpath -w "$bin")"; fi
           echo "$bin" >> "$GITHUB_PATH"
       - run: texlua tex/tests/run.lua
-      - run: cargo test --workspace --release
+      - run: cargo test --workspace --release --no-fail-fast
       - name: Fidelity (pure fixture) and export equality
         run: |
           cargo run --release -p rtex-cli -- gen-book --pages 10 --out build/fx/book-10-pure

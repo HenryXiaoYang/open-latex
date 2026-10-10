@@ -4,7 +4,7 @@
 
 use rtex_core::fixtures::{generate, FontSet, Variant};
 use rtex_core::texlive::TexLive;
-use rtex_core::{Edit, Event, Session, SessionConfig};
+use rtex_core::{Convergence, Edit, Event, Session, SessionConfig};
 use std::time::Duration;
 
 fn setup(name: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
@@ -242,8 +242,16 @@ fn over_budget_units_fall_back_to_background() {
     cfg.build_dir = root.join("build");
     cfg.fast_budget = Duration::from_micros(1); // everything is over budget
     let s = Session::open(cfg).unwrap();
+    // the layout that ends the run: slow compiles during a pass are not counted, and on a slow
+    // machine a provisional layout's follow-up pass outlasts the pause below
     let (first, _) = s.wait_for(Duration::from_secs(300), |e| {
-        matches!(e, Event::LayoutUpdate { .. })
+        matches!(
+            e,
+            Event::LayoutUpdate {
+                convergence: Convergence::Converged | Convergence::PassLimitReached { .. },
+                ..
+            }
+        )
     });
     let Some(Event::LayoutUpdate {
         eligible_paragraphs,
