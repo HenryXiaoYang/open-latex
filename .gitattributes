@@ -1,0 +1,3 @@
+# LF everywhere, also in Windows checkouts (fixtures, golden files and byte offsets in tests
+# assume it; CRLF sources are tested explicitly)
+* text=auto eol=lf

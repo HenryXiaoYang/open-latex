@@ -2,6 +2,16 @@
 
 ## 0.0.2 (in progress)
 
+- **Windows support.** The fast server's channel is a pair of named pipes on Windows (requests
+  in binary mode, since the server's stdin would be in text mode) and a FIFO on Unix as before
+  (`transport.rs`). Paths handed to TeX and kpathsea use forward slashes and canonical paths lose
+  Windows' `\\?\` prefix (`paths.rs`); search paths use the platform separator; file keys use
+  forward slashes whatever the host sends. `scripts/install-texlive.sh` installs TeX Live on
+  macOS and Windows (Git Bash) too, and `scripts/check-abi.sh` reads Mach-O exports. CI gains a
+  `platforms` job (macos-latest, windows-latest): clippy, unit and integration tests, a
+  fidelity check and export equality against a real TeX Live. `.gitattributes` keeps LF
+  checkouts; CRLF sources segment like LF ones (test).
+
 - **Picture cache**: background passes reuse unchanged `tikzpicture`/`circuitikz` drawings from
   an earlier pass's PDF (`SessionConfig.picture_cache`, default on; `rtex verify --pic-cache`;
   `fixtures/corpus/pictures`). Pictures are keyed by `file:line` with a start- and end-line check,

@@ -1,13 +1,16 @@
 //! The persistent paragraph server: one `lualatex` process kept alive after `\begin{document}`.
-//! Requests go down its stdin as JSON lines; responses come back as length-prefixed JSON frames
-//! on a FIFO (stdout is not clean: the banner is printed even in batch mode — see ENGINE_NOTES).
+//! Requests go to it as JSON lines; responses come back as length-prefixed JSON frames on a
+//! channel of their own (stdout is not clean: the banner is printed even in batch mode — see
+//! ENGINE_NOTES). The channel is a FIFO on Unix and a pair of named pipes on Windows
+//! (`transport`).
 
 use crate::texlive::TexLive;
-use anyhow::{anyhow, bail, Context, Result};
+use crate::transport::{Frame, Transport};
+use anyhow::{bail, Context, Result};
 use rtex_dl::DisplayList;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -131,18 +134,12 @@ pub struct RoundTrip {
     pub t_pack: Duration,
 }
 
-/// A frame body read from the response FIFO (everything after the `u32` length), or the read
-/// error that ended the stream.
-type Frame = std::io::Result<Vec<u8>>;
-
-/// Largest frame the reader accepts (a corrupt length must not allocate gigabytes).
-const MAX_FRAME: usize = 256 << 20;
-
 pub struct FastServer {
     child: Child,
-    stdin: std::process::ChildStdin,
-    /// Frames from the response FIFO, in order, drained by a dedicated reader thread with
-    /// blocking reads (see `spawn_reader`).
+    /// The request channel (the server's stdin on Unix, a named pipe on Windows).
+    stdin: File,
+    /// Frames from the response channel, in order, drained by a dedicated reader thread with
+    /// blocking reads (see `transport`).
     frames: crossbeam_channel::Receiver<Frame>,
     /// A frame `wait_readable` took off the channel, not yet parsed.
     pending: Option<Frame>,
@@ -155,46 +152,6 @@ pub struct FastServer {
     /// How long to busy-poll for a reply before blocking (default 3 ms; zero disables).
     pub spin: Duration,
     next_req: i64,
-}
-
-/// Drain the response FIFO on a thread of its own: blocking `read`s, frame by frame, into a
-/// channel. Nothing polls the FIFO: on macOS `poll` did not report a frame that arrived while
-/// it waited (only data already there), and a FIFO there holds less than a large result, so
-/// the server blocked writing a 9 KB display list while the host waited out its watchdog.
-/// Draining continuously also means the server never blocks on a full FIFO. The thread ends at
-/// end of file (the server exited or was killed) or when the server object is dropped.
-fn spawn_reader(f: File) -> Result<crossbeam_channel::Receiver<Frame>> {
-    let (tx, rx) = crossbeam_channel::unbounded();
-    std::thread::Builder::new()
-        .name("rtex-fifo-reader".into())
-        .spawn(move || {
-            let mut r = BufReader::with_capacity(1 << 16, f);
-            loop {
-                let mut hdr = [0u8; 4];
-                if let Err(e) = r.read_exact(&mut hdr) {
-                    let _ = tx.send(Err(e));
-                    return;
-                }
-                let n = u32::from_le_bytes(hdr) as usize;
-                if n > MAX_FRAME {
-                    let _ = tx.send(Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("response frame of {n} bytes"),
-                    )));
-                    return;
-                }
-                let mut buf = vec![0u8; n];
-                if let Err(e) = r.read_exact(&mut buf) {
-                    let _ = tx.send(Err(e));
-                    return;
-                }
-                if tx.send(Ok(buf)).is_err() {
-                    return;
-                }
-            }
-        })
-        .context("spawning the response reader")?;
-    Ok(rx)
 }
 
 impl FastServer {
@@ -227,7 +184,7 @@ impl FastServer {
         trace: bool,
     ) -> Result<FastServer> {
         std::fs::create_dir_all(work_dir)?;
-        let work_dir = &work_dir.canonicalize()?;
+        let work_dir = &crate::paths::canonical(work_dir)?;
         let own_aux = work_dir.join(format!("rtex-serve-g{generation}.aux"));
         let _ = std::fs::remove_file(&own_aux);
         if let Some(a) = aux {
@@ -264,20 +221,20 @@ impl FastServer {
                     "\\makeatletter\\IfPackageLoadedTF{{graphicx}}{{\\AddToHook{{cmd/Gin@setfile/after}}{{\\directlua{{rtex_serve.image(\\number\\lastsavedimageresourceindex,\"\\luaescapestring{{\\Gin@base\\Gin@ext}}\",\"\\luaescapestring{{\\Gin@page}}\",\\number\\lastsavedimageresourcepages)}}}}}}{{}}\\makeatother\n",
                     "\\loop\\rtexstep\\ifnum\\rtexcontinue>0 \\repeat\n\\end{{document}}\n"
                 ),
-                preamble_file.display()
+                crate::paths::tex(&preamble_file)
             ),
         )?;
-        let fifo = work_dir.join(format!("resp-{}.fifo", std::process::id()));
-        let _ = std::fs::remove_file(&fifo);
-        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).context("mkfifo")?;
+        let transport = Transport::create(work_dir)?;
         let mut cmd: Command = tl.lualatex_cmd(cwd);
         cmd.arg("-interaction=batchmode")
-            .arg(format!("--output-directory={}", work_dir.display()))
+            .arg(format!(
+                "--output-directory={}",
+                crate::paths::tex(work_dir)
+            ))
             .arg(driver.as_os_str())
-            .env("RTEX_RESP", &fifo)
-            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        transport.configure(&mut cmd);
         if trace {
             cmd.env(
                 "RTEX_TRACE",
@@ -286,15 +243,14 @@ impl FastServer {
         }
         let t0 = Instant::now();
         let mut child = cmd.spawn().context("spawning lualatex server")?;
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
-        // Opening the FIFO for reading blocks until the server opens it for writing. Poll the
-        // child so a crash during the preamble does not hang us forever.
-        let resp = open_fifo_with_timeout(&fifo, &mut child, Duration::from_secs(120))?;
+        // Connecting waits until the server has opened the response channel and written its
+        // first frame. It polls the child so a crash during the preamble does not hang us.
+        let conn = transport.connect(&mut child, Duration::from_secs(120))?;
         let mut s = FastServer {
             child,
-            stdin,
-            frames: spawn_reader(resp)?,
-            pending: None,
+            stdin: conn.requests,
+            frames: conn.frames,
+            pending: conn.first,
             generation,
             work_dir: work_dir.to_path_buf(),
             banner: String::new(),
@@ -499,12 +455,10 @@ impl FastServer {
         r
     }
 
-    /// A second handle on the server's stdin so another thread can submit compile frames
+    /// A second handle on the request channel so another thread can submit compile frames
     /// directly (the owner keeps reading results in order).
     pub fn stdin_clone(&self) -> Result<File> {
-        use std::os::fd::{AsFd, OwnedFd};
-        let fd: OwnedFd = self.stdin.as_fd().try_clone_to_owned()?;
-        Ok(File::from(fd))
+        Ok(self.stdin.try_clone()?)
     }
 
     /// Submit a compile without waiting; the result is read with `recv`.
@@ -624,47 +578,4 @@ impl Drop for FastServer {
             let _ = self.child.wait();
         }
     }
-}
-
-fn open_fifo_with_timeout(fifo: &Path, child: &mut Child, timeout: Duration) -> Result<File> {
-    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-    use std::os::fd::AsFd;
-    use std::os::unix::fs::OpenOptionsExt;
-    // Open the read end once, non-blocking, so the open itself never blocks and the server's
-    // own open(2) for writing succeeds as soon as it gets there. Never close and reopen:
-    // a write into a FIFO without a reader would be lost (EPIPE on the server side).
-    let f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(fifo)?;
-    let t0 = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            bail!("lualatex server exited during startup with {status}");
-        }
-        if t0.elapsed() > timeout {
-            bail!("timed out waiting for the server to open the response FIFO");
-        }
-        // Linux does not report POLLHUP for a FIFO that never had a writer, so poll blocks
-        // until the first bytes ("ready" frame) arrive.
-        let mut fds = [PollFd::new(f.as_fd(), PollFlags::POLLIN)];
-        let n = poll(&mut fds, PollTimeout::from(50u16))?;
-        if n > 0 {
-            if let Some(ev) = fds[0].revents() {
-                if ev.contains(PollFlags::POLLIN) {
-                    break;
-                }
-                if ev.contains(PollFlags::POLLHUP) {
-                    bail!("server closed the response FIFO during startup");
-                }
-            }
-        }
-    }
-    // Back to blocking mode for normal framed reads.
-    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&f);
-    let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL)?;
-    let mut oflags = nix::fcntl::OFlag::from_bits_truncate(flags);
-    oflags.remove(nix::fcntl::OFlag::O_NONBLOCK);
-    nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(oflags))?;
-    Ok(f)
 }

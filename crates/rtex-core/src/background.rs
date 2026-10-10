@@ -75,7 +75,7 @@ fn copy_tree(
     }
     // the snapshot's own tree, in canonical form (a host may keep its build directory inside
     // the project under any name, given relative or absolute)
-    let dst_canon = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
+    let dst_canon = crate::paths::canonical(dst).unwrap_or_else(|_| dst.to_path_buf());
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -86,7 +86,7 @@ fn copy_tree(
         let path = entry.path();
         // never descend into the build tree the snapshot itself lives in (a host may keep it
         // inside the project under any name), and skip FIFOs, sockets and devices
-        let path_canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let path_canon = crate::paths::canonical(&path).unwrap_or_else(|_| path.clone());
         if dst_canon.starts_with(&path_canon) {
             continue;
         }
@@ -178,9 +178,15 @@ fn without_dir(bytes: &[u8], dir_forms: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn dir_forms(out_dir: &Path) -> Vec<Vec<u8>> {
-    let mut paths = vec![out_dir.to_string_lossy().into_owned()];
-    if let Ok(c) = out_dir.canonicalize() {
-        paths.push(c.to_string_lossy().into_owned());
+    let mut dirs = vec![out_dir.to_path_buf()];
+    if let Ok(c) = crate::paths::canonical(out_dir) {
+        dirs.push(c);
+    }
+    // as given and as TeX writes it back (forward slashes on Windows)
+    let mut paths: Vec<String> = Vec::new();
+    for d in &dirs {
+        paths.push(d.to_string_lossy().into_owned());
+        paths.push(crate::paths::tex(d));
     }
     let mut forms = Vec::new();
     for p in paths {
@@ -423,17 +429,17 @@ pub fn run_pass_with_runner(
             let mut cmd = Command::new(tool);
             cmd.current_dir(out_dir).arg(&jobname);
             if let Some(d) = &tl.bin_dir {
-                cmd.env(
-                    "PATH",
-                    format!(
-                        "{}:{}",
-                        d.display(),
-                        std::env::var("PATH").unwrap_or_default()
-                    ),
-                );
+                crate::paths::prepend_bin_dir(&mut cmd, d);
             }
             // bibtex needs BIBINPUTS to find .bib files in the snapshot
-            cmd.env("BIBINPUTS", format!("{}:", snapshot_dir.display()));
+            cmd.env(
+                "BIBINPUTS",
+                format!(
+                    "{}{}",
+                    crate::paths::tex(snapshot_dir),
+                    crate::paths::SEARCH_SEP
+                ),
+            );
             let out = cmd.output().with_context(|| format!("running {tool}"))?;
             if !out.status.success() {
                 log::warn!("{tool} failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -538,17 +544,17 @@ fn run_makeindex(
         let mut cmd = Command::new(&program);
         cmd.current_dir(out_dir).args(&args);
         if let Some(d) = &tl.bin_dir {
-            cmd.env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    d.display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            );
+            crate::paths::prepend_bin_dir(&mut cmd, d);
         }
         // index styles (.ist) the project ships
-        cmd.env("INDEXSTYLE", format!("{}:", snapshot_dir.display()));
+        cmd.env(
+            "INDEXSTYLE",
+            format!(
+                "{}{}",
+                crate::paths::tex(snapshot_dir),
+                crate::paths::SEARCH_SEP
+            ),
+        );
         match cmd.output() {
             Ok(out) if !out.status.success() => {
                 log::warn!(
@@ -920,7 +926,7 @@ mod tests {
         let (a, b) = (dir.join("pass-0"), dir.join("pass-1"));
         for d in [&a, &b] {
             std::fs::create_dir_all(d).unwrap();
-            let p = d.canonicalize().unwrap().join("main.ind");
+            let p = crate::paths::canonical(d).unwrap().join("main.ind");
             let hex: String = p
                 .to_string_lossy()
                 .bytes()

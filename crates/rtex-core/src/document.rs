@@ -1070,6 +1070,20 @@ mod tests {
     }
 
     #[test]
+    fn crlf_files_segment_like_lf_files() {
+        let mut ids = IdAllocator(0);
+        let lf = FileBuf::new(DOC, &mut ids, 1);
+        let crlf = FileBuf::new(&DOC.replace('\n', "\r\n"), &mut ids, 1);
+        let shape = |fb: &FileBuf| -> Vec<(SpanKind, (i64, i64))> {
+            fb.spans
+                .iter()
+                .map(|s| (s.kind, fb.line_range(s)))
+                .collect()
+        };
+        assert_eq!(shape(&lf), shape(&crlf));
+    }
+
+    #[test]
     fn edit_inside_paragraph_keeps_ids() {
         let mut ids = IdAllocator(0);
         let mut fb = FileBuf::new(DOC, &mut ids, 1);

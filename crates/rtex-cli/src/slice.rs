@@ -141,7 +141,7 @@ fn compare_with_capture(
 
 pub fn run(opts: SliceOpts) -> Result<serde_json::Value> {
     let tl = TexLive::discover()?;
-    let project = opts.project.canonicalize()?;
+    let project = rtex_core::paths::canonical(&opts.project)?;
     let build = opts.build.clone();
     std::fs::create_dir_all(&build)?;
     println!("== M1 slice: project {} ({})", project.display(), opts.main);

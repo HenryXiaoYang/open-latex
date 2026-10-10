@@ -339,7 +339,7 @@ fn main() -> anyhow::Result<()> {
                     std::env::temp_dir().join(format!("rtex-export-check-{}", std::process::id()));
                 let o = rtex_core::background::run_pass(
                     &tl,
-                    &project.canonicalize()?,
+                    &rtex_core::paths::canonical(&project)?,
                     &main,
                     &tmp,
                     5,

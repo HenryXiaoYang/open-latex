@@ -73,6 +73,58 @@ jobs:
           path: |
             build/verify.json
             build/verify-units.json
+  platforms:
+    # macOS (Apple silicon) and Windows: build, unit and integration tests against a real
+    # TeX Live. Linux runs the full verification above.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            tlarch: universal-darwin
+          - os: windows-latest
+            tlarch: windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --release -- -D warnings
+      - run: cargo build --workspace --release
+      - run: cargo test --workspace --lib --release
+      - name: ABI and C example
+        if: runner.os == 'macOS'
+        run: |
+          scripts/check-abi.sh
+          cc -Iinclude examples/c/edit_loop.c -Ltarget/release -lrtex_core -lpthread -ldl -lm -o "$RUNNER_TEMP/edit_loop"
+      - name: Cache TeX Live
+        id: tl
+        uses: actions/cache@v4
+        with:
+          path: build/texlive
+          key: texlive-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-texlive.sh', 'scripts/texlive.profile') }}
+      - name: Install TeX Live
+        if: steps.tl.outputs.cache-hit != 'true'
+        run: scripts/install-texlive.sh
+      - name: Write env
+        run: |
+          scripts/install-texlive.sh > /dev/null
+          grep -v '^export PATH=' build/texlive.env | sed -e 's/^export //' -e 's/"//g' >> "$GITHUB_ENV"
+          bin="$PWD/build/texlive/bin/${{ matrix.tlarch }}"
+          if [ "$RUNNER_OS" = Windows ]; then bin="$(cygpath -w "$bin")"; fi
+          echo "$bin" >> "$GITHUB_PATH"
+      - run: texlua tex/tests/run.lua
+      - run: cargo test --workspace --release
+      - name: Fidelity (pure fixture) and export equality
+        run: |
+          cargo run --release -p rtex-cli -- gen-book --pages 10 --out build/fx/book-10-pure
+          cargo run --release -p rtex-cli -- verify --project build/fx/book-10-pure --json-out build/verify.json
+          cargo run --release -p rtex-cli -- export --project build/fx/book-10-pure --out build/export.pdf --check
   perf:
     runs-on: ubuntu-24.04
     needs: integration

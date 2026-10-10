@@ -142,7 +142,10 @@ pub fn parse_log(log: &Path) -> Vec<Diagnostic> {
     };
     let mut out = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
-    let re_fle = regex::Regex::new(r"^(?P<file>[^:\s][^:]*):(?P<line>\d+): (?P<msg>.*)$").unwrap();
+    // a Windows path starts with its drive (`D:/a/rtex-preamble.tex:5: ...`)
+    let re_fle =
+        regex::Regex::new(r"^(?P<file>(?:[A-Za-z]:)?[^:\s][^:]*):(?P<line>\d+): (?P<msg>.*)$")
+            .unwrap();
     let re_warn =
         regex::Regex::new(r"^(?:LaTeX|Package \w+|Class \w+) Warning: (?P<msg>.*)$").unwrap();
     let re_box =
@@ -185,4 +188,31 @@ pub fn parse_log(log: &Path) -> Vec<Diagnostic> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_line_errors_with_and_without_a_drive() {
+        let log = std::env::temp_dir().join(format!("rtex-diag-{}.log", std::process::id()));
+        std::fs::write(
+            &log,
+            "./main.tex:12: Undefined control sequence.\nl.12 \\foo\n\
+             D:/a/build/rtex-preamble.tex:5: Missing $ inserted.\nl.5 x\n",
+        )
+        .unwrap();
+        let d = parse_log(&log);
+        let _ = std::fs::remove_file(&log);
+        let got: Vec<(Option<&str>, Option<i64>)> =
+            d.iter().map(|d| (d.file.as_deref(), d.line)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Some("./main.tex"), Some(12)),
+                (Some("D:/a/build/rtex-preamble.tex"), Some(5))
+            ]
+        );
+    }
 }

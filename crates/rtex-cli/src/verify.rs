@@ -140,7 +140,7 @@ fn row_text(l: &Line) -> String {
 
 pub fn run(opts: VerifyOpts) -> Result<Report> {
     let tl = TexLive::discover()?;
-    let project = opts.project.canonicalize()?;
+    let project = rtex_core::paths::canonical(&opts.project)?;
     std::fs::create_dir_all(&opts.build)?;
     println!("== verify {} ({})", project.display(), opts.main);
     // bibliography support for mixed fixtures: run biber when a .bcf shows up after the first pass

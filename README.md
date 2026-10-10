@@ -64,7 +64,7 @@ MIT, see `LICENSE`. The vendored upstream benchmark in `bench/upstream/` keeps i
 ## Getting started
 
 ```bash
-scripts/install-texlive.sh          # minimal TeX Live 2026 into build/texlive (≈ 15 min)
+scripts/install-texlive.sh          # minimal TeX Live 2026 into build/texlive (≈ 15 min; on Windows run it from Git Bash)
 source build/texlive.env
 cargo build --workspace
 cargo run -p rtex-cli -- gen-book --pages 10 --out build/fx/book-10-pure

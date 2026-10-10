@@ -317,7 +317,7 @@ pub fn capture_command(
     unit_envs: &str,
 ) -> Result<(Command, String, std::path::PathBuf)> {
     std::fs::create_dir_all(out_dir)?;
-    let out_dir = out_dir.canonicalize()?;
+    let out_dir = crate::paths::canonical(out_dir)?;
     crate::background::mirror_dirs(src_dir, &out_dir, 0)?;
     let jobname = Path::new(main)
         .file_stem()
@@ -328,7 +328,10 @@ pub fn capture_command(
     cmd.arg("-interaction=nonstopmode")
         .arg("-file-line-error")
         .arg(format!("--jobname={jobname}"))
-        .arg(format!("--output-directory={}", out_dir.display()))
+        .arg(format!(
+            "--output-directory={}",
+            crate::paths::tex(&out_dir)
+        ))
         .env("RTEX_CAPTURE_DIR", &out_dir)
         .env("RTEX_UNIT_ENVS", unit_envs);
     let _ = instrumented;

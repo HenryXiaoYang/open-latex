@@ -48,7 +48,7 @@ struct Standby {
 
 enum StandbyState {
     Starting(std::thread::JoinHandle<Result<FastServer>>),
-    Ready(FastServer),
+    Ready(Box<FastServer>),
 }
 
 /// Hash of the `.bbl` next to `aux` (None: there is none).
@@ -238,7 +238,7 @@ impl EngineLoop {
                     return false;
                 }
                 match handle.join() {
-                    Ok(Ok(srv)) => sb.state = StandbyState::Ready(srv),
+                    Ok(Ok(srv)) => sb.state = StandbyState::Ready(Box::new(srv)),
                     Ok(Err(e)) => {
                         log::warn!("standby server for the new bibliography: {e:#}");
                         return false;
@@ -283,7 +283,7 @@ impl EngineLoop {
                 l.contexts_sent.clear();
                 l.inflight = None;
             }
-            if let Some(mut old) = self.server.replace(srv) {
+            if let Some(mut old) = self.server.replace(*srv) {
                 let _ = old.shutdown();
             }
             self.swapped_from = Some((self.server_generation, sb.generation));

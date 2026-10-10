@@ -21,7 +21,7 @@ pub fn find_rtex_texdir() -> Result<PathBuf> {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let candidate = here.join("../../tex");
     if candidate.join("rtex-dl.lua").exists() {
-        return Ok(candidate.canonicalize()?);
+        return Ok(crate::paths::canonical(&candidate)?);
     }
     bail!("cannot locate rtex tex/ directory; set RTEX_TEXDIR")
 }
@@ -30,7 +30,7 @@ impl TexLive {
     pub fn discover() -> Result<TexLive> {
         let bin_dir = std::env::var_os("RTEX_TEXLIVE_BIN").map(PathBuf::from);
         let lualatex = match &bin_dir {
-            Some(d) => d.join("lualatex"),
+            Some(d) => d.join(crate::paths::exe("lualatex")),
             None => which("lualatex").context(
                 "lualatex not found on PATH (source build/texlive.env or set RTEX_TEXLIVE_BIN)",
             )?,
@@ -50,19 +50,12 @@ impl TexLive {
     pub fn lualatex_cmd(&self, cwd: &Path) -> Command {
         let mut c = Command::new(&self.lualatex);
         c.current_dir(cwd);
-        let sep = ":";
-        let texinputs = format!(
-            "{}//{}{}",
-            self.rtex_texdir.join("latex").display(),
-            sep,
-            std::env::var("TEXINPUTS").unwrap_or_default()
+        use crate::paths::{prepend_search, tex};
+        let texinputs = prepend_search(
+            &format!("{}//", tex(&self.rtex_texdir.join("latex"))),
+            "TEXINPUTS",
         );
-        let luainputs = format!(
-            "{}//{}{}",
-            self.rtex_texdir.display(),
-            sep,
-            std::env::var("LUAINPUTS").unwrap_or_default()
-        );
+        let luainputs = prepend_search(&format!("{}//", tex(&self.rtex_texdir)), "LUAINPUTS");
         c.env("TEXINPUTS", texinputs)
             .env("LUAINPUTS", luainputs)
             .env("openout_any", "a")
@@ -70,12 +63,7 @@ impl TexLive {
             .env("error_line", "254")
             .env("half_error_line", "238");
         if let Some(d) = &self.bin_dir {
-            let path = format!(
-                "{}:{}",
-                d.display(),
-                std::env::var("PATH").unwrap_or_default()
-            );
-            c.env("PATH", path);
+            crate::paths::prepend_bin_dir(&mut c, d);
         }
         c
     }
@@ -84,7 +72,7 @@ impl TexLive {
 fn which(name: &str) -> Result<PathBuf> {
     let path = std::env::var_os("PATH").context("PATH unset")?;
     for dir in std::env::split_paths(&path) {
-        let p = dir.join(name);
+        let p = dir.join(crate::paths::exe(name));
         if p.is_file() {
             return Ok(p);
         }

@@ -8,9 +8,11 @@ pub mod engine;
 pub mod ffi;
 pub mod fixtures;
 pub mod layout;
+pub mod paths;
 pub mod piccache;
 pub mod session;
 pub mod texlive;
+mod transport;
 
 pub use document::{Edit, ParaId, Revision};
 pub use session::{Convergence, Event, Session, SessionConfig, Versions};

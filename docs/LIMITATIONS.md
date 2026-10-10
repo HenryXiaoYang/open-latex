@@ -106,7 +106,10 @@ document suppresses optional PDF info (the fixtures set `\pdfvariable suppressop
 otherwise `rtex pdf-compare` ignores /ID, dates and producer and compares content streams, fonts
 and images.
 
-**Platforms.** Linux/macOS (FIFO transport). Windows named pipes are not implemented.
+**Platforms.** Linux, macOS and Windows; CI tests all three against TeX Live (Linux with the
+full verification suite). The fast server's channel is a FIFO on Unix and a pair of named pipes
+on Windows (docs/PROTOCOL.md). On Windows, paths handed to TeX use forward slashes and file keys
+are reported with forward slashes (`chapters/a.tex`); a host may send either form.
 
 **Performance depends on the font stack.** With fontspec's default luaotfload node mode (and
 more so with HarfBuzz), LuaTeX shapes every paragraph in Lua, which costs several times the

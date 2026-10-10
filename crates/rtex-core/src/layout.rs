@@ -191,6 +191,7 @@ impl LayoutStore {
         let mut per_span_count: HashMap<ParaId, usize> = HashMap::new();
         for u in &cap.json.units {
             let file = u.file.clone().unwrap_or_else(|| "./main.tex".into());
+            let file = crate::paths::key(&file);
             let file = file.trim_start_matches("./").to_string();
             let mut span = None;
             for s in &snapshot {

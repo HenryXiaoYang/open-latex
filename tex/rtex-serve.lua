@@ -1,8 +1,8 @@
 -- rtex-serve.lua: persistent paragraph server running inside a live LuaLaTeX document.
--- Requests arrive on stdin:
+-- Requests arrive on stdin (Windows: on the named pipe $RTEX_REQ, opened in binary mode):
 --   C <req> <ctx> <len>\n<len bytes>   compile <len> bytes of paragraph source (no JSON)
 --   {...}\n                            any other op as a JSON object (context, ping, stats, ...)
--- Responses are frames on the FIFO named by $RTEX_RESP: u32-LE length, u8 kind, payload
+-- Responses are frames on the FIFO (Windows: named pipe) named by $RTEX_RESP: u32-LE length, u8 kind, payload
 -- (kind 0: JSON; kind 1: u32 json_len, JSON header, binary display list). See docs/PROTOCOL.md.
 local S = { contexts = {}, errors = {}, requests = 0 }
 local json = dofile(kpse.find_file("rtex-json.lua", "lua") or "rtex-json.lua")
@@ -703,8 +703,13 @@ end
 function S.init(boxnum, countnum, cctnum)
   S.boxnum = boxnum
   S.countnum = countnum
+  -- the request pipe first: the host waits for it only after the ready frame
+  local req_path = os.getenv("RTEX_REQ")
+  if req_path and req_path ~= "" then
+    stdin = assert(io.open(req_path, "rb"), "cannot open request pipe " .. req_path)
+  end
   local path = os.getenv("RTEX_RESP")
-  resp = assert(io.open(path, "wb"), "cannot open response FIFO " .. tostring(path))
+  resp = assert(io.open(path, "wb"), "cannot open response channel " .. tostring(path))
   resp:setvbuf("full", 1 << 16)
   luatexbase.add_to_callback("show_error_hook", S.on_error, "rtex-serve")
   -- \luafunction slots: no chunk compilation per call, unlike \directlua{...}

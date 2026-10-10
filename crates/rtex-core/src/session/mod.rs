@@ -391,14 +391,15 @@ pub struct Session {
 impl Session {
     pub fn open(cfg: SessionConfig) -> Result<Session> {
         let tl = TexLive::discover()?;
-        let project_root = cfg.project_root.canonicalize().context("project root")?;
+        let project_root = crate::paths::canonical(&cfg.project_root).context("project root")?;
         let cfg = SessionConfig {
             project_root,
+            main_file: crate::paths::key(&cfg.main_file),
             ..cfg
         };
         std::fs::create_dir_all(&cfg.build_dir)?;
         let cfg = SessionConfig {
-            build_dir: cfg.build_dir.canonicalize()?,
+            build_dir: crate::paths::canonical(&cfg.build_dir)?,
             ..cfg
         };
         // layout PDFs are numbered per session: an earlier session's copies would stay for
@@ -533,16 +534,17 @@ impl Session {
         let p = Path::new(path);
         if p.is_absolute() {
             if let Ok(rel) = p.strip_prefix(&self.shared.cfg.project_root) {
-                return rel.to_string_lossy().into_owned();
+                return crate::paths::key(&rel.to_string_lossy());
             }
-            if let Ok(canon) = p.canonicalize() {
+            if let Ok(canon) = crate::paths::canonical(p) {
                 if let Ok(rel) = canon.strip_prefix(&self.shared.cfg.project_root) {
-                    return rel.to_string_lossy().into_owned();
+                    return crate::paths::key(&rel.to_string_lossy());
                 }
             }
             return path.to_string();
         }
-        let mut t = path;
+        let path = &crate::paths::key(path);
+        let mut t = path.as_str();
         while let Some(r) = t.strip_prefix("./") {
             t = r;
         }

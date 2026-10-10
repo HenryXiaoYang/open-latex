@@ -56,11 +56,14 @@ pub fn linebreak(
     _quick: bool,
 ) -> Result<BTreeMap<String, (f64, f64)>> {
     std::fs::create_dir_all(out_dir)?;
-    let out_dir = &out_dir.canonicalize()?;
+    let out_dir = rtex_core::paths::canonical(out_dir)?;
     let dir = repo.join("bench/upstream/luatex-benchmark");
     let mut cmd = tl.lualatex_cmd(&dir);
     cmd.arg("-interaction=nonstopmode")
-        .arg(format!("--output-directory={}", out_dir.display()))
+        .arg(format!(
+            "--output-directory={}",
+            rtex_core::paths::tex(&out_dir)
+        ))
         .arg("systematic-benchmark.tex");
     let out = cmd
         .output()
