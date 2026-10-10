@@ -114,6 +114,66 @@ the first.
 unchanged pictures from the previous pass. On a 111-page document with 120 pictures, that
 shortened a pass from 45 s to 18 s.
 
+## Compared with Typst and Overleaf
+
+This times the same text in all three: the document the paper's Typst comparison uses. It is
+Lorem ipsum paragraphs on A4 at 11 pt, about five lines each, with the middle paragraph edited
+30 times. `bench/compare/compare.py` builds a LaTeX version of it and runs everything on the same
+machine (2026-10-10, the VM above):
+
+| Pages | rtex, per edit (P95) | Typst 0.15.1, `typst watch` | Typst, one page exported | Full pdfLaTeX run | Full LuaLaTeX run |
+|---|---|---|---|---|---|
+| 10 | 1.6 ms (2.4) | 18 ms | 9 ms | 0.12 s | 0.52 s |
+| 100 | 1.3 ms (1.7) | 146 ms | 47 ms | 0.25 s | 0.91 s |
+| 300 | 1.3 ms (1.7) | 414 ms | 121 ms | 0.51 s | 1.69 s |
+
+The pages column is the LaTeX page count, rounded; the files record the exact counts. How each
+tool was measured:
+
+- **rtex:** the session's round trip for each edit, from dispatching it to the live engine to
+  having the decoded result. This is the median over 29 edits, after the first.
+- **Typst:** the paper's comparison script (`bench/upstream/luatex-benchmark/typst-comparison/
+  bench.mjs`), unmodified. In watch mode Typst writes the whole PDF after every edit. With
+  `--pages 1` it writes one page, which is close to its compile time alone. Typst's editor
+  previews (the web app, tinymist) skip PDF export, so they behave more like the second column.
+- **Full LaTeX run:** one pdfLaTeX or LuaLaTeX run over the whole document, best of three. This
+  is the least an Overleaf recompile does, since Overleaf compiles the whole document every
+  time. The hosted service adds its own queueing, sandbox, PDF download and rendering, so this
+  is a lower bound, not a measurement of Overleaf.
+
+The comparison is not quite like for like:
+- rtex's figure is the paragraph alone. The pages, page breaks and references settle with the
+  next background pass, seconds later (see above).
+- Typst and a LaTeX run produce the whole consistent document each time, which is why their
+  time grows with its length.
+
+What the numbers do show is what you wait for after a keystroke before the text you typed
+appears typeset:
+- rtex: a millisecond or two, whatever the length;
+- Typst: tens to hundreds of milliseconds, growing with the document;
+- full recompiles: a second or more.
+
+Beyond speed, the tools make different trade-offs:
+
+| | rtex | Typst | Overleaf |
+|---|---|---|---|
+| Language | LaTeX (LuaLaTeX only), existing documents and packages | its own markup; LaTeX documents must be rewritten | LaTeX (pdfLaTeX, XeLaTeX, LuaLaTeX) |
+| Output | identical to LuaLaTeX | Typst's own typesetting | real LaTeX output |
+| While you type | the paragraph is exact at once; the layout catches up in seconds | everything consistent on every compile | everything consistent after each recompile |
+| Collaboration | none, local | web app with real-time collaboration | real-time collaboration, comments, history, templates |
+| Setup | TeX Live and Rust locally (the VS Code extension installs both) | one binary, or the browser | the browser |
+
+To reproduce the comparison:
+
+```sh
+source build/texlive.env
+cargo build --release -p rtex-cli
+# Typst: a release binary on PATH (bench/upstream/luatex-benchmark/typst-comparison/fetch-typst.sh), and Node.js
+python3 bench/compare/compare.py --pages 10 100 300
+```
+
+Without `typst` on PATH, the script measures only rtex and the full LaTeX runs.
+
 ## Compared with the paper
 
 The design follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*

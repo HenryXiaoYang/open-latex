@@ -46,6 +46,8 @@ LuaLaTeX 进程，然后把排好的新行交给编辑器绘制。完整编译�
 耗时与文档长度无关，只取决于段落本身。字体设置也有影响：使用 fontspec 默认的 OpenType 字形处理时，
 长段落的耗时最多可达 TFM 字体或 `Renderer=Basic` 的 4–5 倍（[原因](docs/live-editing.md#making-it-faster)）。
 
+在同一份文档中编辑一个段落：rtex 需要 1.3–1.6 ms，Typst 0.15.1 需要 18 ms（10 页）到 414 ms（300 页），而一次完整的 LuaLaTeX 编译需要 0.5–1.7 s。Overleaf 每次重新编译都要重复这样一次完整编译（[对比](docs/benchmarks.md#compared-with-typst-and-overleaf)）。
+
 ## 哪些内容会实时更新
 
 正文、公式（行内和行间，`align` 等）、交叉引用和文献引用、列表、定理、图表、标题、脚注标记、你自己定义的宏和环境，

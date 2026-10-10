@@ -66,6 +66,7 @@ rtex edit    --project DIR --find "some text" --text " inserted"     # one edit 
 rtex slice   --project DIR                                           # timing of one paragraph
 rtex probe   --project DIR                                           # latency breakdown by stage and unit kind
 rtex bench   --project DIR… --categories short,medium,…              # see benchmarks.md
+python3 bench/compare/compare.py                                    # rtex vs Typst vs a full LaTeX run
 rtex export  --project DIR --out out.pdf --check                     # export and compare with a clean build
 rtex serve   --project DIR                                           # JSON-lines session
 rtex pdf-compare A.pdf B.pdf

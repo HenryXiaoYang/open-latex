@@ -50,6 +50,8 @@ Document length does not matter, only the paragraph does. The font setup matters
 fontspec's default OpenType shaping, a long paragraph takes up to 4–5× longer than with TFM fonts
 or `Renderer=Basic` ([why](docs/live-editing.md#making-it-faster)).
 
+Typed into the same document, a paragraph updates in 1.3–1.6 ms with rtex, 18 ms (10 pages) to 414 ms (300 pages) with Typst 0.15.1, and a full LuaLaTeX run takes 0.5–1.7 s. That full run is what Overleaf repeats on every recompile ([comparison](docs/benchmarks.md#compared-with-typst-and-overleaf)).
+
 ## What updates live
 
 Text, math (inline and display, `align` and friends), references and citations, lists,

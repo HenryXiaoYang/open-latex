@@ -1,0 +1,41 @@
+[
+ {
+  "target_pages": 10,
+  "paragraphs": 86,
+  "latex_pages": 9,
+  "rtex_p50_ms": 1.62,
+  "rtex_p95_ms": 2.44,
+  "pdflatex_s": 0.12,
+  "lualatex_s": 0.52,
+  "typst_version": "typst 0.15.1 (9dfd3a08)",
+  "typst_pages": 11,
+  "typst_watch_p50_ms": 18.3,
+  "typst_one_page_p50_ms": 8.6
+ },
+ {
+  "target_pages": 100,
+  "paragraphs": 865,
+  "latex_pages": 100,
+  "rtex_p50_ms": 1.29,
+  "rtex_p95_ms": 1.68,
+  "pdflatex_s": 0.25,
+  "lualatex_s": 0.91,
+  "typst_version": "typst 0.15.1 (9dfd3a08)",
+  "typst_pages": 104,
+  "typst_watch_p50_ms": 146.1,
+  "typst_one_page_p50_ms": 47.1
+ },
+ {
+  "target_pages": 300,
+  "paragraphs": 2595,
+  "latex_pages": 304,
+  "rtex_p50_ms": 1.3,
+  "rtex_p95_ms": 1.68,
+  "pdflatex_s": 0.51,
+  "lualatex_s": 1.69,
+  "typst_version": "typst 0.15.1 (9dfd3a08)",
+  "typst_pages": 300,
+  "typst_watch_p50_ms": 414.2,
+  "typst_one_page_p50_ms": 120.6
+ }
+]
