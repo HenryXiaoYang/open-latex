@@ -27,7 +27,7 @@ LuaLaTeX 进程，然后把排好的新行交给编辑器绘制。完整编译�
 使用 rtex 最简单的方式是 VS Code 插件
 **[Realtime TeX Live Preview](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)**。它在编辑器旁显示实时预览，
 并在首次使用时自动为你安装 rtex（需要时还会安装一个精简版 TeX Live）。打开一个 `.tex` 文件，点击编辑器标题栏上的
-预览图标（或按 Ctrl+Alt+V，Mac 上为 Cmd+Alt+V），然后开始输入即可。在 Windows 上，该插件目前在 WSL 中运行 rtex。
+预览图标（或按 Ctrl+Alt+V，Mac 上为 Cmd+Alt+V），然后开始输入即可。插件在 Linux、macOS 和 Windows 上原生运行 rtex，并会为你的平台下载预编译的引擎。
 
 本页其余部分介绍 rtex 本身，也就是该插件所基于的库。
 
