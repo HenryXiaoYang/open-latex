@@ -33,16 +33,16 @@ struct EngineLoop {
     standby: Option<Standby>,
     /// The layout version whose `.bbl` was last compared with the server's.
     bbl_checked: u64,
-    /// The generation a standby replaced: requests queued for it are still valid (same
-    /// preamble) and are carried over instead of being dropped as superseded.
-    swapped_from: Option<u64>,
+    /// (replaced, current) generations of the last standby swap: requests queued for the
+    /// replaced server are still valid (same preamble) and are carried over, as long as the
+    /// generation is still the one the swap installed.
+    swapped_from: Option<(u64, u64)>,
 }
 
 /// A server for the latest bibliography (`refresh_bibliography`): starting on a helper thread,
 /// then ready and waiting for the running server to be idle.
 struct Standby {
     generation: u64,
-    bbl: Option<u64>,
     state: StandbyState,
 }
 
@@ -60,18 +60,31 @@ fn bbl_hash(aux: Option<&Path>) -> Option<u64> {
     Some(h.finish())
 }
 
-/// The aux file of the latest layout's pass (the server starts from it and its `.bbl`).
-fn layout_aux(s: &Shared) -> Option<PathBuf> {
+/// Hash of the `.bbl` a started server read: the copy it made at start, not the pass's file,
+/// which a later pass in the same directory may already have rewritten.
+fn server_bbl_hash(srv: &FastServer) -> Option<u64> {
+    bbl_hash(Some(
+        &srv.work_dir
+            .join(format!("rtex-serve-g{}.aux", srv.generation)),
+    ))
+}
+
+/// The aux file of the latest layout's pass (a server starts from it and its `.bbl`), with
+/// that layout's version, read together.
+fn layout_aux(s: &Shared) -> (Option<PathBuf>, u64) {
     let layout = s.layout.lock();
     let jobname = Path::new(&s.cfg.main_file)
         .file_stem()
         .and_then(|x| x.to_str())
         .unwrap_or("main")
         .to_string();
-    layout
-        .capture_dir
-        .as_ref()
-        .map(|d| d.join(format!("{jobname}.aux")))
+    (
+        layout
+            .capture_dir
+            .as_ref()
+            .map(|d| d.join(format!("{jobname}.aux"))),
+        layout.layout_version,
+    )
 }
 
 /// The link fields that describe the current server, cleared when it goes away.
@@ -198,7 +211,7 @@ impl EngineLoop {
         }
         let mut req = req;
         if let Some(r) = &mut req {
-            if self.swapped_from == Some(r.versions.engine_generation) {
+            if self.swapped_from == Some((r.versions.engine_generation, wanted_gen)) {
                 // queued for the server a standby replaced: same preamble, still valid
                 r.versions.engine_generation = wanted_gen;
             }
@@ -273,9 +286,9 @@ impl EngineLoop {
             if let Some(mut old) = self.server.replace(srv) {
                 let _ = old.shutdown();
             }
-            self.swapped_from = Some(self.server_generation);
+            self.swapped_from = Some((self.server_generation, sb.generation));
             self.server_generation = sb.generation;
-            self.server_bbl = sb.bbl;
+            self.server_bbl = self.server.as_ref().and_then(server_bbl_hash);
             self.labels_sent = 0;
             // verdicts reached against the old server's citations no longer apply
             s.live.lock().on_server_swap();
@@ -288,7 +301,7 @@ impl EngineLoop {
                 .ok();
             return true;
         }
-        let lv = s.layout.lock().layout_version;
+        let (aux, lv) = layout_aux(&s);
         if lv == self.bbl_checked
             || self.server_generation != wanted_gen
             || !self.server.as_mut().is_some_and(|srv| srv.is_alive())
@@ -296,7 +309,6 @@ impl EngineLoop {
             return false;
         }
         self.bbl_checked = lv;
-        let aux = layout_aux(&s);
         let bbl = bbl_hash(aux.as_deref());
         if bbl.is_none() || bbl == self.server_bbl {
             return false;
@@ -317,7 +329,6 @@ impl EngineLoop {
         });
         self.standby = Some(Standby {
             generation,
-            bbl,
             state: StandbyState::Starting(handle),
         });
         false
@@ -360,18 +371,8 @@ impl EngineLoop {
                 reason: None,
             })
             .ok();
-        let aux = {
-            let layout = s.layout.lock();
-            let jobname = Path::new(&s.cfg.main_file)
-                .file_stem()
-                .and_then(|x| x.to_str())
-                .unwrap_or("main")
-                .to_string();
-            layout
-                .capture_dir
-                .as_ref()
-                .map(|d| d.join(format!("{jobname}.aux")))
-        };
+        // the layout the server starts from: its .bbl is compared with later layouts'
+        let (aux, aux_layout) = layout_aux(&s);
         match FastServer::spawn_with(
             &s.tl,
             &s.cfg.project_root,
@@ -390,10 +391,10 @@ impl EngineLoop {
                     l.contexts_sent.clear();
                     l.inflight = None;
                 }
+                self.server_bbl = server_bbl_hash(&srv);
                 self.server = Some(srv);
                 self.server_generation = wanted_gen;
-                self.server_bbl = bbl_hash(aux.as_deref());
-                self.bbl_checked = s.layout.lock().layout_version;
+                self.bbl_checked = aux_layout;
                 self.labels_sent = 0;
                 s.events
                     .send(Event::EngineState {

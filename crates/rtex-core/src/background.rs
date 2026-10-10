@@ -42,7 +42,18 @@ impl Clone for CaptureResult {
 /// (images, .bib, .cls …) so relative inputs resolve.
 pub fn write_snapshot(project: &Path, files: &BTreeMap<String, String>, dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    copy_tree(project, dir, 0)?;
+    // the PDFs built from the document's own sources (main.pdf, a subfile compiled alone):
+    // outputs, not inputs. A PDF next to a .tex the document does not read (a standalone
+    // figure's source) is an input and is copied.
+    let built: std::collections::HashSet<PathBuf> = files
+        .keys()
+        .map(|rel| {
+            project
+                .join(rel.trim_start_matches("./"))
+                .with_extension("pdf")
+        })
+        .collect();
+    copy_tree(project, dir, 0, &built)?;
     for (rel, text) in files {
         let p = dir.join(rel);
         if let Some(parent) = p.parent() {
@@ -53,7 +64,12 @@ pub fn write_snapshot(project: &Path, files: &BTreeMap<String, String>, dir: &Pa
     Ok(())
 }
 
-fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
+fn copy_tree(
+    src: &Path,
+    dst: &Path,
+    depth: usize,
+    built: &std::collections::HashSet<PathBuf>,
+) -> Result<()> {
     if depth > 8 {
         return Ok(());
     }
@@ -77,14 +93,12 @@ fn copy_tree(src: &Path, dst: &Path, depth: usize) -> Result<()> {
         if path.is_dir() {
             let sub = dst.join(&name);
             std::fs::create_dir_all(&sub)?;
-            copy_tree(&path, &sub, depth + 1)?;
+            copy_tree(&path, &sub, depth + 1, built)?;
         } else if !path.is_file() {
             continue;
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            // a PDF is a compile output only next to the .tex it was built from (main.pdf);
-            // every other PDF is an input (\includegraphics, \includepdf)
-            if ext == "pdf" && path.with_extension("tex").is_file() {
+            if ext == "pdf" && built.contains(&path) {
                 continue;
             }
             if matches!(
@@ -175,8 +189,9 @@ fn dir_forms(out_dir: &Path) -> Vec<Vec<u8>> {
         forms.push(hex.into_bytes());
         forms.push(p.into_bytes());
     }
-    // longest first, so a path is replaced before a shorter form inside it
-    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    // longest first, so a path is replaced before a shorter form inside it; equal forms
+    // (an already canonical directory) adjacent so `dedup` drops them
+    forms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
     forms.dedup();
     forms
 }
@@ -425,7 +440,7 @@ pub fn run_pass_with_runner(
             }
             bib_ran = true;
         }
-        run_makeindex(tl, snapshot_dir, out_dir, &mut indexed);
+        run_makeindex(tl, snapshot_dir, out_dir, &jobname, &mut indexed);
         let sig_after = aux_signature(out_dir, &jobname);
         // a bibliography run that changed nothing (same .bbl) needs no extra pass: the .bbl is
         // part of the signature
@@ -449,21 +464,55 @@ pub fn run_pass_with_runner(
     })
 }
 
-/// Run makeindex on every `.idx` a pass wrote (`\makeindex`, imakeidx's named indexes) whose
-/// entries differ from the ones last indexed in `indexed` (name → hash of the `.idx`), or whose
-/// `.ind` is missing. The `.ind` files are part of the aux signature, so a changed index
-/// brings another pass. makeindex is run here rather than by the document (imakeidx's own
-/// call needs shell escape and cannot find an `.idx` in the output directory).
+/// Index programs a document may ask for (imakeidx `program=`); anything else runs makeindex.
+const INDEX_PROGRAMS: &[&str] = &[
+    "makeindex",
+    "texindy",
+    "xindy",
+    "truexindy",
+    "upmendex",
+    "mendex",
+];
+
+/// The command for `idx` (a file name in the pass directory): the one the capture recorded
+/// from imakeidx (`<job>.rtex-idxcmd`: program, the document's options, the file), else
+/// `makeindex -q <idx>`.
+fn index_command(recorded: &str, idx: &str) -> (String, Vec<String>) {
+    for line in recorded.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let (Some(prog), Some(file)) = (words.first(), words.last()) else {
+            continue;
+        };
+        if *file == idx && words.len() >= 2 && INDEX_PROGRAMS.contains(prog) {
+            let mut args: Vec<String> = words[1..].iter().map(|w| w.to_string()).collect();
+            if *prog == "makeindex" && !args.iter().any(|a| a == "-q") {
+                args.insert(0, "-q".into());
+            }
+            return (prog.to_string(), args);
+        }
+    }
+    ("makeindex".into(), vec!["-q".into(), idx.into()])
+}
+
+/// Run the index program on every `.idx` a pass wrote (`\makeindex`, imakeidx's named indexes)
+/// whose entries differ from the ones last indexed in `indexed` (name → hash of the `.idx`), or
+/// whose `.ind` is missing, with the program and options imakeidx was given (`index_command`).
+/// The `.ind` files are part of the aux signature, so a changed index brings another pass. The
+/// index is built here rather than by the document (imakeidx's own call needs shell escape and
+/// cannot find an `.idx` in the output directory).
 fn run_makeindex(
     tl: &TexLive,
     snapshot_dir: &Path,
     out_dir: &Path,
+    jobname: &str,
     indexed: &mut BTreeMap<String, u64>,
 ) {
     use std::hash::{Hash, Hasher};
     let Ok(dir) = std::fs::read_dir(out_dir) else {
         return;
     };
+    let recorded =
+        std::fs::read_to_string(out_dir.join(format!("{jobname}.rtex-idxcmd"))).unwrap_or_default();
     for entry in dir.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "idx") {
@@ -485,8 +534,9 @@ fn run_makeindex(
         if indexed.get(&name) == Some(&hash) && path.with_extension("ind").exists() {
             continue;
         }
-        let mut cmd = Command::new("makeindex");
-        cmd.current_dir(out_dir).arg("-q").arg(&name);
+        let (program, args) = index_command(&recorded, &name);
+        let mut cmd = Command::new(&program);
+        cmd.current_dir(out_dir).args(&args);
         if let Some(d) = &tl.bin_dir {
             cmd.env(
                 "PATH",
@@ -502,11 +552,11 @@ fn run_makeindex(
         match cmd.output() {
             Ok(out) if !out.status.success() => {
                 log::warn!(
-                    "makeindex {name} failed: {}",
+                    "{program} {name} failed: {}",
                     String::from_utf8_lossy(&out.stderr)
                 )
             }
-            Err(e) => log::warn!("running makeindex: {e}"),
+            Err(e) => log::warn!("running {program}: {e}"),
             _ => {}
         }
         indexed.insert(name, hash);
@@ -834,6 +884,36 @@ mod tests {
     }
 
     #[test]
+    fn index_commands_follow_imakeidx() {
+        let rec = "makeindex -s mystyle.ist main.idx\ntexindy -L english -C utf8 names.idx\n";
+        assert_eq!(
+            index_command(rec, "main.idx"),
+            (
+                "makeindex".to_string(),
+                vec!["-q", "-s", "mystyle.ist", "main.idx"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
+        );
+        assert_eq!(index_command(rec, "names.idx").0, "texindy");
+        assert_eq!(
+            index_command(rec, "names.idx").1.last().unwrap(),
+            "names.idx"
+        );
+        // no record (makeidx, or an index imakeidx never printed): plain makeindex
+        assert_eq!(
+            index_command(rec, "other.idx"),
+            (
+                "makeindex".to_string(),
+                vec!["-q".to_string(), "other.idx".to_string()]
+            )
+        );
+        // a program outside the list is not run
+        assert_eq!(index_command("rm -rf x.idx", "x.idx").0, "makeindex");
+    }
+
+    #[test]
     fn signature_ignores_the_pass_directory() {
         let dir = std::env::temp_dir().join(format!("rtex-sig-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -875,7 +955,12 @@ mod tests {
         std::fs::write(project.join("main.pdf"), "built").unwrap();
         std::fs::write(project.join("figure.pdf"), "input").unwrap();
         std::fs::write(project.join("images/plot.pdf"), "input").unwrap();
-        write_snapshot(&project, &BTreeMap::new(), &dir.join("snap")).unwrap();
+        // a standalone figure: its source sits next to it but the document only reads the PDF
+        std::fs::write(project.join("images/fig.tex"), "standalone").unwrap();
+        std::fs::write(project.join("images/fig.pdf"), "input").unwrap();
+        let files = BTreeMap::from([("main.tex".to_string(), "x".to_string())]);
+        write_snapshot(&project, &files, &dir.join("snap")).unwrap();
+        assert!(dir.join("snap/images/fig.pdf").is_file());
         assert!(!dir.join("snap/main.pdf").exists());
         assert!(dir.join("snap/figure.pdf").is_file());
         assert!(dir.join("snap/images/plot.pdf").is_file());

@@ -66,10 +66,13 @@
   pgfplots, pdfpages, pdflscape, verbatim and catcode tricks, `\include` chains; 28 scripted
   live-typing scenarios). Fixes:
   - Input PDFs (`\includegraphics{x.pdf}`, `\includepdf`) are copied into the pass snapshot;
-    every `.pdf` was skipped as a build output, so the pass failed on them. Only a PDF next to
-    the `.tex` it was built from is skipped now.
+    every `.pdf` was skipped as a build output, so the pass failed on them. Only a PDF built
+    from one of the document's own sources (`main.pdf`, a subfile compiled alone) is skipped
+    now; a figure next to its standalone source is copied.
   - makeindex runs between passes on every `.idx` a pass writes (imakeidx's named indexes too)
     when its entries changed or its `.ind` is missing; the index was missing from every layout.
+    imakeidx's own command is recorded by the capture instead of run (`<job>.rtex-idxcmd`), so
+    the document's `options=` (`-s style.ist`) and `program=` (texindy, xindy) are used.
     `.ind` files are part of the aux signature. `.idx`/`.glo` are no longer copied between pass
     directories: TeX only writes them, and a standby engine may already hold them open.
   - The aux signature ignores the pass directory's path (plain and hex-encoded): bookmark
@@ -88,7 +91,8 @@
     eso-pic content were missing from pages reported exact. A page with a `/Rotate` page
     attribute (pdflscape) is flagged `page_rotate` (PDF fallback).
   - Run-in headings (`\paragraph`, `\subparagraph`) and lists continuing an earlier list
-    (enumitem `resume`, `series`) are background-only (`RunInHeading`, `OutsideState`, kept in
+    (enumitem `resume`, `resume*`, `series` keys of a list's options, `\newlist` lists included)
+    are background-only (`RunInHeading`, `OutsideState`, kept in
     probe mode): the first shares its rows with the following paragraph, the second numbered
     from 1 live where the document said 3.
   - `fast_budget` defaults to 50 ms (was 5): a demoted unit waits for a pass (20 s on this

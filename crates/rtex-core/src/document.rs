@@ -558,9 +558,10 @@ pub fn strip_comment(line: &str) -> &str {
 /// Does TeX read the body of environment `name` verbatim (`verbatim`, `Verbatim`,
 /// `lstlisting`, `minted`, `comment`, `luacode*`, `filecontents` …), so that a `\begin{document}`
 /// or a `%` in it is text?
-fn is_verbatim_env(name: &str) -> bool {
+pub(crate) fn is_verbatim_env(name: &str) -> bool {
     let n = name.trim_end_matches('*').to_ascii_lowercase();
     n == "comment"
+        || n == "alltt"
         || ["verbatim", "listing", "minted", "luacode", "filecontents"]
             .iter()
             .any(|p| n.contains(p))
@@ -602,35 +603,51 @@ fn blank_verb(line: &str) -> String {
 /// a command: not in a `%` comment, a `\verb` or the body of a verbatim-like environment (a
 /// chapter that shows a whole document in `verbatim`, a `\verb|\end{document}|`).
 pub(crate) fn find_command(text: &str, marker: &str) -> Option<usize> {
+    // the first verbatim-like `\begin{env}` in `vis`: (offset, env, length of the \begin)
+    fn verbatim_begin(vis: &str) -> Option<(usize, String, usize)> {
+        let mut from = 0;
+        while let Some(k) = vis[from..].find("\\begin{") {
+            let at = from + k;
+            let name_start = at + "\\begin{".len();
+            let close = vis[name_start..].find('}')?;
+            let env = &vis[name_start..name_start + close];
+            if is_verbatim_env(env) {
+                return Some((at, env.to_string(), name_start + close + 1 - at));
+            }
+            from = name_start;
+        }
+        None
+    }
     let mut verb_env: Option<String> = None;
     let mut off = 0;
     for line in text.split_inclusive('\n') {
         let start = off;
         off += line.len();
-        let mut from = 0;
-        if let Some(env) = &verb_env {
-            let end = format!("\\end{{{env}}}");
-            match line.find(&end) {
-                Some(k) => {
-                    from = k + end.len();
-                    verb_env = None;
+        // a cursor over the raw line: outside verbatim bodies the line is read as TeX reads it
+        // (no comments, no \verb arguments); inside one only its \end{env} counts
+        let mut pos = 0;
+        loop {
+            if let Some(env) = verb_env.take() {
+                let end = format!("\\end{{{env}}}");
+                match line[pos..].find(&end) {
+                    Some(k) => pos += k + end.len(),
+                    None => {
+                        verb_env = Some(env);
+                        break;
+                    }
                 }
-                None => continue,
             }
-        }
-        let visible = blank_verb(&line[from..]);
-        let visible = strip_comment(&visible);
-        if let Some(k) = visible.find(marker) {
-            return Some(start + from + k);
-        }
-        for env in find_all_envs(visible, "\\begin{") {
-            if is_verbatim_env(&env) {
-                let begin = format!("\\begin{{{env}}}");
-                let after = visible.find(&begin).map(|k| k + begin.len()).unwrap_or(0);
-                if !visible[after..].contains(&format!("\\end{{{env}}}")) {
+            let visible = blank_verb(&line[pos..]);
+            let visible = strip_comment(&visible);
+            let m = visible.find(marker);
+            match (m, verbatim_begin(visible)) {
+                (Some(mk), Some((bk, _, _))) if mk < bk => return Some(start + pos + mk),
+                (Some(mk), None) => return Some(start + pos + mk),
+                (_, Some((bk, env, blen))) => {
+                    pos += bk + blen;
                     verb_env = Some(env);
                 }
-                break;
+                (None, None) => break,
             }
         }
     }
@@ -1005,6 +1022,26 @@ mod tests {
         assert_eq!(spans.last().unwrap().1, SpanKind::Trailer);
         assert!(main[spans.last().unwrap().0.clone()].starts_with("\\end{document}"));
         assert_eq!(blank_verb("a \\verb*+%x+ b"), "a \\verb*     b");
+        // a marker inside a verbatim body opened on the same line, or after a verbatim
+        // environment closed on it
+        assert_eq!(
+            find_command("\\begin{verbatim}\\begin{document}\n", "\\begin{document}"),
+            None
+        );
+        assert_eq!(
+            find_command(
+                "x \\begin{lstlisting}[a] \\end{document}\n",
+                "\\end{document}"
+            ),
+            None
+        );
+        let two = "\\begin{verbatim}a\\end{verbatim} \\begin{comment}\n\\begin{document}\n\\end{comment}\n";
+        assert_eq!(find_command(two, "\\begin{document}"), None);
+        let after = "\\begin{verbatim}%x\\end{verbatim}\\begin{document}\n";
+        assert_eq!(
+            find_command(after, "\\begin{document}"),
+            Some(after.find("\\begin{document}").unwrap())
+        );
         assert_eq!(blank_verb("\\verbatim"), "\\verbatim");
     }
 

@@ -95,8 +95,9 @@ material, unknown whatsits or unexpanded virtual-font commands are marked *Degra
 with a PDF fallback path; TikZ/PGF pictures therefore render through the PDF fallback, not the
 display list.
 
-**Bibliographies and indices.** `biber`, `bibtex` and `makeindex` (every `.idx` a pass writes,
-imakeidx's named indexes included, with the project's `.ist` files on `INDEXSTYLE`) run
+**Bibliographies and indices.** `biber`, `bibtex` and the index program (every `.idx` a pass
+writes, imakeidx's named indexes included; with imakeidx the document's `program=` and
+`options=`, otherwise `makeindex`; the project's `.ist` files on `INDEXSTYLE`) run
 automatically; `xindy` and `makeglossaries` do not (glossaries' `\printnoidxglossaries` needs no
 tool; hook point: `background.rs::run_pass_with_runner`).
 

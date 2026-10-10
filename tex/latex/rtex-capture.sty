@@ -44,6 +44,11 @@
 \directlua{token.set_macro("rtex@picenvs", table.concat(rtex_capture.PICTURE_ENVS, ","))}
 \input{rtex-pic.tex}
 \AddToHook{begindocument/end}{\rtex@wrappicall}
+% imakeidx: record the index commands instead of running them (rtex-capture.lua, index_command)
+\AddToHook{package/imakeidx/after}{%
+  \def\imki@exec#1{\directlua{rtex_capture.index_command("\luaescapestring{#1}")}}%
+  \def\imki@finalmessage#1{\directlua{rtex_capture.index_command(
+    "\luaescapestring{\imki@program\imki@options#1.idx}")}}}
 % Map image resource indices to files so IMAGE display-list items can name their source.
 \AddToHook{package/graphicx/after}{%
   \AddToHook{cmd/Gin@setfile/after}{%

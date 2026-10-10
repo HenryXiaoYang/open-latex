@@ -188,3 +188,36 @@ fn glossaries_first_use_does_not_leak_between_live_compiles() {
     }
     assert_eq!(seen, 3);
 }
+
+#[test]
+fn imakeidx_options_reach_the_index_program() {
+    let have_imakeidx = std::process::Command::new("kpsewhich")
+        .arg("imakeidx.sty")
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    if !have_imakeidx {
+        eprintln!("SKIP: no imakeidx.sty");
+        return;
+    }
+    // the style puts a marker before each letter group: present only if `-s marker.ist` was used
+    let ist = "headings_flag 1\nheading_prefix \"\\\\item RTEXMARK \"\nheading_suffix \"\"\n";
+    let main = "\\documentclass{article}\n\\usepackage{imakeidx}\n\
+                \\makeindex[options=-s marker.ist]\n\\begin{document}\n\
+                Aardvarks\\index{aardvark} and zebras\\index{zebra}.\n\
+                \\printindex\n\\end{document}\n";
+    let Some((s, _project, build)) =
+        session("imakeidx", &[("main.tex", main), ("marker.ist", ist)])
+    else {
+        return;
+    };
+    wait_converged(&s);
+    let ind: Vec<String> = ["pass-0", "pass-1"]
+        .iter()
+        .filter_map(|d| std::fs::read_to_string(build.join("bg").join(d).join("main.ind")).ok())
+        .collect();
+    assert!(
+        ind.iter().any(|t| t.contains("RTEXMARK")),
+        "the document's index style was not used: {ind:?}"
+    );
+}

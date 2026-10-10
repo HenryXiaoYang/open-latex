@@ -1196,6 +1196,9 @@ pub struct Policy {
     /// allow-listed text (font switches, `\noindent`, a label): typeset inside the paragraph
     /// they wrap. Ones whose code opens a block environment are in `theorem_envs` instead.
     pub user_inner_envs: BTreeSet<String>,
+    /// Lists the preamble defines with enumitem's `\newlist`, besides `itemize`, `enumerate`
+    /// and `description` (their options are checked for `resume`/`series`).
+    pub list_envs: BTreeSet<String>,
 }
 
 impl Policy {
@@ -1239,6 +1242,17 @@ impl Policy {
         for e in unit_envs {
             theorem_envs.insert(e.clone());
         }
+        let mut list_envs = BTreeSet::new();
+        let mut idx = 0;
+        while let Some(p) = text[idx..].find("\\newlist") {
+            let s = idx + p + "\\newlist".len();
+            if let Some(b) = text[s..].trim_start().strip_prefix('{') {
+                if let Some(e) = b.find('}') {
+                    list_envs.insert(b[..e].trim().to_string());
+                }
+            }
+            idx = s;
+        }
         let mut packages = BTreeSet::new();
         for (opts, names) in usepackages(&text) {
             for n in names {
@@ -1271,6 +1285,7 @@ impl Policy {
             permissive: false,
             heading_macros: BTreeMap::new(),
             user_inner_envs: BTreeSet::new(),
+            list_envs,
         };
         // Macros defined in the preamble whose bodies are themselves allow-listed are trusted:
         // in text mode, in math mode, or both, depending on how the body classifies. Two rounds
@@ -1770,6 +1785,55 @@ pub fn classify_source_with(
     scan.finish(permissive)
 }
 
+/// The optional argument `[...]` at the start of `s` (after spaces), without its brackets;
+/// brackets inside braces (`label={[\arabic*]}`) do not end it.
+fn optional_arg(s: &str) -> Option<&str> {
+    let t = s.trim_start();
+    let off = s.len() - t.len();
+    if !t.starts_with('[') {
+        return None;
+    }
+    let b = t.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b']' if depth == 0 => return Some(&s[off + 1..off + i]),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `s` split at `sep` outside braces.
+fn top_level_split(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
 /// The unit's shape: a block/float/theorem environment spanning the whole unit (possibly after
 /// setup statements and vertical material such as \vspace or \noindent, which the unit box
 /// absorbs), a heading, or a paragraph. Also returns where the unit's own heading command may
@@ -2035,11 +2099,16 @@ impl<'a> Scan<'a> {
             // a second block environment after one closed: still fine (both inside the unit)
         }
         // enumitem: `resume`, `resume*` and `series=` continue an earlier list's numbering
-        if text[after..].trim_start().starts_with('[') {
-            let opts = &text[after..];
-            let opts = &opts[..opts.find(']').unwrap_or(opts.len())];
-            if opts.contains("resume") || opts.contains("series") {
-                self.push(Reason::OutsideState(format!("\\begin{{{env}}}[resume]")));
+        let base = env.trim_end_matches('*');
+        if LIST_ENVS.contains(&base) || policy.list_envs.contains(base) {
+            if let Some(opts) = optional_arg(&text[after..]) {
+                let keys = top_level_split(opts, ',');
+                if keys.iter().any(|kv| {
+                    let key = kv.split('=').next().unwrap_or("").trim();
+                    matches!(key, "resume" | "resume*" | "series")
+                }) {
+                    self.push(Reason::OutsideState(format!("\\begin{{{env}}}[resume]")));
+                }
             }
         }
         let is_amsmath_display = AMSMATH_DISPLAY_ENVS.contains(&env.as_str());
@@ -2932,6 +3001,39 @@ mod tests {
             r.contains(&Reason::OutsideState("\\begin{enumerate}[resume]".into())),
             "{r:?}"
         );
+        // ... matched as a key of a list's options, not as text in other environments' titles
+        let r = check_source(
+            "\\begin{enumerate}[label={[\\arabic*]}, resume]\n  \\item x\n\\end{enumerate}",
+            &p,
+        );
+        assert!(
+            r.iter().any(|x| matches!(x, Reason::OutsideState(_))),
+            "{r:?}"
+        );
+        let r = check_source(
+            "\\begin{enumerate}[label=\\roman*]\n  \\item A series of items\n\\end{enumerate}",
+            &p,
+        );
+        assert!(
+            !r.iter().any(|x| matches!(x, Reason::OutsideState(_))),
+            "{r:?}"
+        );
+        let r = check_source(
+            "\\begin{quote}[Convergence of the series]\nText.\n\\end{quote}",
+            &p,
+        );
+        assert!(
+            !r.iter().any(|x| matches!(x, Reason::OutsideState(_))),
+            "{r:?}"
+        );
+        let mut pl = p.clone();
+        pl.list_envs.insert("steps".into());
+        let r = check_source("\\begin{steps}[resume*]\n  \\item x\n\\end{steps}", &pl);
+        assert!(
+            r.iter().any(|x| matches!(x, Reason::OutsideState(_))),
+            "{r:?}"
+        );
+        assert_eq!(optional_arg(" [a={[x]}, b] tail"), Some("a={[x]}, b"));
         // run-in headings share the following paragraph's lines
         let (shape, r) = classify_source("\\paragraph{Run-in.} With text.", &p);
         assert_eq!(shape, UnitShape::Heading("paragraph".into()));

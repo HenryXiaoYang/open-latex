@@ -191,6 +191,9 @@ function C.begin_document()
   prev_macros = {}
   local seen = {}
   scan_definitions(tex.jobname .. ".tex", seen, 0)
+  -- index commands are recorded afresh by each run (index_command)
+  os.remove((os.getenv("RTEX_CAPTURE_DIR") or os.getenv("TEXMF_OUTPUT_DIRECTORY") or ".") ..
+            "/" .. tex.jobname .. ".rtex-idxcmd")
   -- a body-only pass (standby engine) has the preamble in rtex-preamble.tex, the main file's
   -- preamble lines blanked: definitions made there (glossary entries) are read from it
   local pre = kpse.find_file("rtex-preamble.tex")
@@ -586,6 +589,19 @@ end
 local function out_path(name)
   local dir = os.getenv("RTEX_CAPTURE_DIR") or os.getenv("TEXMF_OUTPUT_DIRECTORY") or "."
   return dir .. "/" .. name
+end
+
+-- imakeidx's index commands (`makeindex -s style.ist main.idx`, `texindy ... main.idx`), one
+-- per line in <jobname>.rtex-idxcmd: the session runs them between passes (the document's own
+-- call would run in the source directory, where the .idx is not, and needs shell escape)
+local idxcmd_started = false
+function C.index_command(cmd)
+  local f = io.open(out_path(C.jobname .. ".rtex-idxcmd"), idxcmd_started and "a" or "w")
+  idxcmd_started = true
+  if f then
+    f:write((cmd:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")), "\n")
+    f:close()
+  end
 end
 
 function C.finish()

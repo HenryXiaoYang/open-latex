@@ -521,27 +521,14 @@ fn word_before_arg(text: &str, word: &str) -> bool {
     false
 }
 
-/// Environments that read their body under other catcodes (`luacode*`, `verbatim`,
-/// `lstlisting`, `minted`, `comment`, `filecontents` and their variants), matched by name.
+/// Does `text` open an environment that reads its body under other catcodes (the list is the
+/// segmenter's: `document::is_verbatim_env`)?
 fn has_verbatim_env(text: &str) -> bool {
-    const PARTS: &[&str] = &[
-        "verbatim",
-        "luacode",
-        "listing",
-        "minted",
-        "comment",
-        "filecontents",
-        "alltt",
-    ];
     let mut from = 0;
     while let Some(k) = text[from..].find("\\begin{") {
         let start = from + k + "\\begin{".len();
-        let name = text[start..]
-            .split('}')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if PARTS.iter().any(|p| name.contains(p)) {
+        let name = text[start..].split('}').next().unwrap_or("");
+        if crate::document::is_verbatim_env(name) {
             return true;
         }
         from = start;
@@ -651,10 +638,10 @@ pub fn scan_pictures(
         if name != main {
             return 0;
         }
-        texts[name]
-            .lines()
-            .position(|l| l.contains("\\begin{document}"))
-            .map(|k| k + 1)
+        // the line after the \begin{document} TeX reads (not one in a comment or verbatim)
+        let text = &texts[name];
+        crate::document::find_command(text, "\\begin{document}")
+            .map(|off| text[..off].matches('\n').count() + 1)
             .unwrap_or(0)
     };
     // `remember picture` anywhere (comments aside; the preamble too: `\tikzset{every
@@ -836,6 +823,16 @@ mod tests {
             "\\documentclass{article}\n\\tikzset{every picture/.style={remember picture}}\n",
         );
         assert!(!scan_pictures(&texts, "main.tex", 1)[0].cacheable);
+    }
+
+    #[test]
+    fn the_body_starts_at_the_begin_document_tex_reads() {
+        // a commented \begin{document} in the preamble does not make the preamble's picture
+        // (inside a macro definition) a body picture
+        let main = "\\documentclass{article}\n% \\begin{document} goes below\n\\newcommand\\pic{%\n\\begin{tikzpicture}\\draw (0,0)--(1,1);\\end{tikzpicture}}\n\\begin{document}\n\\begin{tikzpicture}\n\\draw (0,0) -- (1,1);\n\\end{tikzpicture}\n\\end{document}\n";
+        let pics = scan_pictures(&texts_of(main), "main.tex", 0);
+        let keys: Vec<&str> = pics.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, vec!["main.tex:6"]);
     }
 
     #[test]
