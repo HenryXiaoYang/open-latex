@@ -19,8 +19,8 @@ LuaLaTeX 进程，然后把排好的新行交给编辑器绘制。完整编译�
                          └─▶ 后台编译 ────▶ 整页、交叉引用、目录    （停止输入后几秒内）
 ```
 
-这一方法源自 Clemens Lode 的论文 *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*
-（TUGboat 2026）。
+这一方法源自 Clemens Lode 的论文 [*Real-Time LuaTeX: Recompiling Large Documents in 1 ms*](https://www.tug.org/tug2026/preprints/lode-realtime.pdf)
+（TUG 2026）。
 
 ## 在 VS Code 中使用
 
@@ -113,3 +113,13 @@ rtex 可以作为 Rust crate、C 库（`include/rtex.h`）或以 JSON 行通信�
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。`bench/upstream/` 中收录的论文基准测试保留其自己的 MIT 许可证。
+
+## 致谢
+
+- Clemens Lode（[@ClemensLode](https://github.com/ClemensLode)）：本项目所基于的论文
+  [*Real-Time LuaTeX: Recompiling Large Documents in 1 ms*](https://www.tug.org/tug2026/preprints/lode-realtime.pdf)
+  （TUG 2026）的作者。
+- [@kenny-21342](https://github.com/kenny-21342)。
+- [LuaTeX / LuaLaTeX](https://www.luatex.org/) 的开发者：rtex 直接使用他们未经修改的引擎。
+- [Typst](https://github.com/typst/typst)：它让人看到排版可以有多快。
+- [LINUX DO](https://linux.do/) 社区。

@@ -21,8 +21,8 @@ are identical to a normal LuaLaTeX build.
                          └─▶ background pass ──▶ whole pages, references, TOC   (seconds, after you pause)
 ```
 
-The approach follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*
-(TUGboat 2026).
+The approach follows Clemens Lode, [*Real-Time LuaTeX: Recompiling Large Documents in 1 ms*](https://www.tug.org/tug2026/preprints/lode-realtime.pdf)
+(TUG 2026).
 
 ## Use it in VS Code
 
@@ -123,3 +123,13 @@ still change before 0.1.
 
 MIT, see [LICENSE](LICENSE). The paper's benchmark, vendored in `bench/upstream/`, keeps its own
 MIT license.
+
+## Thanks
+
+- Clemens Lode ([@ClemensLode](https://github.com/ClemensLode)) for the paper this project is built on,
+  [*Real-Time LuaTeX: Recompiling Large Documents in 1 ms*](https://www.tug.org/tug2026/preprints/lode-realtime.pdf)
+  (TUG 2026).
+- [@kenny-21342](https://github.com/kenny-21342).
+- The [LuaTeX / LuaLaTeX](https://www.luatex.org/) developers: rtex runs their engine unmodified.
+- [Typst](https://github.com/typst/typst), for showing how fast typesetting can feel.
+- The [LINUX DO](https://linux.do/) community.
