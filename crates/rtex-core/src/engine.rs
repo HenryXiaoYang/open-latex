@@ -231,7 +231,7 @@ impl FastServer {
                 "--output-directory={}",
                 crate::paths::tex(work_dir)
             ))
-            .arg(driver.as_os_str())
+            .arg(crate::paths::tex(&driver))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         transport.configure(&mut cmd);
@@ -245,7 +245,18 @@ impl FastServer {
         let mut child = cmd.spawn().context("spawning lualatex server")?;
         // Connecting waits until the server has opened the response channel and written its
         // first frame. It polls the child so a crash during the preamble does not hang us.
-        let conn = transport.connect(&mut child, Duration::from_secs(120))?;
+        let conn = match transport.connect(&mut child, Duration::from_secs(120)) {
+            Ok(c) => c,
+            Err(e) => {
+                // the TeX log says why (a missing file, an error in the preamble, a Lua error
+                // opening the channel); the exit status alone does not
+                let log = work_dir.join(format!("rtex-serve-g{generation}.log"));
+                return Err(match tex_log_excerpt(&log) {
+                    Some(x) => anyhow::anyhow!("{e:#}; TeX log: {x}"),
+                    None => e,
+                });
+            }
+        };
         let mut s = FastServer {
             child,
             stdin: conn.requests,
@@ -577,5 +588,94 @@ impl Drop for FastServer {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+    }
+}
+
+/// The first TeX or Lua error in a log (its message and the lines up to the `l.<n>` line), else
+/// its last lines; at most 400 characters on one line. None when there is no log.
+fn tex_log_excerpt(log: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(log).ok()?;
+    // MiKTeX ignores max_print_line and wraps at 79 characters: join wrapped lines first
+    let mut joined: Vec<String> = Vec::new();
+    let mut wrapped = false;
+    for l in text.lines() {
+        match joined.last_mut() {
+            Some(prev) if wrapped => prev.push_str(l),
+            _ => joined.push(l.to_string()),
+        }
+        wrapped = l.chars().count() == 79;
+    }
+    let lines: Vec<&str> = joined.iter().map(|l| l.trim_end()).collect();
+    // a TeX error starts with "!"; LuaTeX reports a Lua error as "<file>:<line>: message"
+    // followed by "stack traceback:", with no "!"
+    let first = lines.iter().enumerate().position(|(i, l)| {
+        l.starts_with('!')
+            || lines
+                .get(i + 1)
+                .is_some_and(|n| n.starts_with("stack traceback:"))
+    });
+    let picked: Vec<&str> = match first {
+        Some(i) => {
+            let end = lines[i..]
+                .iter()
+                .position(|l| l.starts_with("l."))
+                .map(|j| i + j + 1)
+                .unwrap_or(lines.len())
+                .min(i + 6);
+            lines[i..end].to_vec()
+        }
+        None => {
+            let tail: Vec<&str> = lines
+                .iter()
+                .rev()
+                .filter(|l| !l.is_empty())
+                .take(3)
+                .copied()
+                .collect();
+            tail.into_iter().rev().collect()
+        }
+    };
+    let mut out = picked.join(" / ");
+    if out.chars().count() > 400 {
+        out = out.chars().take(400).collect::<String>() + "…";
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_errors_quote_the_first_tex_error() {
+        let log = std::env::temp_dir().join(format!("rtex-excerpt-{}.log", std::process::id()));
+        std::fs::write(
+            &log,
+            "This is LuaHBTeX\n(./rtex-serve-g1.tex\n! LaTeX Error: File `foo.sty' not found.\n\nType X to quit.\nl.3 \\usepackage{foo}\nmore\n",
+        )
+        .unwrap();
+        let x = tex_log_excerpt(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        assert_eq!(
+            x,
+            "! LaTeX Error: File `foo.sty' not found. /  / Type X to quit. / l.3 \\usepackage{foo}"
+        );
+        // a Lua error comes before the TeX errors it causes
+        std::fs::write(
+            &log,
+            {
+                // wrapped at 79 characters, as MiKTeX writes it
+                let msg = format!(
+                    "(./{}.tex)D:/rtex-serve.lua:712: cannot open response channel PIPE",
+                    "y".repeat(40)
+                );
+                let (head, rest) = msg.split_at(79);
+                format!("{head}\n{rest}\nstack traceback:\n\t[C]: in function 'assert'\nl.5 ...\n\n! Undefined control sequence.\nl.7 \\loop\n")
+            },
+        )
+        .unwrap();
+        let x = tex_log_excerpt(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        assert!(x.contains("cannot open response channel PIPE"), "{x}");
     }
 }

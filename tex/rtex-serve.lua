@@ -709,7 +709,9 @@ function S.init(boxnum, countnum, cctnum)
     stdin = assert(io.open(req_path, "rb"), "cannot open request pipe " .. req_path)
   end
   local path = os.getenv("RTEX_RESP")
-  resp = assert(io.open(path, "wb"), "cannot open response channel " .. tostring(path))
+  local err
+  resp, err = io.open(path, "wb")
+  assert(resp, "cannot open response channel " .. tostring(path) .. ": " .. tostring(err))
   resp:setvbuf("full", 1 << 16)
   luatexbase.add_to_callback("show_error_hook", S.on_error, "rtex-serve")
   -- \luafunction slots: no chunk compilation per call, unlike \directlua{...}

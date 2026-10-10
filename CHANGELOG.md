@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fixed: live typing on Windows with MiKTeX.** The live engine exited at startup with
+  "exit code: 1" on every MiKTeX installation (realtime-tex-vsc-plugin#1): MiKTeX refuses to
+  let LuaTeX write outside the output directory, which includes the engine's response pipe.
+  rtex now sets `MIKTEX_ALLOWUNSAFEOUTPUTFILES=1` for the LuaLaTeX processes it starts, the
+  MiKTeX equivalent of the `openout_any=a` it already sets for TeX Live. A failed start now
+  reports the first TeX or Lua error from the engine's log. CI runs a live-editing session on
+  Windows with MiKTeX, in paths with spaces and non-ASCII characters and on a CRLF document.
+
 - **Prebuilt binaries** for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows
   (x86_64), attached to each release by CI. Each holds `rtex`, the shared C library, `rtex.h`
   and the support files. The binaries for 0.0.2 are built from this branch, which differs from

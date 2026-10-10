@@ -84,6 +84,9 @@ impl TexLive {
         c.env("TEXINPUTS", texinputs)
             .env("LUAINPUTS", luainputs)
             .env("openout_any", "a")
+            // MiKTeX's equivalent of openout_any=a: without it LuaTeX may not write outside
+            // the output directory, which includes the live engine's response pipe on Windows
+            .env("MIKTEX_ALLOWUNSAFEOUTPUTFILES", "1")
             .env("max_print_line", "100000")
             .env("error_line", "254")
             .env("half_error_line", "238");
