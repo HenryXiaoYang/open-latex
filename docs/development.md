@@ -14,7 +14,18 @@
 | `include/rtex.h`, `examples/c/` | C header (kept by hand, checked in CI) and a small C host |
 | `fixtures/` | generated books, a corpus of realistic documents, research fixtures |
 | `bench/` | benchmark TeX files, the paper's own benchmark (vendored), recorded results |
-| `scripts/` | TeX Live installer, ABI check |
+| `scripts/` | TeX Live installer, ABI check, release packaging |
+
+## Releases
+
+Publishing a GitHub release runs `.github/workflows/release.yml`. It builds `rtex` and the
+shared library for five targets with the `dist` profile (stripped, thin LTO) and packages each
+with `scripts/package.sh`. It smoke-tests the packages with `rtex doctor`, then attaches
+`rtex-<target>.tar.gz` (or `.zip`) and a `SHA256SUMS` file to the release. The asset names have
+no version, so `releases/latest/download/rtex-<target>.tar.gz` always points at the newest
+build. To attach binaries to an existing release, run the workflow by hand ("Run workflow")
+with its tag. Pushes that change the workflow or the package script run the builds without
+publishing.
 
 ## Setting up
 
@@ -69,6 +80,7 @@ rtex bench   --project DIR… --categories short,medium,…              # see b
 python3 bench/compare/compare.py                                    # rtex vs Typst vs a full LaTeX run
 rtex export  --project DIR --out out.pdf --check                     # export and compare with a clean build
 rtex serve   --project DIR                                           # JSON-lines session
+rtex doctor                                                          # is everything installed?
 rtex pdf-compare A.pdf B.pdf
 rtex dl2json FILE
 ```

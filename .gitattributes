@@ -6,3 +6,9 @@
 *.gif binary
 *.webp binary
 *.pdf binary
+
+# Language statistics: fixtures, benchmarks and the TeX/Lua support files are not counted, so
+# GitHub reports the project by its Rust code
+fixtures/** linguist-vendored
+bench/** linguist-vendored
+tex/** linguist-vendored

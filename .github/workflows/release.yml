@@ -1,0 +1,79 @@
+name: release
+# Prebuilt binaries for every published release: rtex-<target>.tar.gz (zip on Windows) with the
+# rtex CLI, the shared C library, rtex.h and the TeX/Lua support files; see scripts/package.sh.
+# Stable asset names, so the latest one is always at
+#   https://github.com/HenryXiaoYang/realtime-tex/releases/latest/download/rtex-<target>.tar.gz
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach binaries to (built from the selected branch)"
+        required: true
+  push:
+    branches: [main]
+    paths: [".github/workflows/release.yml", "scripts/package.sh"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, native: true }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, native: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, native: true }
+          - { os: macos-latest, target: x86_64-apple-darwin, native: false }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, native: true }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.target }}
+      - run: cargo build --profile dist --locked --target ${{ matrix.target }} -p rtex-cli -p rtex-core
+      - run: scripts/package.sh ${{ matrix.target }}
+      - name: Smoke test (the packaged rtex finds its support files)
+        if: matrix.native
+        run: |
+          set +e
+          out="$(dist/rtex-*-${{ matrix.target }}/bin/rtex doctor)"
+          code=$?
+          set -e
+          echo "$out"
+          # 2 = LuaLaTeX not installed on the runner, which is expected here
+          [ "$code" -eq 0 ] || [ "$code" -eq 2 ]
+          echo "$out" | grep -E "support files: .*share.rtex.tex"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtex-${{ matrix.target }}
+          path: |
+            dist/rtex-${{ matrix.target }}.*
+
+  publish:
+    needs: build
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && cat *.sha256 > SHA256SUMS && ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+          files: |
+            dist/rtex-*
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true

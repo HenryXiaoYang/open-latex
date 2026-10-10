@@ -12,32 +12,57 @@ pub struct TexLive {
     pub rtex_texdir: PathBuf,
 }
 
-/// Find the directory containing rtex's `tex/` support files.
+/// Find the directory containing rtex's `tex/` support files: `$RTEX_TEXDIR`, then next to the
+/// running executable as the release archives lay it out (`<prefix>/bin/rtex` with
+/// `<prefix>/share/rtex/tex`, or a `tex/` beside or above the executable), then the source tree
+/// this crate was built from.
 pub fn find_rtex_texdir() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("RTEX_TEXDIR") {
         return Ok(PathBuf::from(p));
     }
+    let is_texdir = |d: &Path| d.join("rtex-dl.lua").is_file();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| crate::paths::canonical(&e).ok())
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
+        for c in [
+            dir.join("../share/rtex/tex"),
+            dir.join("tex"),
+            dir.join("../tex"),
+        ] {
+            if is_texdir(&c) {
+                return Ok(crate::paths::canonical(&c)?);
+            }
+        }
+    }
     // Compile-time location of this crate → <repo>/tex
-    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let candidate = here.join("../../tex");
-    if candidate.join("rtex-dl.lua").exists() {
+    let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tex");
+    if is_texdir(&candidate) {
         return Ok(crate::paths::canonical(&candidate)?);
     }
-    bail!("cannot locate rtex tex/ directory; set RTEX_TEXDIR")
+    bail!("cannot locate rtex's tex/ support files; set RTEX_TEXDIR")
+}
+
+/// Find `lualatex`: in `$RTEX_TEXLIVE_BIN` when set, else on `PATH`. Returns the directory from
+/// `$RTEX_TEXLIVE_BIN` (if any) and the executable.
+pub fn find_lualatex() -> Result<(Option<PathBuf>, PathBuf)> {
+    let bin_dir = std::env::var_os("RTEX_TEXLIVE_BIN").map(PathBuf::from);
+    let lualatex = match &bin_dir {
+        Some(d) => d.join(crate::paths::exe("lualatex")),
+        None => which("lualatex").context(
+            "lualatex not found on PATH (source build/texlive.env or set RTEX_TEXLIVE_BIN)",
+        )?,
+    };
+    if !lualatex.exists() {
+        bail!("lualatex not found at {}", lualatex.display());
+    }
+    Ok((bin_dir, lualatex))
 }
 
 impl TexLive {
     pub fn discover() -> Result<TexLive> {
-        let bin_dir = std::env::var_os("RTEX_TEXLIVE_BIN").map(PathBuf::from);
-        let lualatex = match &bin_dir {
-            Some(d) => d.join(crate::paths::exe("lualatex")),
-            None => which("lualatex").context(
-                "lualatex not found on PATH (source build/texlive.env or set RTEX_TEXLIVE_BIN)",
-            )?,
-        };
-        if !lualatex.exists() {
-            bail!("lualatex not found at {}", lualatex.display());
-        }
+        let (bin_dir, lualatex) = find_lualatex()?;
         Ok(TexLive {
             bin_dir,
             lualatex,

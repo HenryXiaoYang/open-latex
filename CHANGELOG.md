@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Prebuilt binaries** for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows
+  (x86_64), attached to each release by CI. Each holds `rtex`, the shared C library, `rtex.h`
+  and the support files. The binaries for 0.0.2 are built from this branch, which differs from
+  the tag only in packaging, docs and benchmarks.
+- `rtex` finds its support files next to its executable (`share/rtex/tex`), so an unpacked
+  archive works from anywhere. `rtex doctor` checks the installation.
+- GitHub counts the project as Rust: fixtures, benchmarks and the TeX/Lua files are marked as
+  vendored for language statistics.
+
 ## 0.0.2 (2026-10-10)
 
 ### New

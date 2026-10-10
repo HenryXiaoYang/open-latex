@@ -32,3 +32,10 @@ png = "0.17"
 
 [profile.release]
 debug = 1
+
+# Release archives (scripts/package.sh): no debug info, stripped, thin LTO.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = true
+lto = "thin"

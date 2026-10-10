@@ -54,7 +54,21 @@ LuaLaTeX 进程，然后把排好的新行交给编辑器绘制。完整编译�
 以及大多数宏包。如果 rtex 无法证明某个实时结果是精确的，它会说明原因，该段落改为在下一次后台编译后更新。
 这包括导言区的修改、目录、边注，以及输出依赖于页面状态的文本。[完整列表](docs/live-editing.md)。
 
-## 动手试试
+## 安装
+
+每个 [release](https://github.com/HenryXiaoYang/realtime-tex/releases/latest) 都附带预编译的二进制包，支持
+Linux（x86_64、arm64）、macOS（Apple 芯片、Intel）和 Windows（x86_64）。每个压缩包包含 `rtex` 命令、C 库和头文件，
+以及 rtex 的 TeX 支持文件。解压到任意位置后运行 `bin/rtex doctor`，即可检查 rtex 能否找到它的文件和你的 LuaLaTeX。
+你仍然需要带 LuaLaTeX 的 TeX Live，精简版的安装方法见下文。
+
+```sh
+# Linux x86_64；其他压缩包为 rtex-aarch64-unknown-linux-gnu.tar.gz、
+# rtex-aarch64-apple-darwin.tar.gz、rtex-x86_64-apple-darwin.tar.gz、rtex-x86_64-pc-windows-msvc.zip
+curl -L https://github.com/HenryXiaoYang/realtime-tex/releases/latest/download/rtex-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+rtex-*/bin/rtex doctor
+```
+
+## 从源码动手试试
 
 你需要 [Rust](https://rustup.rs) 和带 LuaLaTeX 的 TeX Live。下面的脚本会把一个精简版 TeX Live 安装到
 `build/texlive`（大约 15 分钟；在 Windows 上请在 Git Bash 中运行）。也可以使用已有的 TeX Live 或 MacTeX：

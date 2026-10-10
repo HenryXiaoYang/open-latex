@@ -18,9 +18,17 @@ is an example of a complete host.
 ## Prerequisites
 
 rtex needs a TeX Live installation with LuaLaTeX. It finds `lualatex` on `PATH`, or in the
-directory named by `RTEX_TEXLIVE_BIN`. It also needs its own TeX and Lua support files from the
-repository's `tex/` directory. Builds from a checkout find them automatically; elsewhere, set
-`RTEX_TEXDIR` to that directory.
+directory named by `RTEX_TEXLIVE_BIN`.
+
+It also needs its own TeX and Lua support files. rtex looks for them in this order:
+1. `$RTEX_TEXDIR`;
+2. next to the `rtex` executable, as the [release archives](https://github.com/HenryXiaoYang/realtime-tex/releases/latest)
+   lay them out (`bin/rtex` and `share/rtex/tex/`);
+3. the source tree it was built from.
+
+A host that loads the C library has its own executable, so step 2 does not apply to it. Set
+`RTEX_TEXDIR` to the archive's `share/rtex/tex` directory, unless the library was built from a
+checkout that is still there. `rtex doctor` prints what rtex finds.
 
 ## A session
 

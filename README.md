@@ -61,7 +61,22 @@ paragraph appears with the next background pass instead. That covers preamble ed
 of contents, margin notes, and text whose output depends on page state.
 [Full list](docs/live-editing.md).
 
-## Try it
+## Install
+
+**Prebuilt binaries** for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x86_64)
+are attached to every [release](https://github.com/HenryXiaoYang/realtime-tex/releases/latest).
+Each archive holds the `rtex` command, the C library and header, and rtex's TeX support files.
+Unpack it anywhere and run `bin/rtex doctor` to check that rtex finds its files and your
+LuaLaTeX. You still need a TeX Live with LuaLaTeX; see below for a minimal one.
+
+```sh
+# Linux x86_64; the other archives are rtex-aarch64-unknown-linux-gnu.tar.gz,
+# rtex-aarch64-apple-darwin.tar.gz, rtex-x86_64-apple-darwin.tar.gz, rtex-x86_64-pc-windows-msvc.zip
+curl -L https://github.com/HenryXiaoYang/realtime-tex/releases/latest/download/rtex-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+rtex-*/bin/rtex doctor
+```
+
+## Try it from source
 
 You need [Rust](https://rustup.rs) and a TeX Live with LuaLaTeX. The script installs a minimal
 TeX Live into `build/texlive` (about 15 minutes; on Windows, run it from Git Bash). An existing
