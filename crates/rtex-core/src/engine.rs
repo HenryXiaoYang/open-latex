@@ -1,7 +1,7 @@
 //! The persistent paragraph server: one `lualatex` process kept alive after `\begin{document}`.
 //! Requests go to it as JSON lines; responses come back as length-prefixed JSON frames on a
 //! channel of their own (stdout is not clean: the banner is printed even in batch mode — see
-//! ENGINE_NOTES). The channel is a FIFO on Unix and a pair of named pipes on Windows
+//! docs/engine-protocol.md). The channel is a FIFO on Unix and a pair of named pipes on Windows
 //! (`transport`).
 
 use crate::texlive::TexLive;

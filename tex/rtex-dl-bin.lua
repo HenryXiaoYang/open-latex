@@ -1,4 +1,4 @@
--- rtex-dl-bin.lua: binary display-list writer (encoding revision 1, docs/DISPLAY_LIST.md).
+-- rtex-dl-bin.lua: binary display-list writer (encoding revision 1, docs/display-list.md).
 -- Input: the table produced by rtex-dl.lua. Output: a Lua string.
 local M = {}
 local pack, concat = string.pack, table.concat

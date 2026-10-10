@@ -1,4 +1,4 @@
-//! Binary display-list encoding, revision 1 (docs/DISPLAY_LIST.md): decoder and encoder.
+//! Binary display-list encoding, revision 1 (docs/display-list.md): decoder and encoder.
 
 use crate::{DisplayList, FontDesc, ImageInfo, Item, Line, Sp};
 #[cfg(test)]

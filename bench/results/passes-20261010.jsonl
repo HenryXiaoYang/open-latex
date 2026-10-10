@@ -1,0 +1,9 @@
+# rtex 0.0.2, 2026-10-10, Intel Xeon @ 2.10GHz (4 vCPU VM), TeX Live 2026. One JSON object per project:
+# engine_ready_s: live engine ready after open; first_layout_s: first converged layout after open;
+# later_layout_*: a pass after a one-character edit (request_layout), median of 5; export_s: clean PDF export.
+{"project": "book-10-pure-lmtfm", "engine_ready_s": 0.59, "first_layout_s": 1.51, "first_layout_passes": 2, "pages": 10, "later_layout_s_median": 0.77, "later_layout_wall_s_median": 0.46, "export_s": 1.42, "export_passes": 2}
+{"project": "book-100-pure-lmtfm", "engine_ready_s": 0.67, "first_layout_s": 7.23, "first_layout_passes": 2, "pages": 98, "later_layout_s_median": 3.41, "later_layout_wall_s_median": 3.1, "export_s": 2.54, "export_passes": 2}
+{"project": "book-300-pure-lmtfm", "engine_ready_s": 0.57, "first_layout_s": 19.38, "first_layout_passes": 2, "pages": 292, "later_layout_s_median": 9.74, "later_layout_wall_s_median": 9.4, "export_s": 5.06, "export_passes": 2}
+{"project": "book-100-pure", "engine_ready_s": 1.22, "first_layout_s": 15.18, "first_layout_passes": 2, "pages": 100, "later_layout_s_median": 7.16, "later_layout_wall_s_median": 6.85, "export_s": 10.87, "export_passes": 2}
+{"project": "book-10-mixed", "engine_ready_s": 1.89, "first_layout_s": 6.33, "first_layout_passes": 3, "pages": 11, "later_layout_s_median": 2.16, "later_layout_wall_s_median": 1.86, "export_s": 7.82, "export_passes": 3}
+{"project": "book-100-mixed", "engine_ready_s": 1.82, "first_layout_s": 19.01, "first_layout_passes": 3, "pages": 99, "later_layout_s_median": 6.9, "later_layout_wall_s_median": 6.6, "export_s": 16.17, "export_passes": 3}

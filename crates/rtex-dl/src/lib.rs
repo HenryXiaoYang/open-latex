@@ -1,7 +1,7 @@
 //! Display-list model for rtex.
 //!
 //! The JSON form produced by `tex/rtex-dl.lua` is the provisional interchange format until the
-//! binary encoding is revision 1 (docs/DISPLAY_LIST.md). Coordinates are in scaled points (sp); y grows down.
+//! binary encoding is revision 1 (docs/display-list.md). Coordinates are in scaled points (sp); y grows down.
 
 pub mod binary;
 

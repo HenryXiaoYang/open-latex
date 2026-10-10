@@ -1,6 +1,6 @@
 //! `rtex bench`: the paper's in-engine line-breaking replica (hardware factor) and host-side
 //! round-trip benchmarks over paragraph categories and document sizes, with the gates of
-//! docs/BENCHMARKS.md.
+//! docs/benchmarks.md.
 
 use anyhow::{bail, Context, Result};
 use rtex_core::texlive::TexLive;

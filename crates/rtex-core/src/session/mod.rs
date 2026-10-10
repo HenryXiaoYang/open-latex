@@ -59,7 +59,7 @@ pub struct SessionConfig {
     /// How a unit qualifies for the fast path (default `Probe`).
     pub eligibility: EligibilityMode,
     /// Background passes reuse unchanged pictures (tikzpicture, circuitikz) from an earlier
-    /// pass's PDF instead of drawing them again (default true; `docs/ARCHITECTURE.md`).
+    /// pass's PDF instead of drawing them again (default true; `docs/how-it-works.md`).
     pub picture_cache: bool,
     /// Debugging: a directory the session writes diagnostics into (default: `$RTEX_DEBUG_DIR`
     /// when set, else none). Every engine failure (watchdog, state mismatch, crash) leaves a

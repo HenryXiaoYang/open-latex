@@ -695,7 +695,7 @@ mod aux_tests {
 // ---------------------------------------------------------------------------------------------
 // Standby background engine: a lualatex that has loaded the preamble and waits for the body.
 // Engine start, format and preamble (packages, fonts) are ~75 % of a pass over a short
-// document (docs/BENCHMARKS.md), so a pass that only typesets the body is 3–4× faster.
+// document (docs/benchmarks.md), so a pass that only typesets the body is 3–4× faster.
 // ---------------------------------------------------------------------------------------------
 
 /// Snapshot layout for a standby pass: the project copied as for `write_snapshot`, the preamble

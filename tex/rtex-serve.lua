@@ -3,7 +3,7 @@
 --   C <req> <ctx> <len>\n<len bytes>   compile <len> bytes of paragraph source (no JSON)
 --   {...}\n                            any other op as a JSON object (context, ping, stats, ...)
 -- Responses are frames on the FIFO (Windows: named pipe) named by $RTEX_RESP: u32-LE length, u8 kind, payload
--- (kind 0: JSON; kind 1: u32 json_len, JSON header, binary display list). See docs/PROTOCOL.md.
+-- (kind 0: JSON; kind 1: u32 json_len, JSON header, binary display list). See docs/engine-protocol.md.
 local S = { contexts = {}, errors = {}, requests = 0 }
 local json = dofile(kpse.find_file("rtex-json.lua", "lua") or "rtex-json.lua")
 local dl = dofile(kpse.find_file("rtex-dl.lua", "lua") or "rtex-dl.lua")

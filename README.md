@@ -1,100 +1,107 @@
 # realtime-tex (rtex)
 
-An embeddable real-time LaTeX compilation library. It keeps an **unmodified LuaTeX** process
-alive, recompiles only the paragraph being edited (≈ 1 ms class latency), extracts a
-display list (glyph ids, font references, positions, rules, colors, microtypographic
-adjustments) directly from LuaTeX's node lists — bypassing PDF generation — and reconciles
-pagination, floats, footnotes, counters and cross-references in a background full compile
-that reports explicit, versioned convergence status. Hosts (editors) render the display list
-with their own renderer; exported PDFs match a clean LuaLaTeX build.
+**See your LaTeX document update as you type, in about a millisecond, without leaving LuaLaTeX.**
 
-The architecture follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*
-(TUGboat 2026 / TUG 2026).
+rtex is a library for editors. When you type, it re-typesets only the paragraph you are editing,
+using a LuaLaTeX process that has already loaded your preamble, and hands the editor the new
+lines to draw. A full compile runs in the background and takes care of what really is global:
+page breaks, floats, the table of contents, references and bibliographies.
 
-## Measured (this container, Xeon 2.1 GHz VM; `docs/BENCHMARKS.md`)
+The result is exactly what LuaLaTeX produces: the same line breaks, the same glyphs, at the
+same positions to 1/65536 pt. rtex uses an unmodified LuaTeX from TeX Live, and exported PDFs
+are identical to a normal LuaLaTeX build.
 
-| | 10 pages | 100 pages | 300 pages | paper |
-|---|---|---|---|---|
-| short paragraph, per keystroke (amortized) | 0.42 ms (0.19) | 0.34 ms (0.17) | 0.46 ms (0.22) | 0.79 ms |
-| medium paragraph, per keystroke | 0.80 ms | 1.04 ms | 0.99 ms | 6.11 ms |
-| long paragraph (10–12 lines), per keystroke | — | 1.79 ms | 1.78 ms | — |
+```
+                         ┌─▶ live engine ──────▶ new lines of that paragraph   (≈ 1 ms)
+ keystroke ─▶ rtex ──────┤
+                         └─▶ background pass ──▶ whole pages, references, TOC   (seconds, after you pause)
+```
 
-Per keystroke on the 100-page `units` book, individual-edit medians (every kind is also
-document-size independent: 10 vs 100 pages within the ±20 % jitter of a shared VM):
+The approach follows Clemens Lode, *Real-Time LuaTeX: Recompiling Large Documents in 1 ms*
+(TUGboat 2026).
 
-| paragraph with display math (5 rows) | paragraph with a footnote (3 rows) | list (3 items) | figure (image + caption) | table (booktabs) | heading |
-|---|---|---|---|---|---|
-| 1.16 ms | 1.45 ms | 1.32 ms | 1.57 ms | 1.32 ms | 0.67 ms |
+## How fast
 
-A layout (full background pass) after the first takes 0.42 s on the 10-page book: the standby
-engine has the preamble loaded and only typesets the body.
+Time from keystroke to the updated paragraph in the editor's hands (median of 300 edits, on a
+4-vCPU cloud VM; a laptop is usually faster). [Full benchmarks](docs/benchmarks.md).
 
-Paper-like font setup (TFM Latin Modern + microtype); OpenType fonts in luaotfload base mode
-are equally fast, fontspec's default node mode pays Lua shaping in the TeX stage. Output equals
-LuaTeX's own positions to the scaled point (`docs/FIDELITY.md`); exported PDFs are byte-equal to
-an independent clean build on the fixtures.
+| Paragraph | 10-page document | 100 pages | 300 pages |
+|---|---|---|---|
+| one line | 0.50 ms | 0.48 ms | 0.61 ms |
+| four lines | 1.04 ms | 1.10 ms | 1.18 ms |
+| ten lines | — | 2.39 ms | 1.94 ms |
+| a list, a figure, a table, display math | 1.4–1.9 ms | 1.5–1.7 ms | |
+
+Document length does not matter, only the paragraph does. The font setup matters too. With
+fontspec's default OpenType shaping, a long paragraph takes up to 4–5× longer than with TFM fonts
+or `Renderer=Basic` ([why](docs/live-editing.md#making-it-faster)).
+
+## What updates live
+
+Text, math (inline and display, `align` and friends), references and citations, lists,
+theorems, figures and tables, headings, footnote marks, your own macros and environments, and
+most packages. When rtex cannot prove that a live result would be exact, it says why, and the
+paragraph appears with the next background pass instead. That covers preamble edits, the table
+of contents, margin notes, and text whose output depends on page state.
+[Full list](docs/live-editing.md).
+
+## Try it
+
+You need [Rust](https://rustup.rs) and a TeX Live with LuaLaTeX. The script installs a minimal
+TeX Live into `build/texlive` (about 15 minutes; on Windows, run it from Git Bash). An existing
+TeX Live or MacTeX works too: set `RTEX_TEXLIVE_BIN` to its `bin` directory.
+
+```sh
+git clone https://github.com/HenryXiaoYang/realtime-tex && cd realtime-tex
+scripts/install-texlive.sh && source build/texlive.env
+cargo build --release
+
+# make a 10-page test book, apply one live edit, and print what came back
+target/release/rtex gen-book --pages 10 --out build/fx/book-10
+target/release/rtex edit --project build/fx/book-10 --find "Baseline export" --text " (edited)"
+
+# check that live output matches the real PDF, then export
+target/release/rtex verify --project build/fx/book-10
+target/release/rtex export --project build/fx/book-10 --out build/book-10.pdf --check
+```
+
+To edit your own document live, use an editor that embeds rtex, such as the
+[VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), or drive a
+session yourself with `rtex serve --project path/to/your/project` (JSON lines on stdin/stdout).
+
+## Use it in your editor
+
+rtex can be used as a Rust crate, as a C library (`include/rtex.h`), or as a subprocess speaking
+JSON lines. The editor sends edits and gets events: *this paragraph now looks like this* and
+*here are the new pages*. Each comes with display lists: glyphs from font files at exact
+positions, ready to draw. Pages that contain something a display list cannot describe, such as
+TikZ drawings, come with a PDF to draw them from. See the [embedding guide](docs/embedding.md).
+
+## Platforms
+
+Linux, macOS and Windows. CI runs the test suite on all three against a real TeX Live. Only
+LuaLaTeX is supported (not pdfLaTeX or XeLaTeX), with a LaTeX kernel from 2021 or later.
+
+## Documentation
+
+| | |
+|---|---|
+| [Live editing](docs/live-editing.md) | what updates as you type, what waits, how to make it faster |
+| [How it works](docs/how-it-works.md) | the live engine, background passes, how rtex decides what can go live |
+| [Embedding](docs/embedding.md) | Rust, C and JSON-lines APIs, events, configuration, drawing |
+| [Display lists](docs/display-list.md) | the drawing format, binary and JSON |
+| [Correctness](docs/correctness.md) | how output is checked against LuaTeX and its PDF, current results |
+| [Benchmarks](docs/benchmarks.md) | latency, background passes, fonts, comparison with the paper |
+| [Engine protocol](docs/engine-protocol.md) | how rtex talks to the live LuaTeX process (for contributors) |
+| [Development](docs/development.md) | building, testing, CI, debugging engine failures |
+| [Changelog](CHANGELOG.md) | |
 
 ## Status
 
-| Area | State |
-|---|---|
-| Fast path | persistent LuaTeX server, eligibility by **probe** (a unit whose commands the allow-list does not know is compiled once as the last pass typeset it and compared row by row with the pass; `docs/ELIGIBILITY.md`) over **units** (paragraphs with display math, footnotes, refs and cites; lists, quotes, theorems, figures, tables, verbatim, bibliographies, the title block; headings; user macros and environments; multi-file projects), context replay incl. counters and labels, binary display list, state fingerprint + watchdog, per-unit 5 ms budget — coverage gated on a corpus of realistic documents (`fixtures/corpus`, `docs/LIMITATIONS.md`) |
-| Fidelity | display lists equal the engine's own cursor to the scaled point (backend oracle), every eligible unit kind checked row-exact against the shipped page, independent PDF content-stream check incl. image transforms, rendered comparison — `docs/FIDELITY.md` |
-| Background | debounced instrumented passes with biber/bibtex, versioned layouts, explicit convergence states, degraded-page PDF fallback — `docs/CONVERGENCE.md`, `docs/VERSIONING.md` |
-| Export | clean build loop with honest status; byte-equal to an independent LuaLaTeX build on the fixtures |
-| API | Rust `Session` + C ABI (`include/rtex.h`) + JSON-lines `rtex serve` — `docs/API.md` |
-| Benchmarks | paper replica, per-stage round trips on 10/100/300-page books in three font setups, hardware-qualified gates — `docs/BENCHMARKS.md` |
+Version 0.0.2. It works and is tested, but the API, the C ABI and the display-list format may
+still change before 0.1.
 
 ## License
 
-MIT, see `LICENSE`. The vendored upstream benchmark in `bench/upstream/` keeps its own MIT license.
-
-## Layout
-
-| Path | Contents |
-|---|---|
-| `crates/rtex-core` | Rust core: project model, persistent paragraph server, background compiler, versioned layout store, C ABI |
-| `crates/rtex-dl` | Display-list model and codecs (binary + JSON) |
-| `crates/rtex-verify` | Independent fidelity checks (PDF content streams, rasterized comparison) |
-| `crates/rtex-cli` | Headless driver: fixtures, benchmarks, verification, export |
-| `tex/` | Lua + LaTeX side: serve loop, node traversal, capture package, experiments |
-| `bench/` | Replica of the paper's benchmarks and results |
-| `docs/` | Architecture, formats, protocol, versioning, convergence, benchmarks |
-
-## Getting started
-
-```bash
-scripts/install-texlive.sh          # minimal TeX Live 2026 into build/texlive (≈ 15 min; on Windows run it from Git Bash)
-source build/texlive.env
-cargo build --workspace
-cargo run -p rtex-cli -- gen-book --pages 10 --out build/fx/book-10-pure
-```
-
-```bash
-cargo run --release -p rtex-cli -- verify --project build/fx/book-10-pure --raster   # three fidelity layers
-cargo run --release -p rtex-cli -- slice  --project build/fx/book-10-pure            # timing of one paragraph
-cargo run --release -p rtex-cli -- edit   --project build/fx/book-10-pure --find "glyph for"   # one edit through the Session
-cargo run --release -p rtex-cli -- export --project build/fx/book-10-pure --out build/out.pdf --check
-cargo run --release -p rtex-cli -- bench  --project fixtures/book-10-pure-lmtfm fixtures/book-100-pure-lmtfm fixtures/book-300-pure-lmtfm
-cargo test --workspace                                                              # unit + engine tests
-texlua tex/tests/run.lua                                                            # Lua-side unit tests
-```
-
-Fixtures: `rtex gen-book --pages N --variant pure|mixed --fonts lm-tfm|pagella-base|pagella|pagella-harf|latin-modern`.
-For real-time editing, load OpenType fonts with `Renderer=Basic` (or use TFM fonts): fontspec's
-default node-mode shaping costs several times the line-breaking time per paragraph (`docs/BENCHMARKS.md`).
-
-C hosts: `cargo build --release -p rtex-core` builds `librtex_core.so`; see `include/rtex.h`,
-`examples/c/edit_loop.c` and `docs/API.md`. Display lists: `docs/DISPLAY_LIST.md`.
-
-See `docs/FIDELITY.md` for how output is verified, `docs/BENCHMARKS.md` for measured numbers,
-`docs/PROTOCOL.md` for the engine protocol and `docs/ENGINE_NOTES.md` for what the engine
-experiments established.
-
-## Continuous integration
-
-`.github/workflows/ci.yml`: a `unit` job (build, unit tests, C ABI header/symbol check, C example
-compile), an `integration` job with a cached TeX Live install (Lua tests, all gated Rust tests,
-the three fidelity layers on the 10-page fixture, export equality) and a `perf` job on pushes
-that runs the smoke benchmark and uploads the results; performance gates on shared runners are
-reported as warnings because they are hardware-qualified.
+MIT, see [LICENSE](LICENSE). The paper's benchmark, vendored in `bench/upstream/`, keeps its own
+MIT license.

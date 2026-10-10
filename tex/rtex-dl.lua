@@ -192,7 +192,7 @@ local function bstr(s)
   return pack("<s2", s)
 end
 
--- Binary sink (docs/DISPLAY_LIST.md): records are appended to self.buf as they are produced;
+-- Binary sink (docs/display-list.md): records are appended to self.buf as they are produced;
 -- consecutive glyphs with the same font/baseline/expansion are coalesced into one GLYPHS run.
 -- A glyph run is a flat integer array (char, glyph index, x, width per glyph) packed once at
 -- flush time with a cached repeated format: cheaper than one string.pack per glyph (E22).

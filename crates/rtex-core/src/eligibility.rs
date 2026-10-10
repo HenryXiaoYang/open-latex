@@ -4,7 +4,7 @@
 //! it can be typeset in isolation with no effect on, and no dependence on, state outside the
 //! unit beyond what the captured context replays (parameters, fonts, counters, labels). Anything
 //! not explicitly allowed — including every macro defined in the preamble — sends the unit to the
-//! background path. See docs/ARCHITECTURE.md and docs/LIMITATIONS.md.
+//! background path. See docs/how-it-works.md and docs/live-editing.md.
 
 use std::collections::{BTreeMap, BTreeSet};
 

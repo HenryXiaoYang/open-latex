@@ -1,7 +1,7 @@
 /* rtex — embeddable real-time LuaTeX compilation library. C ABI, rtex 0.0.2 (unstable before 0.1).
  * Strings are UTF-8. Strings returned as `char*` are owned by the caller and must be released
  * with rtex_string_free(); `const char*` results are owned by the object they came from.
- * Display lists are binary (encoding revision 1) buffers (docs/DISPLAY_LIST.md) owned by the event. */
+ * Display lists are binary (encoding revision 1) buffers (docs/display-list.md) owned by the event. */
 #ifndef RTEX_H
 #define RTEX_H
 #include <stdbool.h>
@@ -26,7 +26,9 @@ enum RtexEventKind {
 const char *rtex_version(void);
 
 /* config_json: {"project_root":"…","main_file":"main.tex","build_dir":"…","debounce_ms":300,
- *               "max_passes":5,"trusted_macros":["…"],"fast_on_stale_context":true,"compile_timeout_ms":5000}
+ *               "max_passes":5,"fast_budget_ms":50,"compile_timeout_ms":5000,"eligibility":"probe",
+ *               "trusted_macros":["…"],"unit_envs":["…"],"picture_cache":true,"warm_background":true,
+ *               "fast_on_stale_context":true,"debug_dir":"…"}   (only project_root is required)
  * Returns NULL on failure and sets *err_out (free with rtex_string_free). */
 RtexSession *rtex_session_open(const char *config_json, char **err_out);
 void rtex_session_close(RtexSession *session);
@@ -45,7 +47,7 @@ char *rtex_session_spans(RtexSession *session, const char *path); /* JSON array 
 /* Waits up to timeout_ms for the next event; NULL when none. Events arrive in order. */
 RtexEvent *rtex_session_poll(RtexSession *session, uint32_t timeout_ms);
 uint32_t rtex_event_kind(const RtexEvent *event);
-/* Event JSON (see docs/API.md); display-list payloads are replaced by {"bytes":n,"index":i}. */
+/* Event JSON (see docs/embedding.md); display-list payloads are replaced by {"bytes":n,"index":i}. */
 const char *rtex_event_json(const RtexEvent *event);
 uint32_t rtex_event_dl_count(const RtexEvent *event);
 /* Binary display list `index` (0 for ParagraphUpdate; pages_changed order for LayoutUpdate). */
